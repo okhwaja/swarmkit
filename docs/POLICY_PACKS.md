@@ -197,3 +197,14 @@ fresh final disposition check. It is intentionally provider-neutral. Copy and
 adapt it outside Swarmkit before production use; provider comments, approvals,
 skills, and credentials remain harness responsibilities. See
 [Persistent services](PERSISTENT_SERVICES.md).
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.

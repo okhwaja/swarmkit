@@ -2,6 +2,10 @@
 """Durable, harness-neutral orchestration for ambiguous multi-agent work."""
 
 import argparse
+import contextlib
+import fcntl
+import functools
+import signal
 import concurrent.futures
 import datetime as dt
 import hashlib
@@ -20,8 +24,8 @@ import time
 import zipfile
 
 
-VERSION = "0.6.0"
-SCHEMA_VERSION = "6"
+VERSION = "0.7.0"
+SCHEMA_VERSION = "7"
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
 TERMINAL_TASK_STATES = {"DONE", "CANCELLED"}
 VALID_TASK_STATES = {
@@ -51,6 +55,24 @@ VALID_MANAGER_REVIEW_STATES = {"PENDING", "RUNNING", "DONE"}
 
 class SwarmError(Exception):
     pass
+
+
+def atomic_write(function):
+    @functools.wraps(function)
+    def wrapped(conn, *args, **kwargs):
+        outer = conn.in_transaction
+        if not outer:
+            conn.execute('BEGIN IMMEDIATE')
+        try:
+            result = function(conn, *args, **kwargs)
+            if not outer:
+                conn.commit()
+            return result
+        except Exception:
+            if not outer:
+                conn.rollback()
+            raise
+    return wrapped
 
 
 def utcnow():
@@ -112,7 +134,11 @@ def connect(root, require=True):
         except sqlite3.OperationalError:
             current_version = None
         if current_version != SCHEMA_VERSION:
-            ensure_schema(conn)
+            try:
+                ensure_schema(conn)
+            except Exception:
+                conn.close()
+                raise
     return conn
 
 
@@ -493,23 +519,91 @@ CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject, status);
 """
 
 
+RUNTIME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS runtime_state (
+    id INTEGER PRIMARY KEY CHECK(id=1), desired_state TEXT NOT NULL DEFAULT 'ACTIVE',
+    revision INTEGER NOT NULL DEFAULT 1, outcome TEXT, reason TEXT,
+    limits_json TEXT NOT NULL DEFAULT '{}', strict_evidence INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO runtime_state(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS attempts (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), generation INTEGER NOT NULL,
+    agent TEXT NOT NULL, state TEXT NOT NULL, mission_revision INTEGER NOT NULL,
+    started_at TEXT NOT NULL, ended_at TEXT, reason TEXT,
+    UNIQUE(task_id, generation), UNIQUE(task_id, agent)
+);
+CREATE TABLE IF NOT EXISTS effects (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
+    generation INTEGER NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+    target TEXT NOT NULL, revision TEXT NOT NULL, parameters_json TEXT NOT NULL,
+    state TEXT NOT NULL, receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbox_deliveries (
+    token TEXT PRIMARY KEY, agent TEXT NOT NULL, scope TEXT NOT NULL,
+    start_seq INTEGER NOT NULL, end_seq INTEGER NOT NULL, payload_json TEXT NOT NULL,
+    lease_until TEXT NOT NULL, acked_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_active ON inbox_deliveries(agent, scope) WHERE acked_at IS NULL;
+CREATE TABLE IF NOT EXISTS inbox_offsets (
+    agent TEXT NOT NULL, scope TEXT NOT NULL, last_seq INTEGER NOT NULL,
+    PRIMARY KEY(agent, scope)
+);
+CREATE TABLE IF NOT EXISTS resource_leases (
+    resource TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
+    generation INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, lease_until TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evidence (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), generation INTEGER NOT NULL,
+    mission_revision INTEGER NOT NULL, criterion TEXT NOT NULL, revision TEXT NOT NULL,
+    environment TEXT NOT NULL, command TEXT NOT NULL, exit_code INTEGER NOT NULL,
+    path TEXT NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_contracts (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id), revision TEXT NOT NULL, environment TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plan_keys (
+    key TEXT PRIMARY KEY, specification TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id)
+);
+CREATE TABLE IF NOT EXISTS mission_amendments (
+    revision INTEGER PRIMARY KEY, previous_json TEXT NOT NULL, current_json TEXT NOT NULL,
+    reason TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_commits (
+    review_id TEXT PRIMARY KEY REFERENCES manager_reviews(id), actor TEXT NOT NULL,
+    dispositions_json TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspaces (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id), path TEXT NOT NULL UNIQUE,
+    repository TEXT NOT NULL, base_revision TEXT NOT NULL, branch TEXT NOT NULL
+);
+"""
+
+
+def execute_schema(conn, source):
+    # executescript commits implicitly; execute each DDL statement in our transaction.
+    for statement in source.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
 def ensure_schema(conn):
-    """Apply additive schema upgrades to an existing workspace."""
-    conn.executescript(SCHEMA)
-    conn.execute(
-        """INSERT INTO meta(key, value) VALUES('schema_version', ?)
-           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-        (SCHEMA_VERSION,),
-    )
-    conn.execute(
-        """INSERT INTO meta(key, value) VALUES('swarmctl_version', ?)
-           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-        (VERSION,),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES('mission_mode', 'FINITE')"
-    )
-    conn.commit()
+    """Upgrade a known schema under one write transaction; never downgrade."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if not row or not row[0].isdigit() or not 1 <= int(row[0]) <= int(SCHEMA_VERSION):
+            raise SwarmError("Unsupported schema version; restore with a compatible release")
+        for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
+            # Versions 2–6 introduced additive tables only. Replay their compatible
+            # table definitions before the version 7 runtime migration.
+            execute_schema(conn, SCHEMA if target <= 6 else RUNTIME_SCHEMA)
+            conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(target),))
+        conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('mission_mode','FINITE')")
+        conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('swarmctl_version',?)", (VERSION,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def initialize(root, objective, success, constraints, mode="FINITE"):
@@ -524,6 +618,7 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
     conn = connect(root, require=False)
     try:
         conn.executescript(SCHEMA)
+        execute_schema(conn, RUNTIME_SCHEMA)
         now = utcnow()
         mission_id = make_id("M")
         conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
@@ -695,14 +790,28 @@ def verify_dependencies_exist(conn, task_ids):
         task_row(conn, dep)
 
 
+@atomic_write
 def add_task(conn, title, description, kind, acceptance, depends_on, priority, actor, ready,
-             workstream_id=None):
+             workstream_id=None, idempotency_key=None):
     if kind not in VALID_TASK_KINDS:
         raise SwarmError("Invalid task kind: %s" % kind)
+    specification = json_dump([title, description, kind, acceptance, depends_on, priority, ready, workstream_id])
+    if idempotency_key:
+        existing = conn.execute('SELECT * FROM plan_keys WHERE key=?', (idempotency_key,)).fetchone()
+        if existing:
+            if existing['specification'] != specification:
+                conn.rollback()
+                raise SwarmError('Planning key reused with different task specification')
+            conn.commit()
+            return existing['task_id']
+    limits = runtime_state(conn)['limits']
+    if limits.get('max_tasks') and conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] >= limits['max_tasks']:
+        conn.rollback()
+        raise SwarmError('Task quota exhausted')
     verify_dependencies_exist(conn, depends_on)
     m = mission(conn)
-    if m["status"] == "DONE":
-        raise SwarmError("Cannot add a task to a completed mission")
+    if m["status"] == "DONE" or runtime_state(conn)["desired_state"] in {"CANCELLED", "ABANDONED"}:
+        raise SwarmError("Cannot add a task to a terminal mission")
     if workstream_id:
         workstream = workstream_row(conn, workstream_id)
         if workstream["mission_id"] != m["id"]:
@@ -726,6 +835,8 @@ def add_task(conn, title, description, kind, acceptance, depends_on, priority, a
         "depends_on": depends_on, "authorized": bool(ready), "priority": priority,
         "workstream_id": workstream_id,
     })
+    if idempotency_key:
+        conn.execute('INSERT INTO plan_keys VALUES(?,?,?)', (idempotency_key, specification, task_id))
     conn.commit()
     reconcile_conn(conn, actor="system")
     return task_id
@@ -950,6 +1061,7 @@ def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
     stage_tasks = {}
     try:
         conn.execute("BEGIN IMMEDIATE")
+        require_task_capacity(conn, len(rendered))
         conn.execute(
             """INSERT INTO policy_applications(id, mission_id, policy_id, policy_version,
                manifest_json, guidance_text, variables_json, workstream_id, created_by, created_at)
@@ -1333,9 +1445,11 @@ def enqueue_delivery(root, conn, extension_id, channel, subject, recipients, con
 
 
 def claim_delivery(conn, delivery_id, agent, lease_seconds=600):
+    future_time(lease_seconds)
     reconcile_deliveries(conn)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        require_active_mission(conn)
         row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
         if not row:
             raise SwarmError("Unknown delivery: %s" % delivery_id)
@@ -1768,7 +1882,12 @@ def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
     due_before = (now_dt - dt.timedelta(seconds=debounce_seconds)).isoformat().replace("+00:00", "Z")
     try:
         conn.execute("BEGIN IMMEDIATE")
+        require_active_mission(conn)
+        future_time(lease_seconds)
         reconcile_manager_reviews(conn)
+        if conn.execute("SELECT 1 FROM manager_reviews WHERE status='RUNNING'").fetchone() or conn.execute("SELECT 1 FROM agent_runs WHERE role='manager' AND ended_at IS NULL").fetchone():
+            conn.commit()
+            return None
         row = conn.execute(
             """SELECT * FROM manager_reviews WHERE status='PENDING'
                AND (urgency='URGENT' OR requested_at<=?)
@@ -1786,6 +1905,7 @@ def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
         )
         if changed.rowcount != 1:
             raise SwarmError("Manager review was claimed concurrently")
+        conn.execute("DELETE FROM review_commits WHERE review_id=?", (row["id"],))
         add_event(conn, row["mission_id"], "manager_review", row["id"],
                   "MANAGER_REVIEW_STARTED", agent, {"lease_until": lease})
         conn.commit()
@@ -1797,6 +1917,7 @@ def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
         raise
 
 
+@atomic_write
 def finish_manager_review(conn, review_id, agent, succeeded):
     row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
     if not row:
@@ -1804,6 +1925,10 @@ def finish_manager_review(conn, review_id, agent, succeeded):
     if row["status"] != "RUNNING" or row["owner"] != agent:
         raise SwarmError("Manager review %s is not owned by %s" % (review_id, agent))
     now = utcnow()
+    if row["lease_until"] and row["lease_until"] <= now:
+        succeeded = False
+    if runtime_state(conn)['strict_evidence'] and not conn.execute('SELECT 1 FROM review_commits WHERE review_id=?', (review_id,)).fetchone():
+        succeeded = False
     status = "DONE" if succeeded else "PENDING"
     conn.execute(
         """UPDATE manager_reviews SET status=?, owner=NULL, lease_until=NULL,
@@ -1854,6 +1979,7 @@ def finding_dict(conn, row):
     return data
 
 
+@atomic_write
 def raise_finding(conn, task_id, agent, significance, summary, evidence,
                   mission_impact, recommendation=None):
     task = task_row(conn, task_id)
@@ -1955,6 +2081,7 @@ def external_wait_dict(conn, row, at=None):
     return data
 
 
+@atomic_write
 def start_external_wait(conn, task_id, agent, condition, external_ref, deadline_at,
                         next_check_at=None, signal_expected=False):
     task = task_row(conn, task_id)
@@ -1997,6 +2124,7 @@ def start_external_wait(conn, task_id, agent, condition, external_ref, deadline_
         "next_check_at": next_check, "deadline_at": deadline,
         "signal_expected": bool(signal_expected), "generation": task["generation"],
     })
+    end_attempt(conn, task_id, "WAITING_EXTERNAL", condition)
     request_manager_review(conn, "task released capacity for external wait", "external_wait", wait_id)
     conn.commit()
     return external_wait_dict(conn, external_wait_row(conn, wait_id))
@@ -2123,6 +2251,9 @@ def reconcile_conn(conn, actor="reconciler", at=None):
         )
         if updated.rowcount != 1:
             continue
+        end_attempt(conn, row['id'], 'EXPIRED', 'Lease expired')
+        conn.execute("UPDATE effects SET state='UNKNOWN',updated_at=? WHERE task_id=? AND generation=? AND state='EXECUTING'",
+                     (now, row['id'], row['generation']))
         add_event(conn, row["mission_id"], "task", row["id"], "TASK_LEASE_EXPIRED", actor, {
             "previous_owner": row["owner"], "generation": row["generation"]
         })
@@ -2174,7 +2305,17 @@ def claim_task(conn, task_id, agent, lease_seconds):
     reconcile_conn(conn)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        state = require_active_mission(conn)
+        if lease_seconds <= 0:
+            raise SwarmError('Lease duration must be positive')
         row = task_row(conn, task_id)
+        reason = budget_reason(conn, task_id)
+        if reason:
+            raise SwarmError(reason)
+        if uncertain_effects(conn, task_id):
+            raise SwarmError('Reconcile uncertain effects before reclaiming task')
+        if conn.execute('SELECT 1 FROM attempts WHERE task_id=? AND agent=?', (task_id, agent)).fetchone():
+            raise SwarmError('Use a fresh agent identity for each attempt')
         if row["status"] != "READY":
             raise SwarmError("Task %s is %s, not READY" % (task_id, row["status"]))
         unfinished_run = conn.execute(
@@ -2223,6 +2364,8 @@ def claim_task(conn, task_id, agent, lease_seconds):
         add_event(conn, row["mission_id"], "task", task_id, "TASK_CLAIMED", agent, {
             "generation": generation, "lease_until": lease
         })
+        conn.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,NULL,NULL)',
+                     (make_id('ATT'), task_id, generation, agent, 'RUNNING', state['revision'], utcnow()))
         conn.commit()
         return generation
     except Exception:
@@ -2239,6 +2382,7 @@ def require_owner(row, agent):
         raise SwarmError("Lease expired for task %s; reclaim it before writing" % row["id"])
 
 
+@atomic_write
 def checkpoint_task(conn, task_id, agent, summary, next_action, lease_seconds):
     row = task_row(conn, task_id)
     require_owner(row, agent)
@@ -2426,7 +2570,7 @@ def open_case(root, conn, source, external_id, title, objective, priority, actor
         "ready": bool(ready),
     }).encode("utf-8")).hexdigest()
     current_mission = mission(conn)
-    if current_mission["status"] == "DONE":
+    if current_mission["status"] == "DONE" or runtime_state(conn)["desired_state"] in {"CANCELLED","ABANDONED"}:
         raise SwarmError("Cannot open a case in a completed mission")
     existing = conn.execute(
         "SELECT * FROM cases WHERE mission_id=? AND source=? AND external_id=?",
@@ -2548,6 +2692,7 @@ def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, read
     return case_dict(conn, case_row(conn, case_id))
 
 
+@atomic_write
 def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
     case = case_row(conn, case_id)
     signal = conn.execute("SELECT * FROM case_signals WHERE id=?", (signal_id,)).fetchone()
@@ -2561,6 +2706,7 @@ def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
     if existing:
         return existing["id"]
     now = utcnow()
+    require_task_capacity(conn)
     task_id = make_id("T")
     conn.execute(
         """UPDATE workstreams SET status='ACTIVE', updated_at=? WHERE id=?""",
@@ -2689,6 +2835,7 @@ def add_case_signal(root, conn, case_id, source, external_id, kind, author, body
     return result
 
 
+@atomic_write
 def cancel_case(conn, case_id, actor, reason):
     case = case_row(conn, case_id)
     if not reason.strip():
@@ -2702,6 +2849,7 @@ def cancel_case(conn, case_id, actor, reason):
         (case_id,),
     ).fetchall()
     for task in linked_tasks:
+        end_attempt(conn, task["id"], "CANCELLED", reason)
         task_waits = conn.execute(
             "SELECT * FROM external_waits WHERE task_id=? AND status='WAITING'", (task["id"],)
         ).fetchall()
@@ -2816,11 +2964,21 @@ def register_artifact(conn, task_id, value, kind="work-product", note=None, acto
     return artifact_id
 
 
+@atomic_write
 def complete_task(conn, task_id, agent, result, verification, artifacts):
     row = task_row(conn, task_id)
     require_owner(row, agent)
     if unresolved_ack_count(conn, task_id):
         raise SwarmError("Resolved decisions affecting %s must be acknowledged before completion" % task_id)
+    if uncertain_effects(conn, task_id):
+        raise SwarmError('Cannot complete with uncertain external effects')
+    attempt = attempt_for_task(conn, task_id)
+    if attempt and attempt['mission_revision'] != runtime_state(conn)['revision']:
+        raise SwarmError('Attempt belongs to an obsolete mission revision')
+    if runtime_state(conn)['strict_evidence'] or conn.execute('SELECT 1 FROM task_contracts WHERE task_id=?', (task_id,)).fetchone():
+        gaps = evidence_gaps(conn, task_id)
+        if gaps:
+            raise SwarmError('Missing current evidence: ' + '; '.join(gaps))
     if not verification:
         raise SwarmError("At least one verification statement is required")
     policy = policy_context_for_task(conn, task_id)
@@ -2857,11 +3015,13 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
         "result": result, "verification": verification, "artifacts": artifact_ids,
         "generation": row["generation"],
     })
+    end_attempt(conn, task_id, "SUCCEEDED")
     request_manager_review(conn, "task completed", "task", task_id)
     conn.commit()
     reconcile_conn(conn)
 
 
+@atomic_write
 def cancel_task(conn, task_id, actor, reason):
     row = task_row(conn, task_id)
     if row["status"] in TERMINAL_TASK_STATES:
@@ -2880,10 +3040,23 @@ def cancel_task(conn, task_id, actor, reason):
         )
         add_event(conn, row["mission_id"], "external_wait", wait["id"],
                   "EXTERNAL_WAIT_CANCELLED", actor, {"task_id": task_id, "reason": reason})
+    end_attempt(conn, task_id, "CANCELLED", reason)
     add_event(conn, row["mission_id"], "task", task_id, "TASK_CANCELLED", actor, {"reason": reason})
+    descendants = conn.execute("""WITH RECURSIVE children(id) AS (
+        SELECT task_id FROM task_dependencies WHERE depends_on=?
+        UNION SELECT d.task_id FROM task_dependencies d JOIN children c ON d.depends_on=c.id)
+        SELECT t.* FROM tasks t JOIN children c ON t.id=c.id WHERE t.status NOT IN ('DONE','CANCELLED')""", (task_id,)).fetchall()
+    for child in descendants:
+        end_attempt(conn, child['id'], 'CANCELLED', 'Dependency cancelled: ' + task_id)
+        conn.execute("UPDATE tasks SET status='CANCELLED',owner=NULL,lease_until=NULL,result=?,updated_at=? WHERE id=?",
+                     ('Dependency cancelled: ' + task_id, utcnow(), child['id']))
+        conn.execute("UPDATE external_waits SET status='CANCELLED',updated_at=? WHERE task_id=? AND status='WAITING'", (utcnow(), child['id']))
+        add_event(conn, child['mission_id'], 'task', child['id'], 'TASK_DEPENDENCY_CANCELLED', actor,
+                  {'dependency': task_id, 'reason': reason})
     conn.commit()
 
 
+@atomic_write
 def block_task(conn, task_id, agent, kind, question, recommendation, options):
     if kind not in VALID_BLOCKER_KINDS:
         raise SwarmError("Invalid blocker kind: %s" % kind)
@@ -2905,6 +3078,7 @@ def block_task(conn, task_id, agent, kind, question, recommendation, options):
         "kind": kind, "question": question, "recommendation": recommendation,
         "options": options, "blocks": [task_id],
     })
+    end_attempt(conn, task_id, "WAITING_HUMAN", question)
     conn.commit()
     return decision_id
 
@@ -3043,6 +3217,7 @@ def link_decision(conn, decision_id, task_id, actor):
     return True
 
 
+@atomic_write
 def acknowledge_decision(conn, decision_id, task_id, agent):
     drow = decision_row(conn, decision_id)
     trow = task_row(conn, task_id)
@@ -3108,8 +3283,13 @@ def set_mission_phase(conn, phase, actor):
     conn.commit()
 
 
+@atomic_write
 def complete_mission(conn, evidence, actor, shutdown_service=False):
     m = mission(conn)
+    if runtime_state(conn)['desired_state'] not in {'ACTIVE','DRAINING'}:
+        raise SwarmError('Mission must be active or draining to complete')
+    if uncertain_effects(conn):
+        raise SwarmError('Reconcile uncertain effects before mission completion')
     if mission_mode(conn) == "SERVICE" and not shutdown_service:
         raise SwarmError(
             "SERVICE missions stay active when idle; pass --shutdown-service to terminate deliberately"
@@ -3139,6 +3319,7 @@ def complete_mission(conn, evidence, actor, shutdown_service=False):
         "UPDATE missions SET status='DONE', completion_evidence=?, updated_at=? WHERE id=?",
         (evidence, utcnow(), m["id"]),
     )
+    conn.execute("UPDATE runtime_state SET outcome='SUCCEEDED' WHERE id=1")
     add_event(conn, m["id"], "mission", m["id"], "MISSION_COMPLETED", actor, {"evidence": evidence})
     conn.commit()
 
@@ -3273,6 +3454,7 @@ def mission_snapshot(conn):
         "cases": cases, "findings": findings, "external_waits": external_waits,
         "manager_reviews": manager_reviews,
         "extensions": extensions, "deliveries": deliveries,
+        "runtime": runtime_state(conn),
     }
 
 
@@ -3541,7 +3723,8 @@ def inbox(conn, agent, after=None, advance=False, task_id=None):
             )]
         entity_ids = (
             task_ids + decision_ids + artifact_ids + fact_ids + run_ids + case_ids + signal_ids +
-            finding_ids + wait_ids + wait_signal_ids
+            finding_ids + wait_ids + wait_signal_ids + [r['id'] for r in conn.execute(
+                'SELECT id FROM effects WHERE task_id IN (%s)' % placeholders, task_ids)]
         )
         entity_placeholders = ",".join("?" for _ in entity_ids)
         m = mission(conn)
@@ -3582,7 +3765,9 @@ def role_for_task(task):
 def build_prompt(root, role, agent, task_id=None):
     conn = connect(root)
     try:
+        conn.execute("BEGIN")
         snapshot = mission_snapshot(conn)
+        watermark = conn.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0]
         active_case_details = [case_dict(conn, row) for row in conn.execute(
             "SELECT * FROM cases WHERE status NOT IN ('DONE','CANCELLED') ORDER BY priority DESC, created_at"
         )] if role == "manager" else []
@@ -3608,6 +3793,7 @@ def build_prompt(root, role, agent, task_id=None):
     if task_id:
         guide_text = guide_text.replace("<task_id>", task_id)
     context = {
+        "event_watermark": watermark,
         "agent_id": agent,
         "role": role,
         "command_prefix": command_prefix,
@@ -3658,6 +3844,22 @@ def build_prompt(root, role, agent, task_id=None):
             [delivery for delivery in snapshot["deliveries"] if delivery["status"] not in {"SENT", "CANCELLED"}] +
             [delivery for delivery in snapshot["deliveries"] if delivery["status"] in {"SENT", "CANCELLED"}][-10:]
         )]
+    def bounded(value, depth=0):
+        if isinstance(value, str) and len(value) > 4000:
+            return value[:4000] + '\n[truncated; fetch full entity with CLI]'
+        if isinstance(value, list):
+            result = [bounded(item, depth+1) for item in value[:20]]
+            if len(value) > 20:
+                result.append({'omitted_items': len(value)-20, 'retrieve': 'Use the CLI list/show commands'})
+            return result
+        if isinstance(value, dict):
+            return {key: bounded(item, depth+1) for key, item in value.items()}
+        return value
+    context = bounded(context)
+    if len(json_dump(context).encode('utf-8')) > 64000:
+        context = {'event_watermark': watermark, 'agent_id': agent, 'role': role,
+                   'task_id': task_id, 'command_prefix': command_prefix,
+                   'retrieve': 'Context exceeded 64KB. Fetch status, task show, and inbox --lease before acting.'}
     return "\n".join([
         guide_text.rstrip(),
         "",
@@ -3674,9 +3876,10 @@ def build_prompt(root, role, agent, task_id=None):
 
 def write_prompt(root, role, agent, task_id=None):
     prompt = build_prompt(root, role, agent, task_id)
-    name = "%s-%s-%s.md" % (utcnow().replace(":", "").replace("-", ""), role, agent)
+    name = "%s-%s.md" % (make_id("P"), role)
     path = root / "prompts" / name
-    path.write_text(prompt, encoding="utf-8")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(prompt)
     return path
 
 
@@ -3879,6 +4082,8 @@ def runner_config(root):
         not all(isinstance(part, str) and part for part in config["command"])
     ):
         raise SwarmError("Configure the non-empty argv array in %s" % path)
+    if not isinstance(config.get("escalation_models", {}), dict):
+        raise SwarmError("Runner escalation_models must be an object")
     if not isinstance(config.get("models", {}), dict):
         raise SwarmError("Runner models must be an object in %s" % path)
     if config.get("working_directory") is not None and not isinstance(config["working_directory"], str):
@@ -3899,71 +4104,100 @@ def runner_config(root):
 def dispatch(root, role, agent, task_id=None, dry_run=False):
     config = runner_config(root)
     prompt_path = write_prompt(root, role, agent, task_id)
-    model = config.get("models", {}).get(role, "")
-    workdir = Path(config.get("working_directory") or root.parent).expanduser().resolve()
-    values = {
-        "prompt_file": str(prompt_path), "role": role, "task_id": task_id or "",
-        "agent_id": agent, "root": str(root), "workdir": str(workdir), "model": model,
-    }
-    command = [str(part).format(**values) for part in config["command"]]
-    if dry_run:
-        return {"command": command, "prompt_path": str(prompt_path)}
-    run_id = make_id("R")
-    run_dir = root / "runs" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    model = config.get('models', {}).get(role, '')
+    workdir = Path(config.get('working_directory') or root.parent).expanduser().resolve()
     conn = connect(root)
     try:
-        m = mission(conn)
-        conn.execute(
-            """INSERT INTO agent_runs(id, mission_id, role, task_id, agent_id, prompt_path,
-               command_json, started_at) VALUES(?,?,?,?,?,?,?,?)""",
-            (run_id, m["id"], role, task_id, agent, str(prompt_path), json_dump(command), utcnow()),
-        )
-        add_event(conn, m["id"], "agent_run", run_id, "AGENT_RUN_STARTED", "dispatcher", {
-            "role": role, "agent_id": agent, "task_id": task_id,
-        })
-        conn.commit()
-    finally:
-        conn.close()
-    timeout = int(config.get("timeout_seconds", 3600))
-    try:
-        completed = subprocess.run(command, cwd=str(workdir), text=True, capture_output=True, timeout=timeout)
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as exc:
-        exit_code = 124
-        stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + "\nRunner timed out after %d seconds." % timeout
-    stdout_path = run_dir / "stdout.txt"
-    stderr_path = run_dir / "stderr.txt"
-    stdout_path.write_text(stdout, encoding="utf-8")
-    stderr_path.write_text(stderr, encoding="utf-8")
-    conn = connect(root)
-    try:
-        m = mission(conn)
-        conn.execute(
-            """UPDATE agent_runs SET ended_at=?, exit_code=?, stdout_path=?, stderr_path=? WHERE id=?""",
-            (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
-        )
-        add_event(conn, m["id"], "agent_run", run_id, "AGENT_RUN_FINISHED", "dispatcher", {
-            "exit_code": exit_code, "role": role, "task_id": task_id,
-        })
         if task_id:
-            current = task_row(conn, task_id)
-            if current["owner"] == agent and current["status"] in ACTIVE_TASK_STATES:
-                conn.execute(
-                    "UPDATE tasks SET status='READY', owner=NULL, lease_until=NULL, updated_at=? WHERE id=?",
-                    (utcnow(), task_id),
-                )
-                add_event(conn, m["id"], "task", task_id, "TASK_RUN_ENDED_INCOMPLETE", "dispatcher", {
-                    "agent_id": agent, "exit_code": exit_code,
-                    "last_checkpoint_at": current["last_checkpoint_at"],
-                })
-        conn.commit()
+            workspace = conn.execute('SELECT path FROM workspaces WHERE task_id=?', (task_id,)).fetchone()
+            if workspace:
+                workdir = Path(workspace['path'])
+            attempt = attempt_for_task(conn, task_id)
+            if attempt and attempt['generation'] > 1:
+                model = config.get('escalation_models', {}).get(role, model)
     finally:
         conn.close()
-    return {"run_id": run_id, "exit_code": exit_code, "stdout": str(stdout_path), "stderr": str(stderr_path)}
+    values = {'prompt_file': str(prompt_path), 'role': role, 'task_id': task_id or '',
+              'agent_id': agent, 'root': str(root), 'workdir': str(workdir), 'model': model}
+    command = [str(part).format(**values) for part in config['command']]
+    if dry_run:
+        return {'command': command, 'prompt_path': str(prompt_path), 'model': model}
+    run_id = make_id('R')
+    run_dir = root / 'runs' / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with process_lock(run_dir / 'process.lock') as run_lock:
+        conn = connect(root)
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            require_active_mission(conn)
+            if conn.execute('SELECT COUNT(*) FROM agent_runs WHERE ended_at IS NULL').fetchone()[0] >= int(config.get('max_parallel', 3)):
+                raise SwarmError('Harness concurrency limit reached')
+            reason = budget_reason(conn)
+            if reason:
+                raise SwarmError(reason)
+            if task_id:
+                task = task_row(conn, task_id)
+                require_owner(task, agent)
+                generation = task['generation']
+                if conn.execute('SELECT 1 FROM agent_runs WHERE task_id=? AND ended_at IS NULL', (task_id,)).fetchone():
+                    raise SwarmError('Task already has an active harness run')
+            else:
+                generation = None
+            m = mission(conn)
+            conn.execute('''INSERT INTO agent_runs(id,mission_id,role,task_id,agent_id,prompt_path,command_json,started_at)
+                            VALUES(?,?,?,?,?,?,?,?)''',
+                         (run_id, m['id'], role, task_id, agent, str(prompt_path), json_dump(command), utcnow()))
+            add_event(conn, m['id'], 'agent_run', run_id, 'AGENT_RUN_STARTED', 'dispatcher',
+                      {'role': role, 'agent_id': agent, 'task_id': task_id, 'generation': generation,
+                       'model': model, 'prompt_sha256': hash_file(prompt_path)[0], 'workdir': str(workdir)})
+            conn.commit()
+        finally:
+            conn.close()
+        timeout = int(config.get('timeout_seconds', 3600))
+        stdout_path, stderr_path = run_dir / 'stdout.txt', run_dir / 'stderr.txt'
+        exit_code = 126
+        try:
+            with stdout_path.open('w') as stdout, stderr_path.open('w') as stderr:
+                process = subprocess.Popen(command, cwd=str(workdir), stdout=stdout, stderr=stderr,
+                                           start_new_session=True, pass_fds=(run_lock.fileno(),))
+                try:
+                    exit_code = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                    exit_code = 124
+                    stderr.write('\nRunner timed out after %d seconds.\n' % timeout)
+                finally:
+                    # A run owns its process group; do not leave background children
+                    # mutating work after the recorded invocation has finished.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        except OSError as exc:
+            stderr_path.write_text('Harness launch failed: %s\n' % exc, encoding='utf-8')
+            stdout_path.touch(exist_ok=True)
+        finally:
+            conn = connect(root)
+            try:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute('UPDATE agent_runs SET ended_at=?,exit_code=?,stdout_path=?,stderr_path=? WHERE id=?',
+                             (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id))
+                add_event(conn, mission(conn)['id'], 'agent_run', run_id, 'AGENT_RUN_FINISHED', 'dispatcher',
+                          {'exit_code': exit_code, 'role': role, 'task_id': task_id, 'generation': generation, 'model': model})
+                if task_id:
+                    current = task_row(conn, task_id)
+                    if current['owner'] == agent and current['generation'] == generation and current['status'] in ACTIVE_TASK_STATES:
+                        end_attempt(conn, task_id, 'INCOMPLETE', 'Harness exited without completing or waiting')
+                        conn.execute("UPDATE tasks SET status='READY',owner=NULL,lease_until=NULL,updated_at=? WHERE id=?", (utcnow(), task_id))
+                        conn.execute("UPDATE effects SET state='UNKNOWN',updated_at=? WHERE task_id=? AND generation=? AND state='EXECUTING'",
+                                     (utcnow(), task_id, generation))
+                        add_event(conn, mission(conn)['id'], 'task', task_id, 'TASK_RUN_ENDED_INCOMPLETE', 'dispatcher',
+                                  {'agent_id': agent, 'generation': generation, 'exit_code': exit_code})
+                conn.commit()
+            finally:
+                conn.close()
+    return {'run_id': run_id, 'exit_code': exit_code, 'stdout': str(stdout_path), 'stderr': str(stderr_path), 'model': model}
 
 
 def setup_check(root):
@@ -4244,6 +4478,14 @@ def external_wait_summary(conn):
 
 
 def run_loop(root, max_cycles, dry_run=False):
+    with process_lock(root / 'controller.lock'):
+        recovery = recover_runs(root, 'controller')
+        if recovery['live_or_unverified']:
+            return {'state': 'RECOVERY_WAIT', 'cycles': 0, 'runs': [], 'recovery': recovery}
+        return _run_loop(root, max_cycles, dry_run)
+
+
+def _run_loop(root, max_cycles, dry_run=False):
     """Run a bounded, event-responsive scheduling loop.
 
     A cycle is a scheduling turn that launches either one serialized manager
@@ -4262,6 +4504,8 @@ def run_loop(root, max_cycles, dry_run=False):
     try:
         reconcile_conn(conn)
         current_mission = mission(conn)
+        if runtime_state(conn)["desired_state"] != "ACTIVE":
+            return {"state": runtime_state(conn)["desired_state"], "cycles": 0, "runs": []}
         if current_mission["status"] == "DONE":
             return {"state": "DONE", "cycles": 0, "runs": results}
         manager_runs = conn.execute(
@@ -4289,7 +4533,23 @@ def run_loop(root, max_cycles, dry_run=False):
             completed = [future for future in active if future.done()]
             for future in completed:
                 metadata = active.pop(future)
-                result = future.result()
+                try:
+                    result = future.result()
+                except (SwarmError, OSError, ValueError) as exc:
+                    result = {'exit_code': 125, 'error': str(exc)}
+                    conn = connect(root)
+                    try:
+                        conn.execute('BEGIN IMMEDIATE')
+                        if metadata.get('task_id'):
+                            task = task_row(conn, metadata['task_id'])
+                            if task['owner'] == metadata['agent'] and task['status'] in ACTIVE_TASK_STATES:
+                                end_attempt(conn, task['id'], 'INCOMPLETE', str(exc))
+                                conn.execute("UPDATE tasks SET status='READY',owner=NULL,lease_until=NULL WHERE id=?", (task['id'],))
+                        add_event(conn, mission(conn)['id'], 'mission', mission(conn)['id'], 'DISPATCH_FAILED', 'controller',
+                                  {'task_id': metadata.get('task_id'), 'agent': metadata['agent'], 'reason': str(exc)})
+                        conn.commit()
+                    finally:
+                        conn.close()
                 results.append(result)
                 if metadata["kind"] == "manager":
                     conn = connect(root)
@@ -4308,7 +4568,18 @@ def run_loop(root, max_cycles, dry_run=False):
                 if current_mission["status"] == "DONE" and not active:
                     return {"state": "DONE", "cycles": cycles, "runs": results}
 
-                if cycles >= max_cycles:
+                desired = runtime_state(conn)['desired_state']
+                exhausted = budget_reason(conn)
+                if (desired != 'ACTIVE' or exhausted) and not active:
+                    if desired == 'DRAINING':
+                        conn.execute("UPDATE runtime_state SET desired_state='PAUSED' WHERE id=1")
+                        conn.commit()
+                        desired = 'PAUSED'
+                    if exhausted:
+                        conn.execute("UPDATE runtime_state SET outcome='BUDGET_EXHAUSTED',reason=? WHERE id=1", (exhausted,))
+                        conn.commit()
+                    return {'state': 'BUDGET_EXHAUSTED' if exhausted else desired, 'reason': exhausted, 'cycles': cycles, 'runs': results}
+                if cycles >= max_cycles or desired != 'ACTIVE' or exhausted:
                     if not active:
                         return {"state": "MAX_CYCLES", "cycles": cycles, "runs": results}
                     should_launch = False
@@ -4343,16 +4614,16 @@ def run_loop(root, max_cycles, dry_run=False):
                     slots = max_parallel - len(active)
                     ready = conn.execute(
                         """SELECT * FROM tasks WHERE status='READY'
-                           ORDER BY priority DESC, created_at LIMIT ?""", (slots,),
+                           ORDER BY priority DESC, created_at""",
                     ).fetchall()
                     assignments = []
                     for row in ready:
+                        if len(assignments) >= slots:
+                            break
                         agent = "worker-%s" % make_id("A")
                         try:
                             claim_task(conn, row["id"], agent, lease_seconds)
-                        except SwarmError as exc:
-                            if "active harness run" not in str(exc) and "claimed concurrently" not in str(exc):
-                                raise
+                        except SwarmError:
                             continue
                         assignments.append((role_for_task(row), agent, row["id"]))
                     if assignments:
@@ -4395,6 +4666,17 @@ def run_loop(root, max_cycles, dry_run=False):
                     "state": "WAITING_EXTERNAL", "cycles": cycles,
                     "runs": results, "external_waits": waiting,
                 }
+            conn = connect(root)
+            try:
+                exhausted_tasks = [r['id'] for r in conn.execute("SELECT id FROM tasks WHERE status='READY'") if budget_reason(conn, r['id'])]
+                if exhausted_tasks:
+                    if runtime_state(conn)['outcome'] != 'ESCALATED':
+                        conn.execute("UPDATE runtime_state SET outcome='ESCALATED',reason=? WHERE id=1", ('Task retry budget exhausted',))
+                        add_event(conn, mission(conn)['id'], 'mission', mission(conn)['id'], 'SUPERVISOR_ESCALATED', 'supervisor', {'tasks': exhausted_tasks})
+                        conn.commit()
+                    return {'state': 'ESCALATED', 'tasks': exhausted_tasks, 'cycles': cycles, 'runs': results}
+            finally:
+                conn.close()
             return {"state": "NO_READY_WORK", "cycles": cycles, "runs": results}
     finally:
         pool.shutdown(wait=True)
@@ -4728,7 +5010,7 @@ def audit_summary(conn):
     }
 
 
-def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
+def _export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
     render_board(root)
     conn = connect(root)
     try:
@@ -4810,7 +5092,11 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
                 if path.is_file() and path.stat().st_size <= limit:
                     target = artifact_dir / (artifact["id"] + "-" + path.name)
                     shutil.copy2(path, target)
-                    copied.append({"id": artifact["id"], "archive_path": str(target.relative_to(stage))})
+                    if hash_file(target)[0] != artifact['sha256']:
+                        target.unlink()
+                        skipped.append({'id': artifact['id'], 'reason': 'content changed since registration'})
+                    else:
+                        copied.append({"id": artifact["id"], "archive_path": str(target.relative_to(stage))})
                 else:
                     skipped.append({"id": artifact["id"], "path": str(path), "reason": "missing, non-file, or over size limit"})
         (stage / "artifact-export.json").write_text(json.dumps({"copied": copied, "skipped": skipped}, indent=2) + "\n", encoding="utf-8")
@@ -4832,11 +5118,702 @@ def print_json(value):
     print(json.dumps(value, indent=2, ensure_ascii=False))
 
 
+
+def runtime_state(conn):
+    data = dict(conn.execute('SELECT * FROM runtime_state WHERE id=1').fetchone())
+    data['limits'] = json_load(data.pop('limits_json'), {})
+    return data
+
+
+def future_time(seconds):
+    if seconds <= 0:
+        raise SwarmError('Lease duration must be positive')
+    return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=seconds)).isoformat().replace('+00:00', 'Z')
+
+
+def require_active_mission(conn):
+    state = runtime_state(conn)
+    if state['desired_state'] != 'ACTIVE' or mission(conn)['status'] != 'ACTIVE':
+        raise SwarmError('Mission is not accepting new work: %s' % state['desired_state'])
+    return state
+
+
+def attempt_for_task(conn, task_id):
+    row = task_row(conn, task_id)
+    return conn.execute('SELECT * FROM attempts WHERE task_id=? AND generation=?',
+                        (task_id, row['generation'])).fetchone()
+
+
+def end_attempt(conn, task_id, state, reason=None):
+    row = task_row(conn, task_id)
+    if state in {'CANCELLED', 'INTERRUPTED', 'EXPIRED', 'INCOMPLETE'}:
+        conn.execute("UPDATE effects SET state='UNKNOWN',updated_at=? WHERE task_id=? AND generation=? AND state='EXECUTING'", (utcnow(), task_id, row['generation']))
+    conn.execute("UPDATE attempts SET state=?, ended_at=?, reason=? WHERE task_id=? AND generation=? AND ended_at IS NULL",
+                 (state, utcnow(), reason, task_id, row['generation']))
+    # Resource leases are deliberately retained until released or expired: a
+    # terminal task can still have a live harness or an uncertain external action.
+
+
+def uncertain_effects(conn, task_id=None):
+    sql = "SELECT * FROM effects WHERE state IN ('EXECUTING','UNKNOWN')"
+    return conn.execute(sql + (' AND task_id=?' if task_id else ''), (task_id,) if task_id else ()).fetchall()
+
+
+@atomic_write
+def control_mission(conn, action, actor, reason):
+    state = runtime_state(conn)
+    transitions = {'pause': 'PAUSED', 'drain': 'DRAINING', 'resume': 'ACTIVE',
+                   'cancel': 'CANCELLED', 'abandon': 'ABANDONED'}
+    if action not in transitions:
+        raise SwarmError('Unknown lifecycle action')
+    if not reason.strip():
+        raise SwarmError('Lifecycle changes require a reason')
+    if state['desired_state'] in {'CANCELLED', 'ABANDONED'} or mission(conn)['status'] == 'DONE':
+        raise SwarmError('Terminal missions cannot resume; create a new mission')
+    if action == 'resume' and uncertain_effects(conn):
+        raise SwarmError('Reconcile uncertain effects before resuming')
+    if action == 'resume' and conn.execute('SELECT 1 FROM agent_runs WHERE ended_at IS NULL').fetchone():
+        raise SwarmError('Wait for active harnesses or run recover before resuming')
+    desired = transitions[action]
+    if action == 'drain' and not conn.execute("SELECT 1 FROM tasks WHERE status IN ('CLAIMED','RUNNING','VERIFYING')").fetchone() and not conn.execute('SELECT 1 FROM agent_runs WHERE ended_at IS NULL').fetchone():
+        desired = 'PAUSED'
+    if action in {'pause', 'cancel', 'abandon'}:
+        for task in conn.execute("SELECT * FROM tasks WHERE status NOT IN ('DONE','CANCELLED')").fetchall():
+            if action != 'pause' or task['status'] in ACTIVE_TASK_STATES:
+                end_attempt(conn, task['id'], 'CANCELLED' if action != 'pause' else 'INTERRUPTED', reason)
+                status = 'CANCELLED' if action != 'pause' else 'READY'
+                conn.execute('UPDATE tasks SET status=?,owner=NULL,lease_until=NULL,updated_at=? WHERE id=?',
+                             (status, utcnow(), task['id']))
+        conn.execute("UPDATE effects SET state='UNKNOWN',updated_at=? WHERE state='EXECUTING'", (utcnow(),))
+    if action in {'cancel', 'abandon'}:
+        conn.execute("UPDATE external_waits SET status='CANCELLED',updated_at=? WHERE status='WAITING'", (utcnow(),))
+        conn.execute("UPDATE deliveries SET status='CANCELLED',updated_at=? WHERE status='PENDING'", (utcnow(),))
+        conn.execute("UPDATE cases SET status='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')", (utcnow(),))
+        conn.execute("UPDATE workstreams SET status='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')", (utcnow(),))
+    outcome = 'CANCELLED' if action == 'cancel' else ('ESCALATED' if action == 'abandon' else None)
+    conn.execute('UPDATE runtime_state SET desired_state=?,outcome=?,reason=? WHERE id=1', (desired, outcome, reason))
+    add_event(conn, mission(conn)['id'], 'mission', mission(conn)['id'], 'MISSION_CONTROLLED', actor,
+              {'action': action, 'desired_state': desired, 'reason': reason,
+               'cleanup': 'Harnesses may still be running; inspect recover and uncertain effects.'})
+    return runtime_state(conn)
+
+
+@contextlib.contextmanager
+def process_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a+') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SwarmError('Another process owns %s' % path.name)
+        try:
+            yield handle
+        finally:
+            # Closing, without LOCK_UN, lets an inherited child descriptor retain
+            # the lock after a controller crash until the actual process exits.
+            pass
+
+
+def recover_runs(root, actor='operator'):
+    recovered, live = [], []
+    conn = connect(root)
+    try:
+        for row in conn.execute('SELECT * FROM agent_runs WHERE ended_at IS NULL').fetchall():
+            lockpath = root / 'runs' / row['id'] / 'process.lock'
+            if not lockpath.exists():
+                live.append({'run_id': row['id'], 'reason': 'legacy run; use recover --abandon-run only after confirming its process stopped'})
+                continue
+            try:
+                with process_lock(lockpath):
+                    abandon_run(conn, row['id'], actor, 'Process lock released; harness no longer owns the run')
+                    recovered.append(row['id'])
+            except SwarmError:
+                live.append({'run_id': row['id'], 'reason': 'process lock held'})
+        reconcile_conn(conn)
+        return {'recovered': recovered, 'live_or_unverified': live,
+                'uncertain_effects': [dict(x) for x in uncertain_effects(conn)]}
+    finally:
+        conn.close()
+
+
+@atomic_write
+def abandon_run(conn, run_id, actor, reason):
+    row = conn.execute('SELECT * FROM agent_runs WHERE id=?', (run_id,)).fetchone()
+    if not row or row['ended_at']:
+        raise SwarmError('Run is unknown or already ended')
+    conn.execute('UPDATE agent_runs SET ended_at=?,exit_code=125 WHERE id=?', (utcnow(), run_id))
+    if row['role'] == 'manager':
+        for review in conn.execute("SELECT id FROM manager_reviews WHERE status='RUNNING' AND owner=?", (row['agent_id'],)).fetchall():
+            conn.execute("UPDATE manager_reviews SET status='PENDING',owner=NULL,lease_until=NULL,started_at=NULL,updated_at=? WHERE id=?", (utcnow(), review['id']))
+            conn.execute('DELETE FROM review_commits WHERE review_id=?', (review['id'],))
+            add_event(conn, row['mission_id'], 'manager_review', review['id'], 'MANAGER_REVIEW_INTERRUPTED', actor, {'run_id': run_id, 'reason': reason})
+    if row['task_id']:
+        task = task_row(conn, row['task_id'])
+        if task['owner'] == row['agent_id'] and task['status'] in ACTIVE_TASK_STATES:
+            end_attempt(conn, task['id'], 'INTERRUPTED', reason)
+            conn.execute("UPDATE tasks SET status='READY',owner=NULL,lease_until=NULL WHERE id=?", (task['id'],))
+        conn.execute("UPDATE effects SET state='UNKNOWN',updated_at=? WHERE task_id=? AND state='EXECUTING'",
+                     (utcnow(), row['task_id']))
+    add_event(conn, row['mission_id'], 'agent_run', run_id, 'AGENT_RUN_RECOVERED', actor,
+              {'reason': reason, 'task_id': row['task_id']})
+
+
+@atomic_write
+def prepare_effect(conn, task_id, agent, key, target, revision, parameters):
+    require_active_mission(conn)
+    task = task_row(conn, task_id)
+    require_owner(task, agent)
+    if unresolved_ack_count(conn, task_id):
+        raise SwarmError('Acknowledge current decisions before preparing effects')
+    if not all(str(x).strip() for x in (key, target, revision)):
+        raise SwarmError('Effects require an idempotency key, target, and exact revision')
+    encoded = json_dump(parameters)
+    existing = conn.execute('SELECT * FROM effects WHERE idempotency_key=?', (key,)).fetchone()
+    if existing:
+        if (existing['task_id'], existing['target'], existing['revision'], existing['parameters_json']) != (task_id, target, revision, encoded):
+            raise SwarmError('Idempotency key reused with different action parameters')
+        if existing['state'] in {'PREPARED', 'NOT_APPLIED'} and existing['generation'] != task['generation']:
+            conn.execute("UPDATE effects SET generation=?,state='PREPARED',updated_at=? WHERE id=?",
+                         (task['generation'], utcnow(), existing['id']))
+            add_event(conn, task['mission_id'], 'effect', existing['id'], 'EFFECT_ADOPTED', agent,
+                      {'task_id': task_id, 'generation': task['generation'], 'previous_state': existing['state']})
+            existing = conn.execute('SELECT * FROM effects WHERE id=?', (existing['id'],)).fetchone()
+        return dict(existing)
+    effect_id = make_id('E')
+    conn.execute('INSERT INTO effects VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                 (effect_id, task_id, task['generation'], key, target, revision, encoded, 'PREPARED', None, utcnow(), utcnow()))
+    add_event(conn, task['mission_id'], 'effect', effect_id, 'EFFECT_PREPARED', agent,
+              {'task_id': task_id, 'generation': task['generation'], 'target': target, 'revision': revision, 'idempotency_key': key})
+    return dict(conn.execute('SELECT * FROM effects WHERE id=?', (effect_id,)).fetchone())
+
+
+@atomic_write
+def transition_effect(conn, effect_id, action, actor, receipt=None):
+    row = conn.execute('SELECT * FROM effects WHERE id=?', (effect_id,)).fetchone()
+    if not row:
+        raise SwarmError('Unknown effect')
+    if action == 'start':
+        require_active_mission(conn)
+        task = task_row(conn, row['task_id'])
+        require_owner(task, actor)
+        if unresolved_ack_count(conn, task['id']):
+            raise SwarmError('Acknowledge current decisions before starting an effect')
+        if task['generation'] != row['generation'] or row['state'] != 'PREPARED':
+            raise SwarmError('Effect is stale or already started; reconcile rather than retry')
+        state = 'EXECUTING'
+    else:
+        if action not in {'succeeded', 'failed', 'unknown', 'not-applied'}:
+            raise SwarmError('Unknown effect transition')
+        if row['state'] not in {'EXECUTING', 'UNKNOWN'}:
+            raise SwarmError('Only executing or uncertain effects can be reconciled')
+        if not receipt or not receipt.strip():
+            raise SwarmError('Reconciliation requires a provider receipt or observation')
+        state = {'succeeded':'SUCCEEDED','failed':'FAILED','unknown':'UNKNOWN','not-applied':'NOT_APPLIED'}[action]
+    conn.execute('UPDATE effects SET state=?,receipt=?,updated_at=? WHERE id=?', (state, receipt, utcnow(), effect_id))
+    add_event(conn, mission(conn)['id'], 'effect', effect_id, 'EFFECT_' + state, actor,
+              {'task_id': row['task_id'], 'generation': row['generation'], 'receipt': receipt})
+    return dict(conn.execute('SELECT * FROM effects WHERE id=?', (effect_id,)).fetchone())
+
+
+@atomic_write
+def lease_inbox(conn, agent, task_id=None, limit=50, lease_seconds=300):
+    if not 1 <= limit <= 500:
+        raise SwarmError('Inbox batch limit must be between 1 and 500')
+    scope = task_id or '*'
+    existing = conn.execute('SELECT * FROM inbox_deliveries WHERE agent=? AND scope=? AND acked_at IS NULL', (agent, scope)).fetchone()
+    if existing and existing['lease_until'] > utcnow():
+        return {'token': existing['token'], 'lease_until': existing['lease_until'], 'events': json_load(existing['payload_json'])}
+    if existing:
+        events = json_load(existing['payload_json'])
+        start = existing['start_seq']
+        conn.execute('DELETE FROM inbox_deliveries WHERE token=?', (existing['token'],))
+    else:
+        offset = conn.execute('SELECT last_seq FROM inbox_offsets WHERE agent=? AND scope=?', (agent, scope)).fetchone()
+        start = offset[0] if offset else 0
+        events = inbox(conn, agent, after=start, task_id=task_id)[:limit]
+    if not events:
+        return {'token': None, 'events': []}
+    token, lease = make_id('I'), future_time(lease_seconds)
+    conn.execute('INSERT INTO inbox_deliveries VALUES(?,?,?,?,?,?,?,NULL)',
+                 (token, agent, scope, start, events[-1]['seq'], json_dump(events), lease))
+    return {'token': token, 'lease_until': lease, 'events': events}
+
+
+@atomic_write
+def ack_inbox(conn, token, agent):
+    row = conn.execute('SELECT * FROM inbox_deliveries WHERE token=? AND agent=?', (token, agent)).fetchone()
+    if not row:
+        raise SwarmError('Unknown inbox token or wrong recipient')
+    if row['acked_at']:
+        return {'acknowledged': True, 'duplicate': True}
+    if row['lease_until'] <= utcnow():
+        raise SwarmError('Inbox lease expired; obtain a new delivery before acknowledging')
+    conn.execute('INSERT INTO inbox_offsets VALUES(?,?,?) ON CONFLICT(agent,scope) DO UPDATE SET last_seq=MAX(last_seq,excluded.last_seq)',
+                 (agent, row['scope'], row['end_seq']))
+    conn.execute('UPDATE inbox_deliveries SET acked_at=? WHERE token=?', (utcnow(), token))
+    return {'acknowledged': True, 'duplicate': False}
+
+
+@atomic_write
+def acquire_resource(conn, resource, task_id, agent, lease_seconds=300):
+    require_active_mission(conn)
+    task = task_row(conn, task_id)
+    require_owner(task, agent)
+    existing = conn.execute('SELECT * FROM resource_leases WHERE resource=?', (resource,)).fetchone()
+    if existing:
+        live_run = conn.execute('SELECT 1 FROM agent_runs WHERE task_id=? AND ended_at IS NULL', (existing['task_id'],)).fetchone()
+        same = existing['task_id'] == task_id and existing['generation'] == task['generation']
+        if not same and (existing['lease_until'] > utcnow() or live_run or uncertain_effects(conn, existing['task_id'])):
+            raise SwarmError('Resource is held by another attempt: %s' % resource)
+    token = existing['token'] if existing and same else make_id('L')
+    lease = min(future_time(lease_seconds), task['lease_until'])
+    conn.execute('INSERT OR REPLACE INTO resource_leases VALUES(?,?,?,?,?)', (resource, task_id, task['generation'], token, lease))
+    add_event(conn, task['mission_id'], 'task', task_id, 'RESOURCE_ACQUIRED', agent,
+              {'resource': resource, 'generation': task['generation'], 'token': token, 'lease_until': lease})
+    return {'token': token, 'lease_until': lease}
+
+
+@atomic_write
+def release_resource(conn, token, agent):
+    row = conn.execute('SELECT * FROM resource_leases WHERE token=?', (token,)).fetchone()
+    if not row:
+        raise SwarmError('Unknown resource token')
+    attempt = conn.execute('SELECT * FROM attempts WHERE task_id=? AND generation=?', (row['task_id'], row['generation'])).fetchone()
+    if not attempt or attempt['agent'] != agent:
+        raise SwarmError('Resource token belongs to another attempt')
+    if uncertain_effects(conn, row['task_id']):
+        raise SwarmError('Reconcile uncertain effects before releasing the resource')
+    conn.execute('DELETE FROM resource_leases WHERE token=?', (token,))
+    add_event(conn, mission(conn)['id'], 'task', row['task_id'], 'RESOURCE_RELEASED', agent, {'resource': row['resource']})
+
+
+@atomic_write
+def set_contract(conn, task_id, revision, environment, actor):
+    task = task_row(conn, task_id)
+    if task['status'] in ACTIVE_TASK_STATES or task['status'] in TERMINAL_TASK_STATES:
+        raise SwarmError('Set the evidence contract before claiming a task')
+    if not revision.strip() or not environment.strip():
+        raise SwarmError('Contract requires exact revision and environment')
+    conn.execute('INSERT OR REPLACE INTO task_contracts VALUES(?,?,?)', (task_id, revision, environment))
+    add_event(conn, task['mission_id'], 'task', task_id, 'TASK_CONTRACT_SET', actor, {'revision': revision, 'environment': environment})
+
+
+@atomic_write
+def record_evidence(conn, task_id, agent, criterion, revision, environment, command, exit_code, path):
+    task = task_row(conn, task_id)
+    require_owner(task, agent)
+    if unresolved_ack_count(conn, task_id):
+        raise SwarmError("Acknowledge current decisions before recording evidence")
+    if criterion not in json_load(task['acceptance_json'], []):
+        raise SwarmError('Evidence criterion must exactly match a task acceptance criterion')
+    if not all(x.strip() for x in (revision, environment, command)):
+        raise SwarmError('Evidence requires revision, environment, and command')
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise SwarmError('Evidence must reference an existing result file')
+    sha, _ = hash_file(path)
+    evidence_id = make_id('V')
+    conn.execute('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                 (evidence_id, task_id, task['generation'], runtime_state(conn)['revision'], criterion,
+                  revision, environment, command, exit_code, str(path), sha, utcnow()))
+    artifact_id = register_artifact(conn, task_id, str(path), kind='verification', note='Evidence ' + evidence_id, actor=agent)
+    add_event(conn, task['mission_id'], 'task', task_id, 'EVIDENCE_RECORDED', agent,
+              {'artifact_id': artifact_id, 'evidence_id': evidence_id, 'generation': task['generation'], 'criterion': criterion, 'sha256': sha, 'exit_code': exit_code})
+    return evidence_id
+
+
+def evidence_gaps(conn, task_id):
+    task = task_row(conn, task_id)
+    contract = conn.execute('SELECT * FROM task_contracts WHERE task_id=?', (task_id,)).fetchone()
+    if not contract:
+        return ['No revision/environment contract']
+    covered = set()
+    for row in conn.execute('SELECT * FROM evidence WHERE task_id=? AND generation=? AND mission_revision=? AND exit_code=0',
+                            (task_id, task['generation'], runtime_state(conn)['revision'])):
+        path = Path(row['path'])
+        if (row['revision'] == contract['revision'] and row['environment'] == contract['environment']
+                and path.is_file() and hash_file(path)[0] == row['sha256']):
+            covered.add(row['criterion'])
+    return sorted(set(json_load(task['acceptance_json'], [])) - covered)
+
+
+@atomic_write
+def configure_runtime(conn, limits, strict_evidence=None, actor='human'):
+    allowed = {'max_attempts_per_task', 'max_tasks', 'max_runs', 'deadline'}
+    if set(limits) - allowed:
+        raise SwarmError('Unknown limit; supported: %s' % ', '.join(sorted(allowed)))
+    for key, value in limits.items():
+        if key == 'deadline':
+            limits[key] = canonical_time(value)
+        elif not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise SwarmError('Limits must be positive integers')
+    state = runtime_state(conn)
+    state['limits'].update(limits)
+    conn.execute('UPDATE runtime_state SET limits_json=?,strict_evidence=? WHERE id=1',
+                 (json_dump(state['limits']), state['strict_evidence'] if strict_evidence is None else int(strict_evidence)))
+    add_event(conn, mission(conn)['id'], 'mission', mission(conn)['id'], 'RUNTIME_CONFIGURED', actor,
+              {'limits': state['limits'], 'strict_evidence': strict_evidence})
+    return runtime_state(conn)
+
+
+def require_task_capacity(conn, count=1):
+    state = runtime_state(conn)
+    if state['desired_state'] in {'CANCELLED','ABANDONED'} or mission(conn)['status'] == 'DONE':
+        raise SwarmError('Cannot create work in a terminal mission')
+    maximum = state['limits'].get('max_tasks')
+    if maximum and conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] + count > maximum:
+        raise SwarmError('Task quota exhausted')
+
+
+def budget_reason(conn, task_id=None):
+    limits = runtime_state(conn)['limits']
+    if limits.get('deadline') and utcnow() >= limits['deadline']:
+        return 'Mission deadline reached'
+    if limits.get('max_runs') and conn.execute('SELECT COUNT(*) FROM agent_runs').fetchone()[0] >= limits['max_runs']:
+        return 'Harness run budget exhausted'
+    if task_id:
+        maximum = limits.get('max_attempts_per_task', 3)
+        count = conn.execute("SELECT COUNT(*) FROM attempts WHERE task_id=? AND state IN ('INCOMPLETE','EXPIRED','INTERRUPTED')", (task_id,)).fetchone()[0]
+        if count >= maximum:
+            return 'Task attempt budget exhausted (%d)' % maximum
+    return None
+
+
+@atomic_write
+def amend_mission(conn, objective, success, constraints, reason, actor):
+    state = runtime_state(conn)
+    if state['desired_state'] != 'PAUSED':
+        raise SwarmError('Pause the mission before amending it')
+    if conn.execute('SELECT 1 FROM agent_runs WHERE ended_at IS NULL').fetchone() or uncertain_effects(conn):
+        raise SwarmError('Drain/recover harnesses and reconcile effects before amendment')
+    if not objective.strip() or not reason.strip():
+        raise SwarmError('Amendment requires objective and rationale')
+    previous = dict(mission(conn))
+    new = {'objective': objective, 'success': success, 'constraints': constraints}
+    revision = state['revision'] + 1
+    conn.execute('INSERT INTO mission_amendments VALUES(?,?,?,?,?,?)', (revision, json_dump(previous), json_dump(new), reason, actor, utcnow()))
+    conn.execute('UPDATE missions SET objective=?,success_json=?,constraints_json=?,updated_at=? WHERE id=?',
+                 (objective, json_dump(success), json_dump(constraints), utcnow(), previous['id']))
+    conn.execute('UPDATE runtime_state SET revision=? WHERE id=1', (revision,))
+    # A revised objective requires the manager to explicitly adopt remaining work.
+    conn.execute("UPDATE tasks SET authorized=0 WHERE status NOT IN ('DONE','CANCELLED')")
+    conn.execute("UPDATE tasks SET status='PROPOSED' WHERE status='READY'")
+    request_manager_review(conn, 'mission amended', 'mission', previous['id'], 'URGENT')
+    add_event(conn, previous['id'], 'mission', previous['id'], 'MISSION_AMENDED', actor, {'revision': revision, 'reason': reason})
+    return {'revision': revision}
+
+
+@atomic_write
+def commit_review(conn, review_id, agent, dispositions, summary):
+    row = conn.execute('SELECT * FROM manager_reviews WHERE id=?', (review_id,)).fetchone()
+    if not row or row['status'] != 'RUNNING' or row['owner'] != agent or row['lease_until'] <= utcnow():
+        raise SwarmError('Review is not currently leased to this agent')
+    triggers = json_load(row['triggers_json'], [])
+    if not summary.strip() or not isinstance(dispositions, list) or len(dispositions) != len(triggers):
+        raise SwarmError('Provide one disposition per trigger, in trigger order, and a summary')
+    for item in dispositions:
+        if not isinstance(item, dict) or item.get('disposition') not in {'acted', 'deferred', 'no-change'} or not item.get('rationale', '').strip():
+            raise SwarmError('Each trigger needs acted/deferred/no-change and a rationale')
+    conn.execute('INSERT OR REPLACE INTO review_commits VALUES(?,?,?,?,?)', (review_id, agent, json_dump(dispositions), summary, utcnow()))
+    add_event(conn, row['mission_id'], 'manager_review', review_id, 'MANAGER_REVIEW_COMMITTED', agent,
+              {'triggers': triggers, 'dispositions': dispositions, 'summary': summary})
+
+
+def explain_state(conn):
+    state = runtime_state(conn)
+    tasks = []
+    for row in conn.execute("SELECT * FROM tasks WHERE status NOT IN ('DONE','CANCELLED') ORDER BY priority DESC, id"):
+        reasons = []
+        if state['desired_state'] != 'ACTIVE':
+            reasons.append('Mission ' + state['desired_state'])
+        if not row['authorized']:
+            reasons.append('Manager authorization required')
+        if not all_dependencies_done(conn, row['id']):
+            reasons.append('Dependencies incomplete')
+        if open_decision_count(conn, row['id']):
+            reasons.append('Human decision pending')
+        if unresolved_ack_count(conn, row['id']):
+            reasons.append('Current decision must be acknowledged')
+        if uncertain_effects(conn, row['id']):
+            reasons.append('External effect requires reconciliation')
+        limit = budget_reason(conn, row['id'])
+        if limit:
+            reasons.append(limit)
+        if row['status'] == 'WAITING_EXTERNAL':
+            reasons.append('Durable external wait; inspect wait list')
+        tasks.append({'task_id': row['id'], 'status': row['status'], 'reasons': reasons,
+                      'next_action': row['next_action'], 'checkpoint': row['checkpoint_summary']})
+    return {'runtime': state, 'tasks': tasks,
+            'uncertain_effects': [dict(r) for r in uncertain_effects(conn)],
+            'unfinished_runs': [dict(r) for r in conn.execute('SELECT * FROM agent_runs WHERE ended_at IS NULL')],
+            'attempts': [dict(r) for r in conn.execute('SELECT * FROM attempts ORDER BY started_at,id')],
+            'event_watermark': conn.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]}
+
+
+def create_workspace(root, conn, task_id, repository, base):
+    task = task_row(conn, task_id)
+    if task['status'] in ACTIVE_TASK_STATES or task['status'] in TERMINAL_TASK_STATES:
+        raise SwarmError('Create workspace before claiming task')
+    repository = Path(repository).expanduser().resolve()
+    with process_lock(root / 'workspaces.lock'):
+        existing = conn.execute('SELECT * FROM workspaces WHERE task_id=?', (task_id,)).fetchone()
+        if existing:
+            return dict(existing)
+        resolved = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', base + '^{commit}'],
+                                  capture_output=True, text=True)
+        if resolved.returncode:
+            raise SwarmError('Cannot resolve workspace base revision: ' + resolved.stderr.strip())
+        revision = resolved.stdout.strip()
+        path = root / 'workspaces' / task_id
+        path.parent.mkdir(parents=True, exist_ok=True)
+        branch = 'codex/swarm-' + task_id.lower()
+        created = subprocess.run(['git', '-C', str(repository), 'worktree', 'add', '-b', branch, str(path), revision],
+                                 capture_output=True, text=True)
+        if created.returncode:
+            raise SwarmError('Cannot create worktree: ' + created.stderr.strip())
+        conn.execute('INSERT INTO workspaces VALUES(?,?,?,?,?)', (task_id, str(path), str(repository), revision, branch))
+        add_event(conn, task['mission_id'], 'task', task_id, 'WORKSPACE_CREATED', 'operator',
+                  {'path': str(path), 'base_revision': revision, 'branch': branch})
+        conn.commit()
+        return dict(conn.execute('SELECT * FROM workspaces WHERE task_id=?', (task_id,)).fetchone())
+
+
+def verify_audit(path):
+    problems = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read('swarm-audit/manifest.json'))
+            expected = {'swarm-audit/manifest.json'}
+            for item in manifest['files']:
+                name = 'swarm-audit/' + item['path']
+                expected.add(name)
+                try:
+                    data = archive.read(name)
+                except KeyError:
+                    problems.append('Missing ' + name)
+                    continue
+                if len(data) != item['size_bytes'] or hashlib.sha256(data).hexdigest() != item['sha256']:
+                    problems.append('Integrity mismatch: ' + name)
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                problems.append('Duplicate archive entries')
+            if set(names) != expected:
+                problems.append('Archive contains unmanifested or missing entries')
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+        problems.append(str(exc))
+    return {'ok': not problems, 'problems': problems}
+
+
+def export_audit(root, output, include_artifacts=False, max_artifact_mb=25, share_safe=False):
+    # Freeze SQLite once. All derived files are computed from this same snapshot.
+    with tempfile.TemporaryDirectory(prefix='swarm-snapshot-') as temp:
+        frozen = Path(temp) / 'workspace'
+        frozen.mkdir()
+        source = connect(root)
+        target = sqlite3.connect(str(frozen / 'state.sqlite3'))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        for name in ('prompts', 'runs', 'outbox', 'intake'):
+            if (root / name).exists():
+                shutil.copytree(root / name, frozen / name, ignore=shutil.ignore_patterns('*.lock'))
+        result = _export_audit(frozen, output, include_artifacts, max_artifact_mb)
+        # Add deterministic attempt-level diagnostics from the same frozen DB.
+        conn = connect(frozen)
+        try:
+            explanation = explain_state(conn)
+        finally:
+            conn.close()
+        with zipfile.ZipFile(result) as archive:
+            contents = {name: archive.read(name) for name in archive.namelist()}
+        manifest = json.loads(contents.pop('swarm-audit/manifest.json'))
+        manifest['source_root'] = str(root)
+        manifest['event_watermark'] = explanation['event_watermark']
+        if share_safe:
+            # Allowlist structural telemetry. Free text, paths, prompts, payloads,
+            # receipts, and SQLite are deliberately excluded, not regex-redacted.
+            safe = {'event_watermark': explanation['event_watermark'],
+                    'desired_state': explanation['runtime']['desired_state'],
+                    'outcome': explanation['runtime']['outcome'],
+                    'task_counts': {}, 'attempt_counts': {}}
+            for task in explanation['tasks']:
+                safe['task_counts'][task['status']] = safe['task_counts'].get(task['status'], 0) + 1
+            for attempt in explanation['attempts']:
+                safe['attempt_counts'][attempt['state']] = safe['attempt_counts'].get(attempt['state'], 0) + 1
+            contents = {'swarm-audit/telemetry.json': (json.dumps(safe, indent=2) + '\n').encode()}
+            manifest.pop('source_root', None)
+        else:
+            contents['swarm-audit/explanation.json'] = (json.dumps(explanation, indent=2) + '\n').encode()
+        manifest['privacy_mode'] = 'structural-only' if share_safe else 'private-full'
+        manifest['files'] = [{'path': name.removeprefix('swarm-audit/'), 'sha256': hashlib.sha256(data).hexdigest(),
+                              'size_bytes': len(data)} for name, data in sorted(contents.items())]
+        contents['swarm-audit/manifest.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
+        with zipfile.ZipFile(result, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, data in sorted(contents.items()):
+                archive.writestr(name, data)
+        return result
+
+
+def serve(root, max_polls, poll_seconds, max_cycles):
+    if max_polls < 1 or poll_seconds <= 0:
+        raise SwarmError('Service poll limits must be positive')
+    with process_lock(root / 'service.lock'):
+        last = None
+        for index in range(max_polls):
+            last = run_loop(root, max_cycles)
+            if last['state'] in {'DONE','CANCELLED','ABANDONED','PAUSED','BUDGET_EXHAUSTED','ESCALATED'}:
+                break
+            if index + 1 < max_polls:
+                time.sleep(poll_seconds)
+        return {'polls': index + 1, 'last': last}
+
+
+def add_runtime_cli(sub):
+    for name in ('pause', 'drain', 'resume', 'cancel', 'abandon'):
+        item = sub.add_parser(name, help='Set durable mission lifecycle state')
+        item.add_argument('--reason', required=True)
+        item.add_argument('--actor', default='human')
+    recover = sub.add_parser('recover', help='Recover stopped harnesses without rerunning uncertain effects')
+    recover.add_argument('--abandon-run')
+    recover.add_argument('--reason')
+    recover.add_argument('--actor', default='human')
+    sub.add_parser('why', help='Explain blocked work, attempts, limits, and uncertain effects')
+    configure = sub.add_parser('configure', help='Set persistent runtime limits and evidence enforcement')
+    configure.add_argument('--limits', default='{}', help='JSON limits object')
+    configure.add_argument('--strict-evidence', choices=['on', 'off'])
+    amend = sub.add_parser('amend', help='Version a paused mission and require explicit replanning')
+    amend.add_argument('--objective', required=True)
+    amend.add_argument('--success', action='append', default=[])
+    amend.add_argument('--constraint', action='append', default=[])
+    amend.add_argument('--reason', required=True)
+    amend.add_argument('--actor', default='human')
+    effect = sub.add_parser('effect', help='Track intent and receipts for external actions')
+    es = effect.add_subparsers(dest='effect_command', required=True)
+    ep = es.add_parser('prepare')
+    for name in ('task', 'agent', 'key', 'target', 'revision'):
+        ep.add_argument('--' + name, required=True)
+    ep.add_argument('--parameters', default='{}', help='JSON action parameters')
+    es.add_parser('list')
+    for name in ('start', 'succeeded', 'failed', 'unknown', 'not-applied'):
+        item = es.add_parser(name)
+        item.add_argument('effect_id')
+        item.add_argument('--actor', required=True)
+        item.add_argument('--receipt', required=name != 'start')
+    resource = sub.add_parser('resource', help='Lease exclusive resources with attempt fencing')
+    rs = resource.add_subparsers(dest='resource_command', required=True)
+    ra = rs.add_parser('acquire')
+    ra.add_argument('resource')
+    ra.add_argument('--task', required=True)
+    ra.add_argument('--agent', required=True)
+    ra.add_argument('--lease-seconds', type=int, default=300)
+    rr = rs.add_parser('release')
+    rr.add_argument('token')
+    rr.add_argument('--agent', required=True)
+    rs.add_parser('list')
+    evidence = sub.add_parser('evidence', help='Bind result files to criteria, revision, and environment')
+    vs = evidence.add_subparsers(dest='evidence_command', required=True)
+    vc = vs.add_parser('contract')
+    for name in ('task', 'revision', 'environment'):
+        vc.add_argument('--' + name, required=True)
+    vc.add_argument('--actor', default='manager')
+    vr = vs.add_parser('record')
+    for name in ('task', 'agent', 'criterion', 'revision', 'environment', 'command', 'path'):
+        vr.add_argument('--' + name, required=True, dest='evidence_command_text' if name == 'command' else name)
+    vr.add_argument('--exit-code', type=int, required=True)
+    vg = vs.add_parser('gaps')
+    vg.add_argument('--task', required=True)
+    review = sub.add_parser('review-commit', help='Record a semantic disposition for every manager trigger')
+    review.add_argument('review_id')
+    review.add_argument('--agent', required=True)
+    review.add_argument('--dispositions', required=True, help='JSON list in trigger order')
+    review.add_argument('--summary', required=True)
+    workspace = sub.add_parser('workspace', help='Create or inspect task-specific Git worktrees')
+    ws = workspace.add_subparsers(dest='workspace_command', required=True)
+    wc = ws.add_parser('create')
+    wc.add_argument('--task', required=True)
+    wc.add_argument('--repository', required=True)
+    wc.add_argument('--base', required=True)
+    ws.add_parser('list')
+    service = sub.add_parser('serve', help='Poll durable service state with bounded restartable scheduler runs')
+    service.add_argument('--max-polls', type=int, default=120)
+    service.add_argument('--poll-seconds', type=float, default=30)
+    service.add_argument('--max-cycles', type=int, default=20)
+    audit = sub.add_parser('audit-verify' , help='Verify every manifest file in an audit ZIP')
+    audit.add_argument('archive')
+
+
+def handle_runtime_cli(root, args):
+    commands = {'pause','drain','resume','cancel','abandon','recover','why','configure','amend',
+                'effect','resource','evidence','review-commit','workspace','audit-verify','serve'}
+    if args.command not in commands:
+        return False
+    conn = connect(root)
+    try:
+        if args.command in {'pause','drain','resume','cancel','abandon'}:
+            result = control_mission(conn, args.command, args.actor, args.reason)
+        elif args.command == 'recover':
+            if args.abandon_run:
+                if not args.reason:
+                    raise SwarmError('--abandon-run requires --reason confirming the process stopped')
+                abandon_run(conn, args.abandon_run, args.actor, args.reason)
+            result = recover_runs(root, args.actor)
+        elif args.command == 'serve':
+            result = serve(root, args.max_polls, args.poll_seconds, args.max_cycles)
+        elif args.command == 'why':
+            result = explain_state(conn)
+        elif args.command == 'configure':
+            result = configure_runtime(conn, json_load(args.limits), None if args.strict_evidence is None else args.strict_evidence == 'on')
+        elif args.command == 'amend':
+            result = amend_mission(conn, args.objective, args.success, args.constraint, args.reason, args.actor)
+        elif args.command == 'effect':
+            if args.effect_command == 'prepare':
+                result = prepare_effect(conn, args.task, args.agent, args.key, args.target, args.revision, json_load(args.parameters))
+            elif args.effect_command == 'list':
+                result = [dict(r) for r in conn.execute('SELECT * FROM effects ORDER BY created_at,id')]
+            else:
+                result = transition_effect(conn, args.effect_id, args.effect_command, args.actor, args.receipt)
+        elif args.command == 'resource':
+            if args.resource_command == 'acquire':
+                result = acquire_resource(conn, args.resource, args.task, args.agent, args.lease_seconds)
+            elif args.resource_command == 'release':
+                release_resource(conn, args.token, args.agent)
+                result = {'released': True}
+            else:
+                result = [dict(r) for r in conn.execute('SELECT * FROM resource_leases ORDER BY resource')]
+        elif args.command == 'evidence':
+            if args.evidence_command == 'contract':
+                set_contract(conn, args.task, args.revision, args.environment, args.actor)
+                result = {'task_id': args.task, 'revision': args.revision, 'environment': args.environment}
+            elif args.evidence_command == 'record':
+                result = {'evidence_id': record_evidence(conn, args.task, args.agent, args.criterion, args.revision,
+                          args.environment, args.evidence_command_text, args.exit_code, args.path)}
+            else:
+                result = {'gaps': evidence_gaps(conn, args.task)}
+        elif args.command == 'review-commit':
+            commit_review(conn, args.review_id, args.agent, json_load(args.dispositions), args.summary)
+            result = {'review_id': args.review_id, 'committed': True}
+        elif args.command == 'workspace':
+            if args.workspace_command == 'create':
+                result = create_workspace(root, conn, args.task, args.repository, args.base)
+            else:
+                result = [dict(r) for r in conn.execute('SELECT * FROM workspaces ORDER BY task_id')]
+        else:
+            result = verify_audit(args.archive)
+        print_json(result)
+        return True
+    finally:
+        conn.close()
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", help="Swarm workspace (default: $SWARM_ROOT or .swarm)")
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="command", required=True)
+
+    add_runtime_cli(sub)
 
     init = sub.add_parser("init", help="Create a mission workspace")
     init.add_argument("--objective", required=True)
@@ -5011,6 +5988,7 @@ def parser():
     task = sub.add_parser("task", help="Manage tasks")
     task_sub = task.add_subparsers(dest="task_command", required=True)
     add = task_sub.add_parser("add")
+    add.add_argument("--idempotency-key")
     add.add_argument("--title", required=True)
     add.add_argument("--description", required=True)
     add.add_argument("--kind", choices=sorted(VALID_TASK_KINDS), required=True)
@@ -5144,7 +6122,11 @@ def parser():
     inbox_p.add_argument("--agent", required=True)
     inbox_p.add_argument("--task", help="Limit events to one task and its dependencies")
     inbox_p.add_argument("--after", type=int)
-    inbox_p.add_argument("--advance", action="store_true")
+    inbox_p.add_argument("--advance", action="store_true", help="Legacy read-and-advance; use --lease and --ack for reliable delivery")
+    inbox_p.add_argument('--lease', action='store_true')
+    inbox_p.add_argument('--ack', help='Acknowledge a leased delivery token')
+    inbox_p.add_argument('--limit', type=int, default=50)
+    inbox_p.add_argument('--lease-seconds', type=int, default=300)
 
     prompt_p = sub.add_parser("prompt", help="Generate a grounded role prompt")
     prompt_p.add_argument("--role", choices=["manager", "worker", "liaison", "status", "briefer", "verifier"], required=True)
@@ -5174,6 +6156,7 @@ def parser():
 
     export_p = sub.add_parser("export", help="Create a reviewable audit ZIP")
     export_p.add_argument("--output", required=True)
+    export_p.add_argument("--share-safe", action="store_true", help="Export only allowlisted structural telemetry, excluding free text and files")
     export_p.add_argument("--include-artifacts", action="store_true")
     export_p.add_argument("--max-artifact-mb", type=int, default=25)
     return p
@@ -5183,6 +6166,12 @@ def main(argv=None):
     args = parser().parse_args(argv)
     root = root_path(args.root)
     try:
+        if args.command == 'audit-verify':
+            result = verify_audit(args.archive)
+            print_json(result)
+            return 0 if result['ok'] else 2
+        if handle_runtime_cli(root, args):
+            return 0
         if args.command == "init":
             mission_id = initialize(root, args.objective, args.success, args.constraint, args.mode)
             print_json({
@@ -5474,7 +6463,7 @@ def main(argv=None):
             try:
                 if args.task_command == "add":
                     task_id = add_task(conn, args.title, args.description, args.kind, args.acceptance,
-                                       args.depends_on, args.priority, args.actor, args.ready, args.workstream)
+                                       args.depends_on, args.priority, args.actor, args.ready, args.workstream, args.idempotency_key)
                     print_json({"task_id": task_id})
                 elif args.task_command == "approve":
                     approve_task(conn, args.task_id, args.actor)
@@ -5637,7 +6626,12 @@ def main(argv=None):
             conn = connect(root)
             try:
                 reconcile_conn(conn)
-                print_json(inbox(conn, args.agent, args.after, args.advance, args.task))
+                if args.ack:
+                    print_json(ack_inbox(conn, args.ack, args.agent))
+                elif args.lease:
+                    print_json(lease_inbox(conn, args.agent, args.task, args.limit, args.lease_seconds))
+                else:
+                    print_json(inbox(conn, args.agent, args.after, args.advance, args.task))
             finally:
                 conn.close()
             return 0
@@ -5674,7 +6668,7 @@ def main(argv=None):
             return 0
 
         if args.command == "export":
-            print(export_audit(root, args.output, args.include_artifacts, args.max_artifact_mb))
+            print(export_audit(root, args.output, args.include_artifacts, args.max_artifact_mb, args.share_safe))
             return 0
     except (SwarmError, sqlite3.Error, OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         print("swarmctl: %s" % exc, file=sys.stderr)

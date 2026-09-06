@@ -1,18 +1,40 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.6.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.7.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
 ```text
 usage: swarmctl [-h] [--root ROOT] [--version]
-                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+                {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
 Durable, harness-neutral orchestration for ambiguous multi-agent work.
 
 positional arguments:
-  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+  {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+    pause               Set durable mission lifecycle state
+    drain               Set durable mission lifecycle state
+    resume              Set durable mission lifecycle state
+    cancel              Set durable mission lifecycle state
+    abandon             Set durable mission lifecycle state
+    recover             Recover stopped harnesses without rerunning uncertain
+                        effects
+    why                 Explain blocked work, attempts, limits, and uncertain
+                        effects
+    configure           Set persistent runtime limits and evidence enforcement
+    amend               Version a paused mission and require explicit
+                        replanning
+    effect              Track intent and receipts for external actions
+    resource            Lease exclusive resources with attempt fencing
+    evidence            Bind result files to criteria, revision, and
+                        environment
+    review-commit       Record a semantic disposition for every manager
+                        trigger
+    workspace           Create or inspect task-specific Git worktrees
+    serve               Poll durable service state with bounded restartable
+                        scheduler runs
+    audit-verify        Verify every manifest file in an audit ZIP
     init                Create a mission workspace
     status              Show the current canonical snapshot
     board               Regenerate the Markdown board
@@ -47,6 +69,33 @@ optional arguments:
   --version             show program's version number and exit
 ```
 
+## `swarmctl abandon`
+
+```text
+usage: swarmctl abandon [-h] --reason REASON [--actor ACTOR]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
+  --actor ACTOR
+```
+
+## `swarmctl amend`
+
+```text
+usage: swarmctl amend [-h] --objective OBJECTIVE [--success SUCCESS]
+                      [--constraint CONSTRAINT] --reason REASON
+                      [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --objective OBJECTIVE
+  --success SUCCESS
+  --constraint CONSTRAINT
+  --reason REASON
+  --actor ACTOR
+```
+
 ## `swarmctl ask`
 
 ```text
@@ -62,6 +111,18 @@ optional arguments:
   --actor ACTOR
 ```
 
+## `swarmctl audit-verify`
+
+```text
+usage: swarmctl audit-verify [-h] archive
+
+positional arguments:
+  archive
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
 ## `swarmctl board`
 
 ```text
@@ -69,6 +130,17 @@ usage: swarmctl board [-h]
 
 optional arguments:
   -h, --help  show this help message and exit
+```
+
+## `swarmctl cancel`
+
+```text
+usage: swarmctl cancel [-h] --reason REASON [--actor ACTOR]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
+  --actor ACTOR
 ```
 
 ## `swarmctl case`
@@ -202,6 +274,17 @@ optional arguments:
   --decision DECISION   Resolve this linked open decision with the signal body
   --wake                Create a ready follow-up task
   --actor ACTOR
+```
+
+## `swarmctl configure`
+
+```text
+usage: swarmctl configure [-h] [--limits LIMITS] [--strict-evidence {on,off}]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --limits LIMITS       JSON limits object
+  --strict-evidence {on,off}
 ```
 
 ## `swarmctl decision`
@@ -491,15 +574,198 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## `swarmctl drain`
+
+```text
+usage: swarmctl drain [-h] --reason REASON [--actor ACTOR]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
+  --actor ACTOR
+```
+
+## `swarmctl effect`
+
+```text
+usage: swarmctl effect [-h]
+                       {prepare,list,start,succeeded,failed,unknown,not-applied}
+                       ...
+
+positional arguments:
+  {prepare,list,start,succeeded,failed,unknown,not-applied}
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl effect failed`
+
+```text
+usage: swarmctl effect failed [-h] --actor ACTOR --receipt RECEIPT effect_id
+
+positional arguments:
+  effect_id
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --actor ACTOR
+  --receipt RECEIPT
+```
+
+## `swarmctl effect list`
+
+```text
+usage: swarmctl effect list [-h]
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl effect not-applied`
+
+```text
+usage: swarmctl effect not-applied [-h] --actor ACTOR --receipt RECEIPT
+                                   effect_id
+
+positional arguments:
+  effect_id
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --actor ACTOR
+  --receipt RECEIPT
+```
+
+## `swarmctl effect prepare`
+
+```text
+usage: swarmctl effect prepare [-h] --task TASK --agent AGENT --key KEY
+                               --target TARGET --revision REVISION
+                               [--parameters PARAMETERS]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --agent AGENT
+  --key KEY
+  --target TARGET
+  --revision REVISION
+  --parameters PARAMETERS
+                        JSON action parameters
+```
+
+## `swarmctl effect start`
+
+```text
+usage: swarmctl effect start [-h] --actor ACTOR [--receipt RECEIPT] effect_id
+
+positional arguments:
+  effect_id
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --actor ACTOR
+  --receipt RECEIPT
+```
+
+## `swarmctl effect succeeded`
+
+```text
+usage: swarmctl effect succeeded [-h] --actor ACTOR --receipt RECEIPT
+                                 effect_id
+
+positional arguments:
+  effect_id
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --actor ACTOR
+  --receipt RECEIPT
+```
+
+## `swarmctl effect unknown`
+
+```text
+usage: swarmctl effect unknown [-h] --actor ACTOR --receipt RECEIPT effect_id
+
+positional arguments:
+  effect_id
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --actor ACTOR
+  --receipt RECEIPT
+```
+
+## `swarmctl evidence`
+
+```text
+usage: swarmctl evidence [-h] {contract,record,gaps} ...
+
+positional arguments:
+  {contract,record,gaps}
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl evidence contract`
+
+```text
+usage: swarmctl evidence contract [-h] --task TASK --revision REVISION
+                                  --environment ENVIRONMENT [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --revision REVISION
+  --environment ENVIRONMENT
+  --actor ACTOR
+```
+
+## `swarmctl evidence gaps`
+
+```text
+usage: swarmctl evidence gaps [-h] --task TASK
+
+optional arguments:
+  -h, --help   show this help message and exit
+  --task TASK
+```
+
+## `swarmctl evidence record`
+
+```text
+usage: swarmctl evidence record [-h] --task TASK --agent AGENT --criterion
+                                CRITERION --revision REVISION --environment
+                                ENVIRONMENT --command EVIDENCE_COMMAND_TEXT
+                                --path PATH --exit-code EXIT_CODE
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --agent AGENT
+  --criterion CRITERION
+  --revision REVISION
+  --environment ENVIRONMENT
+  --command EVIDENCE_COMMAND_TEXT
+  --path PATH
+  --exit-code EXIT_CODE
+```
+
 ## `swarmctl export`
 
 ```text
-usage: swarmctl export [-h] --output OUTPUT [--include-artifacts]
+usage: swarmctl export [-h] --output OUTPUT [--share-safe]
+                       [--include-artifacts]
                        [--max-artifact-mb MAX_ARTIFACT_MB]
 
 optional arguments:
   -h, --help            show this help message and exit
   --output OUTPUT
+  --share-safe          Export only allowlisted structural telemetry,
+                        excluding free text and files
   --include-artifacts
   --max-artifact-mb MAX_ARTIFACT_MB
 ```
@@ -687,14 +953,20 @@ optional arguments:
 
 ```text
 usage: swarmctl inbox [-h] --agent AGENT [--task TASK] [--after AFTER]
-                      [--advance]
+                      [--advance] [--lease] [--ack ACK] [--limit LIMIT]
+                      [--lease-seconds LEASE_SECONDS]
 
 optional arguments:
-  -h, --help     show this help message and exit
+  -h, --help            show this help message and exit
   --agent AGENT
-  --task TASK    Limit events to one task and its dependencies
+  --task TASK           Limit events to one task and its dependencies
   --after AFTER
-  --advance
+  --advance             Legacy read-and-advance; use --lease and --ack for
+                        reliable delivery
+  --lease
+  --ack ACK             Acknowledge a leased delivery token
+  --limit LIMIT
+  --lease-seconds LEASE_SECONDS
 ```
 
 ## `swarmctl init`
@@ -749,6 +1021,17 @@ positional arguments:
 
 optional arguments:
   -h, --help     show this help message and exit
+  --actor ACTOR
+```
+
+## `swarmctl pause`
+
+```text
+usage: swarmctl pause [-h] --reason REASON [--actor ACTOR]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
   --actor ACTOR
 ```
 
@@ -876,6 +1159,19 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## `swarmctl recover`
+
+```text
+usage: swarmctl recover [-h] [--abandon-run ABANDON_RUN] [--reason REASON]
+                        [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --abandon-run ABANDON_RUN
+  --reason REASON
+  --actor ACTOR
+```
+
 ## `swarmctl report`
 
 ```text
@@ -883,6 +1179,86 @@ usage: swarmctl report [-h]
 
 optional arguments:
   -h, --help  show this help message and exit
+```
+
+## `swarmctl resource`
+
+```text
+usage: swarmctl resource [-h] {acquire,release,list} ...
+
+positional arguments:
+  {acquire,release,list}
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl resource acquire`
+
+```text
+usage: swarmctl resource acquire [-h] --task TASK --agent AGENT
+                                 [--lease-seconds LEASE_SECONDS]
+                                 resource
+
+positional arguments:
+  resource
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --agent AGENT
+  --lease-seconds LEASE_SECONDS
+```
+
+## `swarmctl resource list`
+
+```text
+usage: swarmctl resource list [-h]
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl resource release`
+
+```text
+usage: swarmctl resource release [-h] --agent AGENT token
+
+positional arguments:
+  token
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --agent AGENT
+```
+
+## `swarmctl resume`
+
+```text
+usage: swarmctl resume [-h] --reason REASON [--actor ACTOR]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
+  --actor ACTOR
+```
+
+## `swarmctl review-commit`
+
+```text
+usage: swarmctl review-commit [-h] --agent AGENT --dispositions DISPOSITIONS
+                              --summary SUMMARY
+                              review_id
+
+positional arguments:
+  review_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --agent AGENT
+  --dispositions DISPOSITIONS
+                        JSON list in trigger order
+  --summary SUMMARY
 ```
 
 ## `swarmctl run`
@@ -894,6 +1270,19 @@ optional arguments:
   -h, --help            show this help message and exit
   --max-cycles MAX_CYCLES
   --dry-run
+```
+
+## `swarmctl serve`
+
+```text
+usage: swarmctl serve [-h] [--max-polls MAX_POLLS]
+                      [--poll-seconds POLL_SECONDS] [--max-cycles MAX_CYCLES]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --max-polls MAX_POLLS
+  --poll-seconds POLL_SECONDS
+  --max-cycles MAX_CYCLES
 ```
 
 ## `swarmctl setup-check`
@@ -931,7 +1320,8 @@ optional arguments:
 ## `swarmctl task add`
 
 ```text
-usage: swarmctl task add [-h] --title TITLE --description DESCRIPTION --kind
+usage: swarmctl task add [-h] [--idempotency-key IDEMPOTENCY_KEY] --title
+                         TITLE --description DESCRIPTION --kind
                          {briefing,discovery,implementation,verification}
                          --acceptance ACCEPTANCE [--depends-on DEPENDS_ON]
                          [--workstream WORKSTREAM] [--priority PRIORITY]
@@ -939,6 +1329,7 @@ usage: swarmctl task add [-h] --title TITLE --description DESCRIPTION --kind
 
 optional arguments:
   -h, --help            show this help message and exit
+  --idempotency-key IDEMPOTENCY_KEY
   --title TITLE
   --description DESCRIPTION
   --kind {briefing,discovery,implementation,verification}
@@ -1145,6 +1536,49 @@ optional arguments:
   --external-id EXTERNAL_ID
   --note NOTE
   --actor ACTOR
+```
+
+## `swarmctl why`
+
+```text
+usage: swarmctl why [-h]
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl workspace`
+
+```text
+usage: swarmctl workspace [-h] {create,list} ...
+
+positional arguments:
+  {create,list}
+
+optional arguments:
+  -h, --help     show this help message and exit
+```
+
+## `swarmctl workspace create`
+
+```text
+usage: swarmctl workspace create [-h] --task TASK --repository REPOSITORY
+                                 --base BASE
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --repository REPOSITORY
+  --base BASE
+```
+
+## `swarmctl workspace list`
+
+```text
+usage: swarmctl workspace list [-h]
+
+optional arguments:
+  -h, --help  show this help message and exit
 ```
 
 ## `swarmctl workstream`

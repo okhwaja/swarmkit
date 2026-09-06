@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.0
+
+- Added crash-safe attempt records, POSIX controller/process locks, recovery,
+  launch-error/timeout handling, and fresh-identity stale-owner fencing.
+- Added durable mission pause, drain, resume, cancel, abandon, amendments, and
+  cancellation propagation to dependent tasks.
+- Added an external effect ledger with idempotency keys, exact action parameters,
+  provider receipts, uncertain-state reconciliation, and replay refusal.
+- Added leased inbox batches and explicit acknowledgments, task worktrees,
+  exclusive resource leases, criterion evidence contracts, task planning keys,
+  and strict semantic manager review commits.
+- Added bounded immutable prompt packets, model/attempt provenance, optional
+  attempt-based model escalation, deterministic why diagnostics, persistent
+  limits, bounded service polling, and explicit escalation on exhausted retries.
+- Made audit views derive from one SQLite snapshot; added artifact integrity
+  rejection, manifest verification, and structural-only share-safe exports.
+- Added performance, pipeline repair, and system port policy templates and a
+  contributor contract. Updated operating/setup/harness/role documentation.
+- Schema 7 upgrades known schemas transactionally and rejects unsupported newer
+  versions. Stop old controllers before upgrading. Existing free-text verification
+  remains compatible; opt into strict evidence. Use fresh agent IDs on reclaim.
+- Added lifecycle races, process-kill recovery, migration rollback, uncertain
+  effect, evidence, inbox, workspace, and audit tests. Runtime locking requires
+  Python 3.9+ on macOS/Linux. See docs/ROADMAP_BACKLOG.md for remaining scope.
+
 ## 0.6.0
 
 - Replaced worker-wave scheduling with a bounded event-responsive loop that

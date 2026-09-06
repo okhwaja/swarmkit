@@ -260,3 +260,14 @@ or concurrency; those are live gates in `SETUP_AGENT.md`.
 ## Adapting beyond one machine
 
 SQLite is intended for several local processes sharing one filesystem. For agents on different machines, place the same command contract behind a small service using a transactional database. Preserve task generations, leases, ordered events, agent cursors, decision versions, and append-only audit semantics.
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.

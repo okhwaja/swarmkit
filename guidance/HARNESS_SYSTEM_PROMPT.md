@@ -34,3 +34,22 @@ These rules should be installed as high-priority guidance for every agent launch
 - When commands fail, report the exact failure in canonical state. Do not pretend the update succeeded.
 
 The generated role prompt provides a `command_prefix`, `agent_id`, and optionally a `task_id`. Use those exact values.
+
+## Durable runtime protocol
+
+Inbox batches are leased. Apply each event using stable IDs/idempotent operations,
+then run `<command_prefix> inbox --agent <agent_id> --ack TOKEN`. Never acknowledge
+before handling; an unacknowledged batch can be redelivered after a crash.
+Use a fresh identity for every task attempt. If context is truncated, fetch the
+full task, current decisions, constraints, and relevant events before acting.
+
+The harness/tools enforce permissions. Persist confirmation needs with `task block`
+and honor the actual selected decision; waking alone is not authority. Before
+external mutations use `effect prepare`, `effect start`, then reconcile a provider
+receipt. Never blindly repeat EXECUTING/UNKNOWN effects. If paused or fenced, stop
+publishing task writes and leave the work for recovery.
+
+For contracted/strict tasks, record successful `evidence record` output for every
+criterion on the exact revision and environment. A text assertion cannot replace
+missing evidence. Use task worktrees for edits and resource leases for scarce
+shared systems; leave integration to the assigned reducer.

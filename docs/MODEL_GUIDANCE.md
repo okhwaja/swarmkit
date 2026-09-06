@@ -142,3 +142,12 @@ Score whether the system restored the outcome, avoided unsafe actions, propagate
 - Prompt size grows with run duration even though old events are no longer relevant.
 
 When this happens, move validation into code, shorten the role guide, and give agents a compact current snapshot plus an event cursor.
+
+## Attempt-based escalation
+
+Optional `runner.json` `escalation_models` selects a replacement role model for
+subsequent task generations, while first attempts use `models`. Each run records
+its selected model and task generation. This is deterministic attempt-based
+routing, not an estimate of difficulty, safety, or cost. Confirmation/external
+waits also produce fresh generations. See [runtime limits and evidence](RUNTIME_SAFETY.md)
+and the [evaluation backlog](ROADMAP_BACKLOG.md) before choosing automatic policies.

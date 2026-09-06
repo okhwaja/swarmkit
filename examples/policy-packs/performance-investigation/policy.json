@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "id": "performance-investigation",
+  "version": "1.0.0",
+  "name": "Performance Investigation",
+  "description": "Bounded performance investigation using durable tasks, evidence, waits, and effects.",
+  "when_to_use": "Use for performance investigation.",
+  "guidance": "GUIDANCE.md",
+  "variables": {
+    "goal": {
+      "required": true,
+      "description": "Concrete requested outcome"
+    },
+    "test_command": {
+      "required": true,
+      "description": "Repository-approved verification command"
+    }
+  },
+  "stages": [
+    {
+      "id": "baseline",
+      "title": "Reproduce and benchmark: {goal}",
+      "description": "Reproduce {goal}. Capture representative workload, repeats, variance, and baseline commands. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "discovery",
+      "priority": 70,
+      "acceptance": [
+        "Baseline includes workload, environment, revision, and repeatable measurements"
+      ],
+      "depends_on": [],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "profile",
+      "title": "Profile bottlenecks: {goal}",
+      "description": "Profile the baseline without changing shared code. Rank bottlenecks and cite artifacts.",
+      "kind": "discovery",
+      "priority": 70,
+      "acceptance": [
+        "Profiling evidence ranks supported bottlenecks"
+      ],
+      "depends_on": [
+        "baseline"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "hypotheses",
+      "title": "Investigate alternatives: {goal}",
+      "description": "Independently investigate alternative explanations and define tests that could disprove them.",
+      "kind": "discovery",
+      "priority": 70,
+      "acceptance": [
+        "Alternative hypotheses include disconfirming tests"
+      ],
+      "depends_on": [
+        "baseline"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "integrate",
+      "title": "Choose and implement improvement: {goal}",
+      "description": "Act as the integration owner. Compare both findings, explain contradictions, implement a bounded candidate, and benchmark it. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "implementation",
+      "priority": 70,
+      "acceptance": [
+        "Chosen change resolves conflicting findings and has comparative measurements"
+      ],
+      "depends_on": [
+        "profile",
+        "hypotheses"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "verify",
+      "title": "Verify improvement and regressions: {goal}",
+      "description": "Independently run `{test_command}` and the same benchmark workload. Prepare a PR with evidence only if a safe improvement exists. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "verification",
+      "priority": 70,
+      "acceptance": [
+        "Final artifact compares the exact delivered revision with the baseline and records remaining gaps"
+      ],
+      "depends_on": [
+        "integrate"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      },
+      "fresh_session_from": [
+        "integrate"
+      ]
+    }
+  ]
+}

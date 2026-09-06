@@ -10,7 +10,7 @@ To create a portable ZIP:
 python3 scripts/package.py
 ```
 
-This writes `dist/swarmkit-0.6.0.zip` with the CLI, guidance, documentation,
+This writes `dist/swarmkit-0.7.0.zip` with the CLI, guidance, documentation,
 examples, policy packs, responsive scheduling, persistent-service cases,
 delivery extensions, and deterministic responsive acceptance tests.
 
@@ -403,3 +403,14 @@ python3 examples/demo_lifecycle.py \
   --root /tmp/swarmkit-demo/.swarm \
   --output /tmp/swarmkit-demo-audit.zip
 ```
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](docs/RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](docs/ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.

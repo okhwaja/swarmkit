@@ -19,5 +19,6 @@
     "briefer": "cost-efficient-model",
     "extension": "cost-efficient-model",
     "verifier": "review-model"
-  }
+  },
+  "escalation_models": {}
 }

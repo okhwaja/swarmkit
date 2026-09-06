@@ -118,7 +118,9 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn, "Inspect queue", "Read queue state", "discovery",
                 ["Queue depth recorded"], [], 50, "manager", True,
             )
-            swarmctl.claim_task(conn, task, "worker-old", -1)
+            swarmctl.claim_task(conn, task, "worker-old", 30)
+            conn.execute("UPDATE tasks SET lease_until=? WHERE id=?", ("2000-01-01T00:00:00Z", task))
+            conn.commit()
             changed = swarmctl.reconcile_conn(conn)
             self.assertIn((task, "READY"), changed)
             with self.assertRaises(swarmctl.SwarmError):
@@ -514,7 +516,9 @@ class SwarmLifecycleTest(unittest.TestCase):
                 self.root, conn, "harness-email-example", "email", "Lease test",
                 ["replace-me@example.com"], content, [], "lease-test", "test",
             )
-            swarmctl.claim_delivery(conn, lease_job["id"], "lost-emailer", -1)
+            swarmctl.claim_delivery(conn, lease_job["id"], "lost-emailer", 30)
+            conn.execute("UPDATE deliveries SET lease_until=? WHERE id=?", ("2000-01-01T00:00:00Z", lease_job["id"]))
+            conn.commit()
             self.assertIn((lease_job["id"], "PENDING"), swarmctl.reconcile_conn(conn))
             self.assertTrue(swarmctl.doctor(conn)["ok"])
         finally:
@@ -793,7 +797,7 @@ class SwarmLifecycleTest(unittest.TestCase):
         self.assertTrue(checks["runner_executable"]["ok"])
         self.assertTrue(checks["prompt_dry_run"]["ok"])
         self.assertEqual(
-            len(list((self.root / "prompts").glob("*-manager-setup-check-manager.md"))), 1
+            len(list((self.root / "prompts").glob("P-*-manager.md"))), 1
         )
 
     def configure_responsive_runner(self, max_parallel=2):

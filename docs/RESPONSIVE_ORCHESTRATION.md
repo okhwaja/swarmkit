@@ -187,3 +187,14 @@ Schema upgrades are additive. Existing tasks retain their state, ownership,
 leases, dependencies, decisions, policy applications, and audit history. New
 tables begin empty, and existing runner configurations use one-second polling
 and manager-review debounce defaults when the keys are absent.
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.
