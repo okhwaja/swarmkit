@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "id": "system-port",
+  "version": "1.0.0",
+  "name": "System Port",
+  "description": "Bounded system port using durable tasks, evidence, waits, and effects.",
+  "when_to_use": "Use for system port.",
+  "guidance": "GUIDANCE.md",
+  "variables": {
+    "goal": {
+      "required": true,
+      "description": "Concrete requested outcome"
+    },
+    "test_command": {
+      "required": true,
+      "description": "Repository-approved verification command"
+    }
+  },
+  "stages": [
+    {
+      "id": "inventory",
+      "title": "Inventory compatibility: {goal}",
+      "description": "Inventory {goal}. Define a journey matrix and explicit behavioral compatibility requirements. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "discovery",
+      "priority": 70,
+      "acceptance": [
+        "Inventory defines user journeys, compatibility boundaries, and unsupported behavior"
+      ],
+      "depends_on": [],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "core",
+      "title": "Port core behavior: {goal}",
+      "description": "Implement the core behavior in an isolated workspace. Own only the core scope defined in the inventory. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "implementation",
+      "priority": 70,
+      "acceptance": [
+        "Core implementation maps every assigned journey to a test or documented gap"
+      ],
+      "depends_on": [
+        "inventory"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "interfaces",
+      "title": "Port interfaces and adapters: {goal}",
+      "description": "Implement the interfaces in a separate workspace. Own only interface paths assigned by the inventory. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "implementation",
+      "priority": 70,
+      "acceptance": [
+        "Interface implementation preserves assigned compatibility contracts"
+      ],
+      "depends_on": [
+        "inventory"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "integrate",
+      "title": "Integrate port slices: {goal}",
+      "description": "Act as the sole integration owner. Review both workspace diffs and combine them into one revision with explicit conflict dispositions. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "implementation",
+      "priority": 70,
+      "acceptance": [
+        "Integration revision incorporates both slices and resolves conflicting assumptions"
+      ],
+      "depends_on": [
+        "core",
+        "interfaces"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "verify",
+      "title": "Verify all user journeys: {goal}",
+      "description": "Run the entire journey matrix on the exact integrated revision and run `{test_command}`. Prepare a PR with the matrix and evidence. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "verification",
+      "priority": 70,
+      "acceptance": [
+        "Every inventoried journey has passing evidence or an explicitly documented unsupported gap"
+      ],
+      "depends_on": [
+        "integrate"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      },
+      "fresh_session_from": [
+        "core",
+        "interfaces",
+        "integrate"
+      ]
+    }
+  ]
+}

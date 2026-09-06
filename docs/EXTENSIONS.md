@@ -146,3 +146,14 @@ Email, chat, and ticket notifications should use delivery extensions. Swarmkit r
 - Treat a provider receipt as sensitive operational metadata.
 - Run `swarmctl doctor`; modified or missing outbox content is an invariant error.
 - Audit exports include delivery records, envelope/prompt files, adapter output, and the immutable content snapshot. Inspect the ZIP before sharing it.
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.

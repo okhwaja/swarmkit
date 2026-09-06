@@ -13,3 +13,13 @@ into each applicable mission.
 
 See [Policy packs](../../docs/POLICY_PACKS.md) for validation, installation,
 application, trust, and authoring rules.
+
+## Operational workflow templates
+
+`performance-investigation`, `pipeline-repair`, and `system-port` use the same
+policy graph and runtime primitives. Install a directory, then apply it with
+`--var goal='concrete outcome' --var test_command='approved test command'`.
+Performance and port templates include parallel stages and an explicit integration
+owner followed by fresh verification. Set exact revision/environment evidence
+contracts before claiming the generated tasks. These templates do not configure
+provider credentials, approve risky actions, or install background services.

@@ -17,6 +17,9 @@ import generate_cli_docs  # noqa: E402
 
 
 REQUIRED_DOCUMENTS = [
+    "AGENTS.md",
+    "docs/RUNTIME_SAFETY.md",
+    "docs/ROADMAP_BACKLOG.md",
     "README.md",
     "SETUP_AGENT.md",
     "CHANGELOG.md",

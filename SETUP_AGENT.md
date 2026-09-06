@@ -334,3 +334,15 @@ start a fresh context, cannot provide a trustworthy exit code, cannot access the
 mission root, or would require embedding secrets in command arguments. Report
 the observed behavior, the command used with secrets redacted, and the smallest
 decision or machine change needed from a human.
+
+## Runtime acceptance (0.7.0)
+
+Before enabling unattended work, follow [runtime setup and recovery](docs/RUNTIME_SAFETY.md).
+Require Python 3.9+ on macOS/Linux. Stop old controllers before schema migration.
+In a disposable mission, configure a harmless harness; claim a task with a fresh
+identity, pause it, prove the old owner cannot complete it, recover, resume, and
+claim from a new identity. Exercise an inbox lease/ack and an uncertain effect
+without performing a real external action. Enable strict evidence and confirm a
+missing or changed result file blocks completion. Verify an export with
+`audit-verify`. A successful process exit alone is not a semantic manager review
+commit in strict mode. Test reboot autostart separately if the owner configures it.

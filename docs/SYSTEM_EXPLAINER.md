@@ -233,3 +233,14 @@ Export an audit archive after every significant mission, including unsuccessful 
   deadlines treated as success.
 
 Turn each recurring failure into a CLI invariant, a smaller task schema, a clearer role rule, or a harness-level guard. Prefer enforceable mechanisms over adding more prose to every prompt.
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.

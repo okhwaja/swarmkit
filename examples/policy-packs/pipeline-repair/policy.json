@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "id": "pipeline-repair",
+  "version": "1.0.0",
+  "name": "Pipeline Repair",
+  "description": "Bounded pipeline repair using durable tasks, evidence, waits, and effects.",
+  "when_to_use": "Use for pipeline repair.",
+  "guidance": "GUIDANCE.md",
+  "variables": {
+    "goal": {
+      "required": true,
+      "description": "Concrete requested outcome"
+    },
+    "test_command": {
+      "required": true,
+      "description": "Repository-approved verification command"
+    }
+  },
+  "stages": [
+    {
+      "id": "diagnose",
+      "title": "Capture incident and diagnose: {goal}",
+      "description": "Capture incident state and diagnose {goal}. Separate symptoms, root cause, mitigation, and repair. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "discovery",
+      "priority": 70,
+      "acceptance": [
+        "Incident timeline and failing boundary are supported by observations"
+      ],
+      "depends_on": [],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "repair",
+      "title": "Perform bounded repair: {goal}",
+      "description": "Before risky actions create a durable confirmation blocker. Use effect prepare/start and reconcile receipts. Represent pipeline observation as a durable external wait. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "implementation",
+      "priority": 70,
+      "acceptance": [
+        "Repair or mitigation has current authority, effect receipts, and rollback instructions"
+      ],
+      "depends_on": [
+        "diagnose"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    },
+    {
+      "id": "verify",
+      "title": "Observe healthy operation: {goal}",
+      "description": "After the external wait, independently observe healthy runs and run `{test_command}`. Distinguish restored, mitigated, and still blocked outcomes. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "kind": "verification",
+      "priority": 70,
+      "acceptance": [
+        "Healthy runs and backlog disposition are verified on the resulting configuration"
+      ],
+      "depends_on": [
+        "repair"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      },
+      "fresh_session_from": [
+        "repair"
+      ]
+    },
+    {
+      "id": "postmortem",
+      "title": "Explain incident and result: {goal}",
+      "description": "Use why and export to produce a factual postmortem for {goal}. Label hypotheses and unresolved causes.",
+      "kind": "briefing",
+      "priority": 70,
+      "acceptance": [
+        "Postmortem cites the timeline, attempts, effects, verification, and remaining work"
+      ],
+      "depends_on": [
+        "verify"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true
+      }
+    }
+  ]
+}

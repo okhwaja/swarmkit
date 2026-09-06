@@ -581,3 +581,14 @@ Marking a workstream `DONE` is rejected while any linked task remains non-termin
 | Inspect or submit standing-service work | `case list`, `case open`, or `case signal` |
 
 Changing the mission's objective or issuing an immediate stop directive is not yet a first-class command. Stop unattended cycles before making such a change, record the direction through your controlled operator procedure, and do not disguise it as a briefing inquiry.
+
+## Runtime safety and recovery (0.7.0)
+
+The [durable runtime contract](RUNTIME_SAFETY.md) documents `pause`, `drain`,
+`resume`, `cancel`, `abandon`, `recover`, `why`, and `serve`, along with leased
+inboxes, effect reconciliation, task worktrees, resource leases, evidence
+contracts, amendments, limits, model escalation, and audit verification.
+Use its examples for new integrations. The
+[roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
+engineering work and owner decisions. Permission enforcement stays with the
+harness and tools. Runtime process locking requires a single POSIX host.
