@@ -1,0 +1,2220 @@
+#!/usr/bin/env python3
+"""Durable, harness-neutral orchestration for ambiguous multi-agent work."""
+
+import argparse
+import concurrent.futures
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import shlex
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import textwrap
+import zipfile
+
+
+VERSION = "0.2.1"
+SCHEMA_VERSION = "2"
+ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
+TERMINAL_TASK_STATES = {"DONE", "CANCELLED"}
+VALID_TASK_KINDS = {"discovery", "implementation", "verification", "briefing"}
+VALID_WORKSTREAM_STATES = {"PLANNED", "ACTIVE", "BLOCKED", "VERIFYING", "DONE", "CANCELLED"}
+VALID_FORECAST_CONFIDENCE = {"low", "medium", "high"}
+VALID_BLOCKER_KINDS = {
+    "human_decision",
+    "missing_access",
+    "external_dependency",
+    "technical_failure",
+    "safety_stop",
+    "resource_conflict",
+}
+
+
+class SwarmError(Exception):
+    pass
+
+
+def utcnow():
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_time(value):
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise SwarmError("Timestamp must include a timezone: %s" % value)
+    return parsed
+
+
+def canonical_time(value):
+    return parse_time(value).astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def make_id(prefix):
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
+    return "%s-%s-%s" % (prefix, stamp, secrets.token_hex(4).upper())
+
+
+def json_dump(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def json_load(value, default=None):
+    if value is None or value == "":
+        return default
+    return json.loads(value)
+
+
+def root_path(value):
+    return Path(value or os.environ.get("SWARM_ROOT", ".swarm")).expanduser().resolve()
+
+
+def db_path(root):
+    return root / "state.sqlite3"
+
+
+def connect(root, require=True):
+    path = db_path(root)
+    existed = path.exists()
+    if require and not path.exists():
+        raise SwarmError("No swarm workspace at %s. Run 'init' first." % root)
+    root.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.OperationalError:
+        pass
+    if existed:
+        try:
+            version_row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            current_version = version_row["value"] if version_row else None
+        except sqlite3.OperationalError:
+            current_version = None
+        if current_version != SCHEMA_VERSION:
+            ensure_schema(conn)
+    return conn
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS missions (
+    id TEXT PRIMARY KEY,
+    objective TEXT NOT NULL,
+    success_json TEXT NOT NULL,
+    constraints_json TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'DISCOVERY',
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    completion_evidence TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workstreams (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PLANNED',
+    progress_summary TEXT,
+    forecast_earliest TEXT,
+    forecast_latest TEXT,
+    forecast_confidence TEXT,
+    forecast_basis TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PROPOSED',
+    priority INTEGER NOT NULL DEFAULT 50,
+    authorized INTEGER NOT NULL DEFAULT 0,
+    acceptance_json TEXT NOT NULL,
+    owner TEXT,
+    lease_until TEXT,
+    generation INTEGER NOT NULL DEFAULT 0,
+    last_checkpoint_at TEXT,
+    checkpoint_summary TEXT,
+    next_action TEXT,
+    result TEXT,
+    verification_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+    PRIMARY KEY (task_id, depends_on),
+    CHECK (task_id <> depends_on)
+);
+CREATE TABLE IF NOT EXISTS task_workstreams (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    workstream_id TEXT NOT NULL REFERENCES workstreams(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    question TEXT NOT NULL,
+    recommendation TEXT,
+    options_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    answer TEXT,
+    requested_by TEXT NOT NULL,
+    decided_by TEXT,
+    decided_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_tasks (
+    decision_id TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (decision_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS decision_acks (
+    decision_id TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    agent_id TEXT NOT NULL,
+    acknowledged_at TEXT NOT NULL,
+    PRIMARY KEY (decision_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS facts (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    subject TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    expires_at TEXT,
+    status TEXT NOT NULL DEFAULT 'CURRENT',
+    recorded_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cursors (
+    agent_id TEXT PRIMARY KEY,
+    last_event_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sha256 TEXT,
+    size_bytes INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    agent_id TEXT NOT NULL,
+    prompt_path TEXT NOT NULL,
+    command_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    exit_code INTEGER,
+    stdout_path TEXT,
+    stderr_path TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, authorized, priority);
+CREATE INDEX IF NOT EXISTS idx_workstreams_status ON workstreams(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_task_workstreams_workstream ON task_workstreams(workstream_id);
+CREATE INDEX IF NOT EXISTS idx_events_seq ON events(seq);
+CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject, status);
+"""
+
+
+def ensure_schema(conn):
+    """Apply additive schema upgrades to an existing workspace."""
+    conn.executescript(SCHEMA)
+    conn.execute(
+        """INSERT INTO meta(key, value) VALUES('schema_version', ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (SCHEMA_VERSION,),
+    )
+    conn.execute(
+        """INSERT INTO meta(key, value) VALUES('swarmctl_version', ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (VERSION,),
+    )
+    conn.commit()
+
+
+def initialize(root, objective, success, constraints):
+    if db_path(root).exists():
+        raise SwarmError("Workspace already exists at %s" % root)
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("prompts", "runs", "views"):
+        (root / name).mkdir(exist_ok=True)
+    conn = connect(root, require=False)
+    try:
+        conn.executescript(SCHEMA)
+        now = utcnow()
+        mission_id = make_id("M")
+        conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
+        conn.execute("INSERT INTO meta(key, value) VALUES('swarmctl_version', ?)", (VERSION,))
+        conn.execute(
+            "INSERT INTO missions(id, objective, success_json, constraints_json, created_at, updated_at) VALUES(?,?,?,?,?,?)",
+            (mission_id, objective, json_dump(success), json_dump(constraints), now, now),
+        )
+        add_event(conn, mission_id, "mission", mission_id, "MISSION_CREATED", "human", {
+            "objective": objective, "success": success, "constraints": constraints
+        })
+        conn.commit()
+    finally:
+        conn.close()
+
+    runner = {
+        "command": [],
+        "working_directory": str(root.parent),
+        "max_parallel": 3,
+        "timeout_seconds": 3600,
+        "models": {
+            "manager": "",
+            "worker": "",
+            "briefer": "",
+            "verifier": "",
+        },
+        "notes": "Set command to an argv array accepted by your harness. Available placeholders: {prompt_file}, {role}, {task_id}, {agent_id}, {root}, {workdir}, {model}.",
+    }
+    (root / "runner.json").write_text(json.dumps(runner, indent=2) + "\n", encoding="utf-8")
+    render_board(root)
+    return mission_id
+
+
+def mission(conn):
+    row = conn.execute("SELECT * FROM missions ORDER BY created_at LIMIT 1").fetchone()
+    if not row:
+        raise SwarmError("Mission record is missing")
+    return row
+
+
+def add_event(conn, mission_id, entity_type, entity_id, event_type, actor, payload=None):
+    event_id = make_id("E")
+    conn.execute(
+        "INSERT INTO events(id, mission_id, entity_type, entity_id, event_type, actor, occurred_at, payload_json) VALUES(?,?,?,?,?,?,?,?)",
+        (event_id, mission_id, entity_type, entity_id, event_type, actor, utcnow(), json_dump(payload or {})),
+    )
+    return event_id
+
+
+def task_row(conn, task_id):
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown task: %s" % task_id)
+    return row
+
+
+def decision_row(conn, decision_id):
+    row = conn.execute("SELECT * FROM decisions WHERE id = ?", (decision_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown decision: %s" % decision_id)
+    return row
+
+
+def workstream_row(conn, workstream_id):
+    row = conn.execute("SELECT * FROM workstreams WHERE id = ?", (workstream_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown workstream: %s" % workstream_id)
+    return row
+
+
+def add_workstream(conn, name, outcome, actor, status="PLANNED"):
+    status = status.upper()
+    if status not in VALID_WORKSTREAM_STATES:
+        raise SwarmError("Invalid workstream status: %s" % status)
+    m = mission(conn)
+    if m["status"] == "DONE":
+        raise SwarmError("Cannot add a workstream to a completed mission")
+    workstream_id = make_id("WS")
+    now = utcnow()
+    conn.execute(
+        """INSERT INTO workstreams(id, mission_id, name, outcome, status, created_at, updated_at)
+           VALUES(?,?,?,?,?,?,?)""",
+        (workstream_id, m["id"], name, outcome, status, now, now),
+    )
+    add_event(conn, m["id"], "workstream", workstream_id, "WORKSTREAM_CREATED", actor, {
+        "name": name, "outcome": outcome, "status": status,
+    })
+    conn.commit()
+    return workstream_id
+
+
+def update_workstream(conn, workstream_id, actor, status=None, summary=None,
+                      forecast_earliest=None, forecast_latest=None,
+                      forecast_confidence=None, forecast_basis=None):
+    row = workstream_row(conn, workstream_id)
+    next_status = status.upper() if status else row["status"]
+    if next_status not in VALID_WORKSTREAM_STATES:
+        raise SwarmError("Invalid workstream status: %s" % next_status)
+    if row["status"] in {"DONE", "CANCELLED"} and next_status != row["status"]:
+        raise SwarmError("Terminal workstream %s cannot be reopened" % workstream_id)
+    confidence = forecast_confidence.lower() if forecast_confidence else row["forecast_confidence"]
+    if confidence and confidence not in VALID_FORECAST_CONFIDENCE:
+        raise SwarmError("Invalid forecast confidence: %s" % confidence)
+    earliest = canonical_time(forecast_earliest) if forecast_earliest else row["forecast_earliest"]
+    latest = canonical_time(forecast_latest) if forecast_latest else row["forecast_latest"]
+    if earliest and latest and parse_time(earliest) > parse_time(latest):
+        raise SwarmError("Forecast earliest time must not be after latest time")
+    if (earliest or latest) and not (forecast_basis or row["forecast_basis"]):
+        raise SwarmError("A forecast requires a basis")
+    if not any(value is not None for value in (
+        status, summary, forecast_earliest, forecast_latest, forecast_confidence, forecast_basis
+    )):
+        raise SwarmError("No workstream update was supplied")
+    if next_status == "DONE":
+        remaining = conn.execute(
+            """SELECT COUNT(*) AS n FROM task_workstreams tw JOIN tasks t ON t.id=tw.task_id
+               WHERE tw.workstream_id=? AND t.status NOT IN ('DONE','CANCELLED')""",
+            (workstream_id,),
+        ).fetchone()["n"]
+        if remaining:
+            raise SwarmError("Cannot complete workstream while %d linked tasks are non-terminal" % remaining)
+    next_summary = summary if summary is not None else row["progress_summary"]
+    next_basis = forecast_basis if forecast_basis is not None else row["forecast_basis"]
+    now = utcnow()
+    conn.execute(
+        """UPDATE workstreams SET status=?, progress_summary=?, forecast_earliest=?,
+           forecast_latest=?, forecast_confidence=?, forecast_basis=?, updated_at=? WHERE id=?""",
+        (next_status, next_summary, earliest, latest, confidence, next_basis, now, workstream_id),
+    )
+    add_event(conn, row["mission_id"], "workstream", workstream_id, "WORKSTREAM_UPDATED", actor, {
+        "status": next_status, "progress_summary": next_summary,
+        "forecast_earliest": earliest, "forecast_latest": latest,
+        "forecast_confidence": confidence, "forecast_basis": next_basis,
+    })
+    conn.commit()
+
+
+def link_task_workstream(conn, workstream_id, task_id, actor):
+    workstream = workstream_row(conn, workstream_id)
+    task = task_row(conn, task_id)
+    if workstream["mission_id"] != task["mission_id"]:
+        raise SwarmError("Task and workstream belong to different missions")
+    if workstream["status"] in {"DONE", "CANCELLED"} and task["status"] not in TERMINAL_TASK_STATES:
+        raise SwarmError("Cannot link active task to terminal workstream %s" % workstream_id)
+    prior = conn.execute("SELECT workstream_id FROM task_workstreams WHERE task_id=?", (task_id,)).fetchone()
+    conn.execute(
+        """INSERT INTO task_workstreams(task_id, workstream_id) VALUES(?,?)
+           ON CONFLICT(task_id) DO UPDATE SET workstream_id=excluded.workstream_id""",
+        (task_id, workstream_id),
+    )
+    add_event(conn, task["mission_id"], "workstream", workstream_id, "TASK_LINKED_TO_WORKSTREAM", actor, {
+        "task_id": task_id, "previous_workstream_id": prior["workstream_id"] if prior else None,
+    })
+    conn.commit()
+    return not prior or prior["workstream_id"] != workstream_id
+
+
+def verify_dependencies_exist(conn, task_ids):
+    for dep in task_ids:
+        task_row(conn, dep)
+
+
+def add_task(conn, title, description, kind, acceptance, depends_on, priority, actor, ready,
+             workstream_id=None):
+    if kind not in VALID_TASK_KINDS:
+        raise SwarmError("Invalid task kind: %s" % kind)
+    verify_dependencies_exist(conn, depends_on)
+    m = mission(conn)
+    if m["status"] == "DONE":
+        raise SwarmError("Cannot add a task to a completed mission")
+    if workstream_id:
+        workstream = workstream_row(conn, workstream_id)
+        if workstream["mission_id"] != m["id"]:
+            raise SwarmError("Workstream belongs to a different mission")
+        if workstream["status"] in {"DONE", "CANCELLED"}:
+            raise SwarmError("Cannot add a task to terminal workstream %s" % workstream_id)
+    task_id = make_id("T")
+    now = utcnow()
+    conn.execute(
+        """INSERT INTO tasks(id, mission_id, title, description, kind, priority, authorized,
+           acceptance_json, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (task_id, m["id"], title, description, kind, priority, 1 if ready else 0,
+         json_dump(acceptance), now, now),
+    )
+    for dep in depends_on:
+        conn.execute("INSERT INTO task_dependencies(task_id, depends_on) VALUES(?,?)", (task_id, dep))
+    if workstream_id:
+        conn.execute("INSERT INTO task_workstreams(task_id, workstream_id) VALUES(?,?)", (task_id, workstream_id))
+    add_event(conn, m["id"], "task", task_id, "TASK_PROPOSED", actor, {
+        "title": title, "kind": kind, "acceptance": acceptance,
+        "depends_on": depends_on, "authorized": bool(ready), "priority": priority,
+        "workstream_id": workstream_id,
+    })
+    conn.commit()
+    reconcile_conn(conn, actor="system")
+    return task_id
+
+
+def approve_task(conn, task_id, actor):
+    row = task_row(conn, task_id)
+    if row["status"] in TERMINAL_TASK_STATES:
+        raise SwarmError("Cannot approve terminal task %s" % task_id)
+    conn.execute("UPDATE tasks SET authorized = 1, updated_at = ? WHERE id = ?", (utcnow(), task_id))
+    add_event(conn, row["mission_id"], "task", task_id, "TASK_AUTHORIZED", actor)
+    conn.commit()
+    reconcile_conn(conn, actor="system")
+
+
+def all_dependencies_done(conn, task_id):
+    row = conn.execute(
+        """SELECT COUNT(*) AS remaining FROM task_dependencies d
+           JOIN tasks parent ON parent.id = d.depends_on
+           WHERE d.task_id = ? AND parent.status <> 'DONE'""",
+        (task_id,),
+    ).fetchone()
+    return row["remaining"] == 0
+
+
+def open_decision_count(conn, task_id):
+    return conn.execute(
+        """SELECT COUNT(*) AS n FROM decision_tasks dt
+           JOIN decisions d ON d.id = dt.decision_id
+           WHERE dt.task_id = ? AND d.status = 'OPEN'""",
+        (task_id,),
+    ).fetchone()["n"]
+
+
+def unresolved_ack_count(conn, task_id):
+    return conn.execute(
+        """SELECT COUNT(*) AS n FROM decision_tasks dt
+           JOIN decisions d ON d.id = dt.decision_id
+           LEFT JOIN decision_acks a ON a.decision_id = d.id AND a.task_id = dt.task_id
+           WHERE dt.task_id = ? AND d.status = 'RESOLVED'
+             AND (a.version IS NULL OR a.version < d.version)""",
+        (task_id,),
+    ).fetchone()["n"]
+
+
+def reconcile_conn(conn, actor="reconciler"):
+    now = utcnow()
+    changed = []
+    expired = conn.execute(
+        "SELECT * FROM tasks WHERE status IN ('CLAIMED','RUNNING','VERIFYING') AND lease_until IS NOT NULL AND lease_until < ?",
+        (now,),
+    ).fetchall()
+    for row in expired:
+        conn.execute(
+            "UPDATE tasks SET status='READY', owner=NULL, lease_until=NULL, updated_at=? WHERE id=?",
+            (now, row["id"]),
+        )
+        add_event(conn, row["mission_id"], "task", row["id"], "TASK_LEASE_EXPIRED", actor, {
+            "previous_owner": row["owner"], "generation": row["generation"]
+        })
+        changed.append((row["id"], "READY"))
+
+    expired_facts = conn.execute(
+        "SELECT * FROM facts WHERE status='CURRENT' AND expires_at IS NOT NULL AND expires_at < ?",
+        (now,),
+    ).fetchall()
+    for row in expired_facts:
+        conn.execute("UPDATE facts SET status='EXPIRED' WHERE id=?", (row["id"],))
+        add_event(conn, row["mission_id"], "fact", row["id"], "FACT_EXPIRED", actor, {
+            "subject": row["subject"], "expires_at": row["expires_at"]
+        })
+        changed.append((row["id"], "EXPIRED"))
+
+    candidates = conn.execute("SELECT * FROM tasks WHERE authorized=1 AND status IN ('PROPOSED','BLOCKED')").fetchall()
+    for row in candidates:
+        no_open_decisions = open_decision_count(conn, row["id"]) == 0
+        dependencies_done = all_dependencies_done(conn, row["id"])
+        if no_open_decisions and dependencies_done:
+            conn.execute("UPDATE tasks SET status='READY', updated_at=? WHERE id=?", (now, row["id"]))
+            event_type = "TASK_UNBLOCKED" if row["status"] == "BLOCKED" else "TASK_READY"
+            add_event(conn, row["mission_id"], "task", row["id"], event_type, actor)
+            changed.append((row["id"], "READY"))
+        elif no_open_decisions and row["status"] == "BLOCKED":
+            conn.execute("UPDATE tasks SET status='PROPOSED', updated_at=? WHERE id=?", (now, row["id"]))
+            add_event(conn, row["mission_id"], "task", row["id"], "TASK_DECISION_CLEARED", actor)
+            changed.append((row["id"], "PROPOSED"))
+    conn.commit()
+    return changed
+
+
+def claim_task(conn, task_id, agent, lease_seconds):
+    reconcile_conn(conn)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = task_row(conn, task_id)
+        if row["status"] != "READY":
+            raise SwarmError("Task %s is %s, not READY" % (task_id, row["status"]))
+        now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
+        generation = row["generation"] + 1
+        changed = conn.execute(
+            """UPDATE tasks SET status='CLAIMED', owner=?, lease_until=?, generation=?, updated_at=?
+               WHERE id=? AND status='READY'""",
+            (agent, lease, generation, utcnow(), task_id),
+        )
+        if changed.rowcount != 1:
+            raise SwarmError("Task %s was claimed concurrently" % task_id)
+        add_event(conn, row["mission_id"], "task", task_id, "TASK_CLAIMED", agent, {
+            "generation": generation, "lease_until": lease
+        })
+        conn.commit()
+        return generation
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def require_owner(row, agent):
+    if row["status"] not in ACTIVE_TASK_STATES:
+        raise SwarmError("Task %s is not active (status %s)" % (row["id"], row["status"]))
+    if row["owner"] != agent:
+        raise SwarmError("Task %s is owned by %s, not %s" % (row["id"], row["owner"], agent))
+    if row["lease_until"] and parse_time(row["lease_until"]) < dt.datetime.now(dt.timezone.utc):
+        raise SwarmError("Lease expired for task %s; reclaim it before writing" % row["id"])
+
+
+def checkpoint_task(conn, task_id, agent, summary, next_action, lease_seconds):
+    row = task_row(conn, task_id)
+    require_owner(row, agent)
+    if unresolved_ack_count(conn, task_id):
+        raise SwarmError("A resolved decision affecting %s has not been acknowledged" % task_id)
+    now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
+    now = utcnow()
+    conn.execute(
+        """UPDATE tasks SET status='RUNNING', checkpoint_summary=?, next_action=?,
+           last_checkpoint_at=?, lease_until=?, updated_at=? WHERE id=?""",
+        (summary, next_action, now, lease, now, task_id),
+    )
+    add_event(conn, row["mission_id"], "task", task_id, "TASK_CHECKPOINTED", agent, {
+        "summary": summary, "next_action": next_action, "generation": row["generation"],
+    })
+    conn.commit()
+
+
+def hash_file(path):
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+    return digest.hexdigest(), size
+
+
+def register_artifact(conn, task_id, value, kind="work-product", note=None, actor=None):
+    row = task_row(conn, task_id) if task_id else None
+    m = mission(conn)
+    path = Path(value).expanduser().resolve()
+    sha = None
+    size = None
+    if path.is_file():
+        sha, size = hash_file(path)
+    artifact_id = make_id("A")
+    conn.execute(
+        "INSERT INTO artifacts(id, mission_id, task_id, path, kind, sha256, size_bytes, note, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        (artifact_id, m["id"], task_id, str(path), kind, sha, size, note, utcnow()),
+    )
+    event_actor = actor or (row["owner"] if row and row["owner"] else "system")
+    add_event(conn, m["id"], "artifact", artifact_id, "ARTIFACT_REGISTERED", event_actor, {
+        "task_id": task_id, "path": str(path), "kind": kind, "sha256": sha, "size_bytes": size,
+    })
+    return artifact_id
+
+
+def complete_task(conn, task_id, agent, result, verification, artifacts):
+    row = task_row(conn, task_id)
+    require_owner(row, agent)
+    if unresolved_ack_count(conn, task_id):
+        raise SwarmError("Resolved decisions affecting %s must be acknowledged before completion" % task_id)
+    if not verification:
+        raise SwarmError("At least one verification statement is required")
+    now = utcnow()
+    conn.execute(
+        """UPDATE tasks SET status='DONE', result=?, verification_json=?, owner=NULL,
+           lease_until=NULL, next_action=NULL, updated_at=? WHERE id=?""",
+        (result, json_dump(verification), now, task_id),
+    )
+    artifact_ids = []
+    for value in artifacts:
+        artifact_ids.append(register_artifact(conn, task_id, value, actor=agent))
+    add_event(conn, row["mission_id"], "task", task_id, "TASK_COMPLETED", agent, {
+        "result": result, "verification": verification, "artifacts": artifact_ids,
+        "generation": row["generation"],
+    })
+    conn.commit()
+    reconcile_conn(conn)
+
+
+def cancel_task(conn, task_id, actor, reason):
+    row = task_row(conn, task_id)
+    if row["status"] in TERMINAL_TASK_STATES:
+        raise SwarmError("Task is already terminal")
+    conn.execute(
+        "UPDATE tasks SET status='CANCELLED', owner=NULL, lease_until=NULL, result=?, updated_at=? WHERE id=?",
+        (reason, utcnow(), task_id),
+    )
+    add_event(conn, row["mission_id"], "task", task_id, "TASK_CANCELLED", actor, {"reason": reason})
+    conn.commit()
+
+
+def block_task(conn, task_id, agent, kind, question, recommendation, options):
+    if kind not in VALID_BLOCKER_KINDS:
+        raise SwarmError("Invalid blocker kind: %s" % kind)
+    row = task_row(conn, task_id)
+    require_owner(row, agent)
+    decision_id = make_id("D")
+    now = utcnow()
+    conn.execute(
+        """INSERT INTO decisions(id, mission_id, kind, question, recommendation, options_json,
+           requested_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)""",
+        (decision_id, row["mission_id"], kind, question, recommendation, json_dump(options), task_id, now, now),
+    )
+    conn.execute("INSERT INTO decision_tasks(decision_id, task_id) VALUES(?,?)", (decision_id, task_id))
+    conn.execute(
+        "UPDATE tasks SET status='BLOCKED', owner=NULL, lease_until=NULL, next_action=?, updated_at=? WHERE id=?",
+        ("Await decision %s" % decision_id, now, task_id),
+    )
+    add_event(conn, row["mission_id"], "decision", decision_id, "DECISION_REQUESTED", agent, {
+        "kind": kind, "question": question, "recommendation": recommendation,
+        "options": options, "blocks": [task_id],
+    })
+    conn.commit()
+    return decision_id
+
+
+def resolve_decision(conn, decision_id, answer, actor):
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = decision_row(conn, decision_id)
+        if row["status"] != "OPEN":
+            raise SwarmError("Decision %s is already %s" % (decision_id, row["status"]))
+        now = utcnow()
+        version = row["version"] + 1
+        changed = conn.execute(
+            """UPDATE decisions SET status='RESOLVED', answer=?, decided_by=?, decided_at=?,
+               version=?, updated_at=? WHERE id=? AND status='OPEN'""",
+            (answer, actor, now, version, now, decision_id),
+        )
+        if changed.rowcount != 1:
+            raise SwarmError("Decision %s was resolved concurrently" % decision_id)
+        blocked = [r["task_id"] for r in conn.execute(
+            "SELECT task_id FROM decision_tasks WHERE decision_id=?", (decision_id,)
+        )]
+        add_event(conn, row["mission_id"], "decision", decision_id, "DECISION_RESOLVED", actor, {
+            "answer": answer, "version": version, "affected_tasks": blocked,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    reconcile_conn(conn)
+    return version
+
+
+def revise_decision(conn, decision_id, answer, actor):
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = decision_row(conn, decision_id)
+        if row["status"] != "RESOLVED":
+            raise SwarmError("Decision %s must be resolved before it can be revised" % decision_id)
+        now = utcnow()
+        version = row["version"] + 1
+        conn.execute(
+            "UPDATE decisions SET answer=?, decided_by=?, decided_at=?, version=?, updated_at=? WHERE id=?",
+            (answer, actor, now, version, now, decision_id),
+        )
+        affected = [r["task_id"] for r in conn.execute(
+            "SELECT task_id FROM decision_tasks WHERE decision_id=?", (decision_id,)
+        )]
+        for task_id in affected:
+            task = task_row(conn, task_id)
+            if task["status"] not in TERMINAL_TASK_STATES and task["authorized"]:
+                conn.execute(
+                    """UPDATE tasks SET status='BLOCKED', owner=NULL, lease_until=NULL,
+                       next_action=?, updated_at=? WHERE id=?""",
+                    ("Acknowledge revised decision %s version %d" % (decision_id, version), now, task_id),
+                )
+        add_event(conn, row["mission_id"], "decision", decision_id, "DECISION_REVISED", actor, {
+            "answer": answer, "version": version, "affected_tasks": affected,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    reconcile_conn(conn)
+    return version
+
+
+def link_decision(conn, decision_id, task_id, actor):
+    decision = decision_row(conn, decision_id)
+    task = task_row(conn, task_id)
+    existing = conn.execute(
+        "SELECT 1 FROM decision_tasks WHERE decision_id=? AND task_id=?", (decision_id, task_id)
+    ).fetchone()
+    if existing:
+        return False
+    conn.execute("INSERT INTO decision_tasks(decision_id, task_id) VALUES(?,?)", (decision_id, task_id))
+    if task["status"] not in TERMINAL_TASK_STATES and task["authorized"]:
+        conn.execute(
+            """UPDATE tasks SET status='BLOCKED', owner=NULL, lease_until=NULL,
+               next_action=?, updated_at=? WHERE id=?""",
+            ("Consume decision %s" % decision_id, utcnow(), task_id),
+        )
+    add_event(conn, decision["mission_id"], "decision", decision_id, "DECISION_LINKED", actor, {
+        "task_id": task_id, "decision_version": decision["version"], "decision_status": decision["status"],
+    })
+    conn.commit()
+    reconcile_conn(conn)
+    return True
+
+
+def acknowledge_decision(conn, decision_id, task_id, agent):
+    drow = decision_row(conn, decision_id)
+    trow = task_row(conn, task_id)
+    if drow["status"] != "RESOLVED":
+        raise SwarmError("Decision %s is not resolved" % decision_id)
+    linked = conn.execute(
+        "SELECT 1 FROM decision_tasks WHERE decision_id=? AND task_id=?", (decision_id, task_id)
+    ).fetchone()
+    if not linked:
+        raise SwarmError("Decision %s does not affect task %s" % (decision_id, task_id))
+    conn.execute(
+        """INSERT INTO decision_acks(decision_id, task_id, version, agent_id, acknowledged_at)
+           VALUES(?,?,?,?,?) ON CONFLICT(decision_id, task_id) DO UPDATE SET
+           version=excluded.version, agent_id=excluded.agent_id, acknowledged_at=excluded.acknowledged_at""",
+        (decision_id, task_id, drow["version"], agent, utcnow()),
+    )
+    add_event(conn, trow["mission_id"], "decision", decision_id, "DECISION_ACKNOWLEDGED", agent, {
+        "task_id": task_id, "version": drow["version"]
+    })
+    conn.commit()
+
+
+def record_fact(conn, subject, value, source, actor, task_id=None, observed_at=None,
+                expires_at=None, ttl_seconds=None):
+    m = mission(conn)
+    if task_id:
+        task_row(conn, task_id)
+    observed = canonical_time(observed_at) if observed_at else utcnow()
+    observed_dt = parse_time(observed)
+    if expires_at and ttl_seconds is not None:
+        raise SwarmError("Use either expires_at or ttl_seconds, not both")
+    expiry = canonical_time(expires_at) if expires_at else None
+    if ttl_seconds is not None:
+        expiry = (observed_dt + dt.timedelta(seconds=ttl_seconds)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if expiry and parse_time(expiry) <= observed_dt:
+        raise SwarmError("Fact expiry must be after its observation time")
+    fact_id = make_id("F")
+    now = utcnow()
+    prior = [r["id"] for r in conn.execute(
+        "SELECT id FROM facts WHERE subject=? AND status='CURRENT'", (subject,)
+    )]
+    conn.execute("UPDATE facts SET status='SUPERSEDED' WHERE subject=? AND status='CURRENT'", (subject,))
+    conn.execute(
+        """INSERT INTO facts(id, mission_id, task_id, subject, value, source, observed_at,
+           expires_at, recorded_by, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (fact_id, m["id"], task_id, subject, value, source, observed, expiry, actor, now),
+    )
+    add_event(conn, m["id"], "fact", fact_id, "FACT_RECORDED", actor, {
+        "subject": subject, "value": value, "source": source, "observed_at": observed,
+        "expires_at": expiry, "task_id": task_id, "supersedes": prior,
+    })
+    conn.commit()
+    return fact_id
+
+
+def set_mission_phase(conn, phase, actor):
+    phase = phase.upper()
+    if phase not in {"DISCOVERY", "EXECUTION", "VERIFICATION", "RECOVERY"}:
+        raise SwarmError("Invalid mission phase")
+    m = mission(conn)
+    conn.execute("UPDATE missions SET phase=?, updated_at=? WHERE id=?", (phase, utcnow(), m["id"]))
+    add_event(conn, m["id"], "mission", m["id"], "MISSION_PHASE_CHANGED", actor, {"phase": phase})
+    conn.commit()
+
+
+def complete_mission(conn, evidence, actor):
+    m = mission(conn)
+    active = conn.execute(
+        "SELECT COUNT(*) AS n FROM tasks WHERE status NOT IN ('DONE','CANCELLED')"
+    ).fetchone()["n"]
+    if active:
+        raise SwarmError("Cannot complete mission while %d tasks are non-terminal" % active)
+    active_workstreams = conn.execute(
+        "SELECT COUNT(*) AS n FROM workstreams WHERE status NOT IN ('DONE','CANCELLED')"
+    ).fetchone()["n"]
+    if active_workstreams:
+        raise SwarmError("Cannot complete mission while %d workstreams are non-terminal" % active_workstreams)
+    if not evidence.strip():
+        raise SwarmError("Mission completion requires evidence")
+    conn.execute(
+        "UPDATE missions SET status='DONE', completion_evidence=?, updated_at=? WHERE id=?",
+        (evidence, utcnow(), m["id"]),
+    )
+    add_event(conn, m["id"], "mission", m["id"], "MISSION_COMPLETED", actor, {"evidence": evidence})
+    conn.commit()
+
+
+def task_dict(conn, row):
+    data = dict(row)
+    data["authorized"] = bool(data["authorized"])
+    data["acceptance"] = json_load(data.pop("acceptance_json"), [])
+    data["verification"] = json_load(data.pop("verification_json"), [])
+    data["depends_on"] = [r["depends_on"] for r in conn.execute(
+        "SELECT depends_on FROM task_dependencies WHERE task_id=? ORDER BY depends_on", (row["id"],)
+    )]
+    data["decisions"] = [r["decision_id"] for r in conn.execute(
+        "SELECT decision_id FROM decision_tasks WHERE task_id=? ORDER BY decision_id", (row["id"],)
+    )]
+    workstream = conn.execute(
+        "SELECT workstream_id FROM task_workstreams WHERE task_id=?", (row["id"],)
+    ).fetchone()
+    data["workstream_id"] = workstream["workstream_id"] if workstream else None
+    data["artifacts"] = [dict(r) for r in conn.execute(
+        "SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at", (row["id"],)
+    )]
+    return data
+
+
+def decision_dict(conn, row):
+    data = dict(row)
+    data["options"] = json_load(data.pop("options_json"), [])
+    data["blocks"] = [r["task_id"] for r in conn.execute(
+        "SELECT task_id FROM decision_tasks WHERE decision_id=? ORDER BY task_id", (row["id"],)
+    )]
+    data["acknowledgments"] = [dict(r) for r in conn.execute(
+        "SELECT task_id, version, agent_id, acknowledged_at FROM decision_acks WHERE decision_id=? ORDER BY task_id",
+        (row["id"],),
+    )]
+    return data
+
+
+def workstream_dict(conn, row):
+    data = dict(row)
+    tasks = [dict(r) for r in conn.execute(
+        """SELECT t.id, t.title, t.status, t.kind, t.owner, t.last_checkpoint_at
+           FROM task_workstreams tw JOIN tasks t ON t.id=tw.task_id
+           WHERE tw.workstream_id=? ORDER BY t.priority DESC, t.created_at""",
+        (row["id"],),
+    )]
+    counts = {}
+    for task in tasks:
+        counts[task["status"]] = counts.get(task["status"], 0) + 1
+    decisions = [dict(r) for r in conn.execute(
+        """SELECT DISTINCT d.id, d.kind, d.question, d.status, d.recommendation
+           FROM task_workstreams tw
+           JOIN decision_tasks dt ON dt.task_id=tw.task_id
+           JOIN decisions d ON d.id=dt.decision_id
+           WHERE tw.workstream_id=? ORDER BY d.created_at""",
+        (row["id"],),
+    )]
+    data["tasks"] = tasks
+    data["task_counts"] = counts
+    data["open_decisions"] = [decision for decision in decisions if decision["status"] == "OPEN"]
+    data["needs_human"] = [
+        decision for decision in data["open_decisions"]
+        if decision["kind"] in {"human_decision", "missing_access", "safety_stop"}
+    ]
+    return data
+
+
+def mission_snapshot(conn):
+    m = dict(mission(conn))
+    m["success"] = json_load(m.pop("success_json"), [])
+    m["constraints"] = json_load(m.pop("constraints_json"), [])
+    tasks = [task_dict(conn, r) for r in conn.execute("SELECT * FROM tasks ORDER BY priority DESC, created_at")]
+    workstreams = [workstream_dict(conn, r) for r in conn.execute(
+        "SELECT * FROM workstreams ORDER BY created_at"
+    )]
+    decisions = [decision_dict(conn, r) for r in conn.execute("SELECT * FROM decisions ORDER BY created_at")]
+    artifacts = [dict(r) for r in conn.execute("SELECT * FROM artifacts ORDER BY created_at")]
+    facts = [dict(r) for r in conn.execute(
+        "SELECT * FROM facts ORDER BY CASE status WHEN 'CURRENT' THEN 0 ELSE 1 END, subject, observed_at DESC"
+    )]
+    return {
+        "mission": m, "workstreams": workstreams, "tasks": tasks,
+        "decisions": decisions, "facts": facts, "artifacts": artifacts,
+    }
+
+
+def md_escape(value):
+    return str(value or "").replace("|", "\\|").replace("\n", " ")
+
+
+def forecast_text(workstream):
+    if workstream.get("status") == "DONE":
+        return "Completed %s" % workstream.get("updated_at", "at an unrecorded time")
+    if workstream.get("status") == "CANCELLED":
+        return "Cancelled"
+    earliest = workstream.get("forecast_earliest")
+    latest = workstream.get("forecast_latest")
+    confidence = workstream.get("forecast_confidence")
+    if earliest and latest:
+        window = "%s to %s" % (earliest, latest)
+    elif latest:
+        window = "by %s" % latest
+    elif earliest:
+        window = "not before %s" % earliest
+    else:
+        return "Unknown; no evidence-backed forecast recorded"
+    return "%s (%s confidence)" % (window, confidence or "unspecified")
+
+
+def render_board(root):
+    conn = connect(root)
+    try:
+        reconcile_conn(conn)
+        snapshot = mission_snapshot(conn)
+    finally:
+        conn.close()
+    m = snapshot["mission"]
+    lines = [
+        "# Swarm board", "",
+        "Generated from canonical state. Do not edit this file by hand.", "",
+        "- Mission: `%s`" % m["id"],
+        "- Status: **%s**" % m["status"],
+        "- Phase: **%s**" % m["phase"],
+        "- Updated: %s" % m["updated_at"], "",
+        "## Objective", "", m["objective"], "",
+        "## Success conditions", "",
+    ]
+    lines.extend(["- %s" % item for item in m["success"]] or ["- None recorded"])
+    lines.extend(["", "## Constraints", ""])
+    lines.extend(["- %s" % item for item in m["constraints"]] or ["- None recorded"])
+    lines.extend([
+        "", "## Workstreams", "",
+        "| ID | State | Workstream | Intended outcome | Forecast | Needs human |",
+        "|---|---|---|---|---|---|",
+    ])
+    for workstream in snapshot["workstreams"]:
+        needs_human = ", ".join("`%s`" % d["id"] for d in workstream["needs_human"]) or "No"
+        lines.append("| `%s` | %s | %s | %s | %s | %s |" % (
+            workstream["id"], workstream["status"], md_escape(workstream["name"]),
+            md_escape(workstream["outcome"]), md_escape(forecast_text(workstream)), needs_human,
+        ))
+    if not snapshot["workstreams"]:
+        lines.append("| — | — | No workstreams defined | — | — | — |")
+    lines.extend([
+        "", "## Tasks", "",
+        "| ID | Workstream | State | Kind | Owner | Title | Next action |",
+        "|---|---|---|---|---|---|---|",
+    ])
+    for task in snapshot["tasks"]:
+        lines.append("| `%s` | %s | %s | %s | %s | %s | %s |" % (
+            task["id"], "`%s`" % task["workstream_id"] if task["workstream_id"] else "—",
+            task["status"], task["kind"], md_escape(task["owner"] or "—"),
+            md_escape(task["title"]), md_escape(task["next_action"] or "—"),
+        ))
+    if not snapshot["tasks"]:
+        lines.append("| — | — | — | — | — | No tasks yet | — |")
+    lines.extend(["", "## Open decisions", ""])
+    open_decisions = [d for d in snapshot["decisions"] if d["status"] == "OPEN"]
+    if not open_decisions:
+        lines.append("No open decisions.")
+    for decision in open_decisions:
+        lines.extend([
+            "### `%s` — %s" % (decision["id"], decision["kind"]), "",
+            decision["question"], "",
+            "- Recommendation: %s" % (decision["recommendation"] or "None"),
+            "- Blocks: %s" % ", ".join("`%s`" % x for x in decision["blocks"]), "",
+        ])
+    lines.extend(["", "## Current facts", ""])
+    current_facts = [fact for fact in snapshot["facts"] if fact["status"] == "CURRENT"]
+    if not current_facts:
+        lines.append("No current facts recorded.")
+    for fact in current_facts:
+        freshness = "expires %s" % fact["expires_at"] if fact["expires_at"] else "no automatic expiry"
+        lines.append("- **%s:** %s — observed %s from `%s`; %s" % (
+            md_escape(fact["subject"]), md_escape(fact["value"]), fact["observed_at"],
+            md_escape(fact["source"]), freshness,
+        ))
+    lines.extend(["", "## Recent events", ""])
+    conn = connect(root)
+    try:
+        events = conn.execute("SELECT * FROM events ORDER BY seq DESC LIMIT 20").fetchall()
+    finally:
+        conn.close()
+    for event in events:
+        lines.append("- `%s` %s — **%s** on `%s` by `%s`" % (
+            event["id"], event["occurred_at"], event["event_type"], event["entity_id"], event["actor"]
+        ))
+    path = root / "views" / "BOARD.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
+
+
+def inbox(conn, agent, after=None, advance=False, task_id=None):
+    cursor = conn.execute("SELECT last_event_seq FROM cursors WHERE agent_id=?", (agent,)).fetchone()
+    start = after if after is not None else (cursor["last_event_seq"] if cursor else 0)
+    if task_id:
+        task_row(conn, task_id)
+        task_ids = [task_id] + [r["depends_on"] for r in conn.execute(
+            "SELECT depends_on FROM task_dependencies WHERE task_id=?", (task_id,)
+        )]
+        placeholders = ",".join("?" for _ in task_ids)
+        decision_ids = [r["decision_id"] for r in conn.execute(
+            "SELECT decision_id FROM decision_tasks WHERE task_id IN (%s)" % placeholders, task_ids
+        )]
+        artifact_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM artifacts WHERE task_id IN (%s)" % placeholders, task_ids
+        )]
+        fact_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM facts WHERE task_id IN (%s)" % placeholders, task_ids
+        )]
+        run_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM agent_runs WHERE task_id IN (%s)" % placeholders, task_ids
+        )]
+        entity_ids = task_ids + decision_ids + artifact_ids + fact_ids + run_ids
+        entity_placeholders = ",".join("?" for _ in entity_ids)
+        m = mission(conn)
+        rows = conn.execute(
+            "SELECT * FROM events WHERE seq > ? AND (entity_id=? OR entity_id IN (%s)) ORDER BY seq" % entity_placeholders,
+            [start, m["id"]] + entity_ids,
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM events WHERE seq > ? ORDER BY seq", (start,)).fetchall()
+    result = []
+    for row in rows:
+        data = dict(row)
+        data["payload"] = json_load(data.pop("payload_json"), {})
+        result.append(data)
+    if advance and rows:
+        last = rows[-1]["seq"]
+        conn.execute(
+            """INSERT INTO cursors(agent_id, last_event_seq, updated_at) VALUES(?,?,?)
+               ON CONFLICT(agent_id) DO UPDATE SET last_event_seq=excluded.last_event_seq, updated_at=excluded.updated_at""",
+            (agent, last, utcnow()),
+        )
+        conn.commit()
+    return result
+
+
+def guidance_path(role):
+    return Path(__file__).resolve().parent / "guidance" / (role + ".md")
+
+
+def role_for_task(task):
+    if task["kind"] == "briefing":
+        return "briefer"
+    if task["kind"] == "verification":
+        return "verifier"
+    return "worker"
+
+
+def build_prompt(root, role, agent, task_id=None):
+    conn = connect(root)
+    try:
+        snapshot = mission_snapshot(conn)
+        unseen = inbox(conn, agent, advance=False, task_id=task_id)
+        task = None
+        if task_id:
+            task = task_dict(conn, task_row(conn, task_id))
+            linked = [decision_dict(conn, decision_row(conn, d)) for d in task["decisions"]]
+        else:
+            linked = []
+    finally:
+        conn.close()
+    cli = Path(__file__).resolve()
+    command_prefix = "python3 %s --root %s" % (shlex.quote(str(cli)), shlex.quote(str(root)))
+    guide = guidance_path(role)
+    if not guide.exists():
+        raise SwarmError("Missing role guidance: %s" % guide)
+    guide_text = guide.read_text(encoding="utf-8")
+    guide_text = guide_text.replace("<command_prefix>", command_prefix)
+    guide_text = guide_text.replace("<agent_id>", agent)
+    if task_id:
+        guide_text = guide_text.replace("<task_id>", task_id)
+    context = {
+        "agent_id": agent,
+        "role": role,
+        "command_prefix": command_prefix,
+        "mission": snapshot["mission"],
+        "task": task,
+        "linked_decisions": linked,
+        "unseen_events": unseen,
+    }
+    return "\n".join([
+        guide_text.rstrip(),
+        "",
+        "# Invocation context",
+        "",
+        "The JSON below is generated from canonical state. Re-read state with the CLI before acting if anything may have changed.",
+        "",
+        "```json",
+        json.dumps(context, indent=2, ensure_ascii=False),
+        "```",
+        "",
+    ])
+
+
+def write_prompt(root, role, agent, task_id=None):
+    prompt = build_prompt(root, role, agent, task_id)
+    name = "%s-%s-%s.md" % (utcnow().replace(":", "").replace("-", ""), role, agent)
+    path = root / "prompts" / name
+    path.write_text(prompt, encoding="utf-8")
+    return path
+
+
+def render_status_report(root):
+    conn = connect(root)
+    try:
+        reconcile_conn(conn)
+        snapshot = mission_snapshot(conn)
+        health = doctor(conn)
+        failed_runs = [dict(r) for r in conn.execute(
+            "SELECT * FROM agent_runs WHERE exit_code IS NOT NULL AND exit_code <> 0 ORDER BY ended_at DESC LIMIT 5"
+        )]
+    finally:
+        conn.close()
+    m = snapshot["mission"]
+    open_decisions = [d for d in snapshot["decisions"] if d["status"] == "OPEN"]
+    human = [d for d in open_decisions if d["kind"] in {"human_decision", "missing_access", "safety_stop"}]
+    other = [d for d in open_decisions if d not in human]
+    active = [t for t in snapshot["tasks"] if t["status"] in ACTIVE_TASK_STATES or t["status"] == "BLOCKED"]
+    counts = {}
+    for task in snapshot["tasks"]:
+        counts[task["status"]] = counts.get(task["status"], 0) + 1
+    lines = [
+        "# Executive swarm status", "", "Generated %s" % utcnow(), "",
+        "## Mission", "", "- Status: **%s**" % m["status"],
+        "- Phase: **%s**" % m["phase"], "- Objective: %s" % m["objective"],
+        "- Tasks: %s" % (", ".join("%s %s" % (count, state) for state, count in sorted(counts.items())) or "none"),
+        "", "## Major workstreams", "",
+    ]
+    if not snapshot["workstreams"]:
+        lines.append("No workstreams have been defined yet. During early discovery this means the executive view is still forming.")
+    for workstream in snapshot["workstreams"]:
+        task_counts = ", ".join(
+            "%s %s" % (count, state) for state, count in sorted(workstream["task_counts"].items())
+        ) or "no linked tasks"
+        human_ids = ", ".join("`%s`" % d["id"] for d in workstream["needs_human"]) or "No"
+        lines.extend([
+            "### %s (`%s`)" % (workstream["name"], workstream["id"]), "",
+            "- Status: **%s**" % workstream["status"],
+            "- Aiming to: %s" % workstream["outcome"],
+            "- How it is going: %s" % (workstream["progress_summary"] or "No progress summary recorded yet"),
+            "- Expected timing: %s" % forecast_text(workstream),
+            "- Forecast basis: %s" % (workstream["forecast_basis"] or "None recorded"),
+            "- Task state: %s" % task_counts,
+            "- Needs anything from you: %s" % human_ids, "",
+        ])
+    lines.extend(["", "## Needs human input", ""])
+    if not human:
+        lines.append("Nothing currently needs human input.")
+    for decision in human:
+        lines.extend([
+            "### `%s`" % decision["id"], "", decision["question"], "",
+            "- Recommendation: %s" % (decision["recommendation"] or "None recorded"),
+            "- Options: %s" % ("; ".join(decision["options"]) or "No fixed options"),
+            "- Blocks: %s" % ", ".join("`%s`" % x for x in decision["blocks"]), "",
+        ])
+    lines.extend(["", "## Other urgent matters", ""])
+    urgent_lines = []
+    for problem in health["problems"]:
+        urgent_lines.append("- **%s:** `%s` — %s" % (problem["severity"], problem["entity"], problem["problem"]))
+    for decision in other:
+        urgent_lines.append("- Open `%s` blocker `%s`: %s" % (decision["kind"], decision["id"], decision["question"]))
+    for run in failed_runs:
+        urgent_lines.append("- Agent run `%s` exited %s at %s" % (run["id"], run["exit_code"], run["ended_at"]))
+    lines.extend(urgent_lines or ["No urgent system matters detected."])
+    lines.extend(["", "## Active work", ""])
+    if not active:
+        lines.append("No active or blocked work.")
+    for task in active:
+        workstream = " in `%s`" % task["workstream_id"] if task["workstream_id"] else " (unassigned)"
+        lines.append("- `%s` **%s**%s — %s; owner `%s`; last checkpoint %s" % (
+            task["id"], task["status"], workstream, task["title"], task["owner"] or "none",
+            task["last_checkpoint_at"] or "never",
+        ))
+    path = root / "views" / "STATUS.md"
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
+
+
+def runner_config(root):
+    path = root / "runner.json"
+    if not path.exists():
+        raise SwarmError("Missing runner config: %s" % path)
+    config = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise SwarmError("Runner config must be a JSON object: %s" % path)
+    if (
+        not isinstance(config.get("command"), list) or not config["command"] or
+        not all(isinstance(part, str) and part for part in config["command"])
+    ):
+        raise SwarmError("Configure the non-empty argv array in %s" % path)
+    if not isinstance(config.get("models", {}), dict):
+        raise SwarmError("Runner models must be an object in %s" % path)
+    if config.get("working_directory") is not None and not isinstance(config["working_directory"], str):
+        raise SwarmError("Runner working_directory must be a string in %s" % path)
+    for key in ("timeout_seconds", "max_parallel"):
+        value = config.get(key, 3600 if key == "timeout_seconds" else 3)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise SwarmError("Runner %s must be a positive integer in %s" % (key, path))
+    return config
+
+
+def dispatch(root, role, agent, task_id=None, dry_run=False):
+    config = runner_config(root)
+    prompt_path = write_prompt(root, role, agent, task_id)
+    model = config.get("models", {}).get(role, "")
+    workdir = Path(config.get("working_directory") or root.parent).expanduser().resolve()
+    values = {
+        "prompt_file": str(prompt_path), "role": role, "task_id": task_id or "",
+        "agent_id": agent, "root": str(root), "workdir": str(workdir), "model": model,
+    }
+    command = [str(part).format(**values) for part in config["command"]]
+    if dry_run:
+        return {"command": command, "prompt_path": str(prompt_path)}
+    run_id = make_id("R")
+    run_dir = root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    conn = connect(root)
+    try:
+        m = mission(conn)
+        conn.execute(
+            """INSERT INTO agent_runs(id, mission_id, role, task_id, agent_id, prompt_path,
+               command_json, started_at) VALUES(?,?,?,?,?,?,?,?)""",
+            (run_id, m["id"], role, task_id, agent, str(prompt_path), json_dump(command), utcnow()),
+        )
+        add_event(conn, m["id"], "agent_run", run_id, "AGENT_RUN_STARTED", "dispatcher", {
+            "role": role, "agent_id": agent, "task_id": task_id,
+        })
+        conn.commit()
+    finally:
+        conn.close()
+    timeout = int(config.get("timeout_seconds", 3600))
+    try:
+        completed = subprocess.run(command, cwd=str(workdir), text=True, capture_output=True, timeout=timeout)
+        exit_code = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    except subprocess.TimeoutExpired as exc:
+        exit_code = 124
+        stdout = exc.stdout or ""
+        stderr = (exc.stderr or "") + "\nRunner timed out after %d seconds." % timeout
+    stdout_path = run_dir / "stdout.txt"
+    stderr_path = run_dir / "stderr.txt"
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    conn = connect(root)
+    try:
+        m = mission(conn)
+        conn.execute(
+            """UPDATE agent_runs SET ended_at=?, exit_code=?, stdout_path=?, stderr_path=? WHERE id=?""",
+            (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
+        )
+        add_event(conn, m["id"], "agent_run", run_id, "AGENT_RUN_FINISHED", "dispatcher", {
+            "exit_code": exit_code, "role": role, "task_id": task_id,
+        })
+        if task_id:
+            current = task_row(conn, task_id)
+            if current["owner"] == agent and current["status"] in ACTIVE_TASK_STATES:
+                conn.execute(
+                    "UPDATE tasks SET status='READY', owner=NULL, lease_until=NULL, updated_at=? WHERE id=?",
+                    (utcnow(), task_id),
+                )
+                add_event(conn, m["id"], "task", task_id, "TASK_RUN_ENDED_INCOMPLETE", "dispatcher", {
+                    "agent_id": agent, "exit_code": exit_code,
+                    "last_checkpoint_at": current["last_checkpoint_at"],
+                })
+        conn.commit()
+    finally:
+        conn.close()
+    return {"run_id": run_id, "exit_code": exit_code, "stdout": str(stdout_path), "stderr": str(stderr_path)}
+
+
+def setup_check(root):
+    """Validate a local harness adapter without launching the harness."""
+    checks = []
+    errors = []
+    warnings = []
+
+    def record(name, ok, detail, severity="error"):
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+        if not ok:
+            (errors if severity == "error" else warnings).append(detail)
+
+    database_ready = False
+    if not db_path(root).exists():
+        record("mission_state", False, "Mission state is missing; run swarmctl init first")
+    else:
+        try:
+            conn = connect(root)
+            try:
+                current = mission(conn)
+                state_health = doctor(conn)
+                schema = conn.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()
+                database_ready = True
+                record(
+                    "mission_state", True,
+                    "Mission %s is readable with schema %s" % (
+                        current["id"], schema["value"] if schema else "unknown",
+                    ),
+                )
+                state_errors = [
+                    item for item in state_health["problems"] if item["severity"] == "error"
+                ]
+                record(
+                    "state_invariants", not state_errors,
+                    "Canonical state has no invariant errors" if not state_errors else
+                    "Canonical state has invariant errors: %s" % "; ".join(
+                        "%s: %s" % (item["entity"], item["problem"]) for item in state_errors
+                    ),
+                )
+                for item in state_health["problems"]:
+                    if item["severity"] == "warning":
+                        warnings.append("State warning for %s: %s" % (item["entity"], item["problem"]))
+            finally:
+                conn.close()
+        except (SwarmError, sqlite3.Error, OSError) as exc:
+            record("mission_state", False, "Mission state could not be read: %s" % exc)
+
+    config_path = root / "runner.json"
+    config = None
+    if not config_path.exists():
+        record("runner_config", False, "Runner config is missing: %s" % config_path)
+    else:
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            record("runner_config", isinstance(config, dict), "Runner config is valid JSON object")
+            if not isinstance(config, dict):
+                config = None
+        except (json.JSONDecodeError, OSError) as exc:
+            record("runner_config", False, "Runner config is invalid: %s" % exc)
+
+    command = config.get("command") if config else None
+    command_valid = (
+        isinstance(command, list) and bool(command) and
+        all(isinstance(part, str) and part for part in command)
+    )
+    record(
+        "command_argv", command_valid,
+        "Runner command is a non-empty argv array" if command_valid else
+        "Runner command must be a non-empty array of non-empty strings",
+    )
+
+    if command_valid:
+        has_prompt = any("{prompt_file}" in part for part in command)
+        record(
+            "prompt_delivery", has_prompt,
+            "Runner command includes {prompt_file}" if has_prompt else
+            "Runner command must include {prompt_file} so every role receives its generated prompt",
+        )
+        executable = command[0]
+        executable_path = None
+        if "{" in executable or "}" in executable:
+            executable_detail = "Runner executable may not contain dynamic placeholders: %s" % executable
+        elif Path(executable).is_absolute() or os.sep in executable:
+            configured_value = config.get("working_directory")
+            configured_workdir = (
+                Path(configured_value).expanduser().resolve()
+                if isinstance(configured_value, str) and configured_value else root.parent
+            )
+            candidate = Path(executable).expanduser()
+            executable_path = candidate if candidate.is_absolute() else configured_workdir / candidate
+            executable_detail = "Resolved runner executable: %s" % executable_path
+        else:
+            found = shutil.which(executable)
+            executable_path = Path(found) if found else None
+            executable_detail = (
+                "Resolved runner executable: %s" % found if found else
+                "Runner executable is not available on PATH: %s" % executable
+            )
+        executable_ok = bool(
+            executable_path and executable_path.is_file() and os.access(str(executable_path), os.X_OK)
+        )
+        record("runner_executable", executable_ok, executable_detail)
+        shell_names = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
+        direct_shell = Path(executable).name.lower() in shell_names
+        record(
+            "no_shell_interpolation", not direct_shell,
+            "Runner invokes an executable directly" if not direct_shell else
+            "Runner command may not invoke a shell directly; use a fixed adapter executable",
+        )
+    else:
+        record("prompt_delivery", False, "Prompt delivery cannot be checked until command_argv is fixed")
+        record("runner_executable", False, "Runner executable cannot be checked until command_argv is fixed")
+        record("no_shell_interpolation", False, "Shell use cannot be checked until command_argv is fixed")
+
+    workdir_value = config.get("working_directory") if config else None
+    if workdir_value is not None and not isinstance(workdir_value, str):
+        workdir = root.parent
+        workdir_detail = "working_directory must be a string"
+        workdir_ok = False
+    elif not workdir_value:
+        workdir = root.parent
+        workdir_detail = "Runner uses mission parent as working directory: %s" % workdir
+        workdir_ok = workdir.is_dir() and os.access(str(workdir), os.R_OK | os.X_OK)
+    else:
+        raw_workdir = Path(workdir_value).expanduser()
+        workdir = raw_workdir.resolve()
+        workdir_detail = "Runner working directory: %s" % workdir
+        if not raw_workdir.is_absolute():
+            warnings.append("Use an absolute working_directory to avoid launch-directory ambiguity")
+        workdir_ok = workdir.is_dir() and os.access(str(workdir), os.R_OK | os.X_OK)
+    record("working_directory", workdir_ok, workdir_detail)
+
+    timeout = config.get("timeout_seconds", 3600) if config else None
+    timeout_ok = isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0
+    record(
+        "timeout", timeout_ok,
+        "Runner timeout is %s seconds" % timeout if timeout_ok else
+        "timeout_seconds must be a positive integer",
+    )
+
+    max_parallel = config.get("max_parallel", 3) if config else None
+    max_parallel_ok = (
+        isinstance(max_parallel, int) and not isinstance(max_parallel, bool) and max_parallel > 0
+    )
+    record(
+        "max_parallel", max_parallel_ok,
+        "Runner permits up to %s concurrent workers" % max_parallel if max_parallel_ok else
+        "max_parallel must be a positive integer",
+    )
+
+    models = config.get("models", {}) if config else None
+    models_ok = (
+        isinstance(models, dict) and
+        all(isinstance(role, str) and isinstance(model, str) for role, model in models.items())
+    )
+    record(
+        "model_mapping", models_ok,
+        "Runner model mapping is valid" if models_ok else
+        "models must be an object whose keys and values are strings",
+    )
+
+    package_root = Path(__file__).resolve().parent
+    required_guidance = [
+        "manager.md", "worker.md", "briefer.md", "verifier.md", "liaison.md",
+        "status.md", "HARNESS_SYSTEM_PROMPT.md",
+    ]
+    missing_guidance = [
+        name for name in required_guidance if not (package_root / "guidance" / name).is_file()
+    ]
+    record(
+        "role_guidance", not missing_guidance,
+        "All required role guidance is present" if not missing_guidance else
+        "Missing role guidance: %s" % ", ".join(missing_guidance),
+    )
+
+    prerequisite_checks = {
+        item["name"]: item["ok"] for item in checks
+    }
+    dry_run_ready = database_ready and all(prerequisite_checks.get(name, False) for name in (
+        "runner_config", "command_argv", "prompt_delivery", "runner_executable",
+        "no_shell_interpolation", "working_directory", "timeout", "max_parallel",
+        "model_mapping", "role_guidance",
+    ))
+    if dry_run_ready:
+        try:
+            result = dispatch(
+                root, "manager", "setup-check-manager", dry_run=True
+            )
+            prompt_path = Path(result["prompt_path"])
+            record(
+                "prompt_dry_run", prompt_path.is_file(),
+                "Generated manager prompt and expanded argv at %s" % prompt_path,
+            )
+        except (SwarmError, OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+            record("prompt_dry_run", False, "Dry-run prompt generation failed: %s" % exc)
+    else:
+        record(
+            "prompt_dry_run", False,
+            "Dry-run prompt generation skipped until earlier setup errors are fixed",
+        )
+
+    warnings.extend([
+        "Static checks cannot prove that the harness starts a fresh model context; run the playbook's fresh-context test",
+        "Static checks cannot prove agent CLI permissions, exit-code forwarding, authentication, or concurrent invocation behavior",
+    ])
+    return {"ok": not errors, "checks": checks, "errors": errors, "warnings": warnings}
+
+
+def run_loop(root, max_cycles, dry_run=False):
+    config = runner_config(root)
+    max_parallel = int(config.get("max_parallel", 3))
+    results = []
+    for cycle in range(1, max_cycles + 1):
+        conn = connect(root)
+        try:
+            reconcile_conn(conn)
+            m = mission(conn)
+            if m["status"] == "DONE":
+                return {"state": "DONE", "cycles": cycle - 1, "runs": results}
+        finally:
+            conn.close()
+
+        manager_result = dispatch(root, "manager", "manager", dry_run=dry_run)
+        results.append(manager_result)
+        if dry_run:
+            return {"state": "DRY_RUN", "cycles": 1, "runs": results}
+
+        conn = connect(root)
+        try:
+            reconcile_conn(conn)
+            m = mission(conn)
+            if m["status"] == "DONE":
+                return {"state": "DONE", "cycles": cycle, "runs": results}
+            ready = conn.execute(
+                "SELECT * FROM tasks WHERE status='READY' ORDER BY priority DESC, created_at LIMIT ?",
+                (max_parallel,),
+            ).fetchall()
+            open_decisions = conn.execute("SELECT COUNT(*) AS n FROM decisions WHERE status='OPEN'").fetchone()["n"]
+            assignments = []
+            for index, row in enumerate(ready):
+                agent = "worker-%d-%d" % (cycle, index + 1)
+                claim_task(conn, row["id"], agent, int(config.get("timeout_seconds", 3600)) + 300)
+                assignments.append((role_for_task(row), agent, row["id"]))
+        finally:
+            conn.close()
+
+        if assignments:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as pool:
+                futures = [pool.submit(dispatch, root, role, agent, task_id, False)
+                           for role, agent, task_id in assignments]
+                for future in concurrent.futures.as_completed(futures):
+                    results.append(future.result())
+        elif open_decisions:
+            return {"state": "WAITING_FOR_DECISION", "cycles": cycle, "runs": results}
+        else:
+            return {"state": "NO_READY_WORK", "cycles": cycle, "runs": results}
+    return {"state": "MAX_CYCLES", "cycles": max_cycles, "runs": results}
+
+
+def doctor(conn):
+    problems = []
+    now = dt.datetime.now(dt.timezone.utc)
+    current_mission = mission(conn)
+    for row in conn.execute("SELECT * FROM tasks"):
+        if row["status"] in ACTIVE_TASK_STATES and not row["owner"]:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "active task has no owner"})
+        if row["status"] in ACTIVE_TASK_STATES and not row["lease_until"]:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "active task has no lease"})
+        if row["lease_until"] and parse_time(row["lease_until"]) < now and row["status"] in ACTIVE_TASK_STATES:
+            problems.append({"severity": "warning", "entity": row["id"], "problem": "task lease is expired"})
+        if row["status"] == "DONE" and not json_load(row["verification_json"], []):
+            problems.append({"severity": "error", "entity": row["id"], "problem": "done task lacks verification"})
+        if row["status"] == "BLOCKED" and open_decision_count(conn, row["id"]) == 0:
+            problems.append({"severity": "warning", "entity": row["id"], "problem": "blocked task has no open decision"})
+        if current_mission["phase"] != "DISCOVERY":
+            linked = conn.execute("SELECT 1 FROM task_workstreams WHERE task_id=?", (row["id"],)).fetchone()
+            if not linked:
+                problems.append({"severity": "warning", "entity": row["id"], "problem": "task is not assigned to an executive workstream"})
+    for row in conn.execute("SELECT * FROM workstreams"):
+        if row["status"] in {"ACTIVE", "BLOCKED", "VERIFYING"} and not row["progress_summary"]:
+            problems.append({"severity": "warning", "entity": row["id"], "problem": "active workstream lacks a progress summary"})
+        linked_counts = conn.execute(
+            """SELECT COUNT(*) AS total,
+               SUM(CASE WHEN t.status NOT IN ('DONE','CANCELLED') THEN 1 ELSE 0 END) AS remaining,
+               SUM(CASE WHEN t.status IN ('CLAIMED','RUNNING','VERIFYING') THEN 1 ELSE 0 END) AS active
+               FROM task_workstreams tw JOIN tasks t ON t.id=tw.task_id WHERE tw.workstream_id=?""",
+            (row["id"],),
+        ).fetchone()
+        if row["status"] == "PLANNED" and (linked_counts["active"] or 0):
+            problems.append({"severity": "warning", "entity": row["id"], "problem": "planned workstream has active tasks"})
+        if row["status"] in {"ACTIVE", "BLOCKED", "VERIFYING"} and linked_counts["total"] and not linked_counts["remaining"]:
+            problems.append({"severity": "warning", "entity": row["id"], "problem": "all linked tasks are terminal but workstream is not closed"})
+        if row["status"] not in {"DONE", "CANCELLED"} and row["forecast_latest"] and parse_time(row["forecast_latest"]) < now:
+            problems.append({"severity": "warning", "entity": row["id"], "problem": "latest forecast has passed; update the forecast and rationale"})
+        if row["status"] == "DONE":
+            remaining = conn.execute(
+                """SELECT COUNT(*) AS n FROM task_workstreams tw JOIN tasks t ON t.id=tw.task_id
+                   WHERE tw.workstream_id=? AND t.status NOT IN ('DONE','CANCELLED')""",
+                (row["id"],),
+            ).fetchone()["n"]
+            if remaining:
+                problems.append({"severity": "error", "entity": row["id"], "problem": "done workstream has non-terminal tasks"})
+    duplicate_titles = conn.execute(
+        "SELECT title, COUNT(*) AS n FROM tasks WHERE status NOT IN ('DONE','CANCELLED') GROUP BY title HAVING COUNT(*) > 1"
+    ).fetchall()
+    for row in duplicate_titles:
+        problems.append({"severity": "warning", "entity": "tasks", "problem": "duplicate active title: %s" % row["title"]})
+    return {"ok": not any(p["severity"] == "error" for p in problems), "problems": problems}
+
+
+def audit_summary(conn):
+    snap = mission_snapshot(conn)
+    counts = {}
+    for task in snap["tasks"]:
+        counts[task["status"]] = counts.get(task["status"], 0) + 1
+    workstream_counts = {}
+    forecast_outcomes = []
+    for workstream in snap["workstreams"]:
+        workstream_counts[workstream["status"]] = workstream_counts.get(workstream["status"], 0) + 1
+        if workstream["status"] == "DONE" and workstream["forecast_latest"]:
+            forecast_outcomes.append({
+                "workstream_id": workstream["id"],
+                "name": workstream["name"],
+                "latest_forecast": workstream["forecast_latest"],
+                "completed_at": workstream["updated_at"],
+                "seconds_after_latest_forecast": round(
+                    (parse_time(workstream["updated_at"]) - parse_time(workstream["forecast_latest"])).total_seconds(), 3
+                ),
+            })
+    events = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+    runs = conn.execute("SELECT COUNT(*) AS n FROM agent_runs").fetchone()["n"]
+    failed_runs = conn.execute("SELECT COUNT(*) AS n FROM agent_runs WHERE exit_code IS NOT NULL AND exit_code <> 0").fetchone()["n"]
+    unacked = conn.execute(
+        """SELECT COUNT(*) AS n FROM decision_tasks dt JOIN decisions d ON d.id=dt.decision_id
+           LEFT JOIN decision_acks a ON a.decision_id=d.id AND a.task_id=dt.task_id
+           WHERE d.status='RESOLVED' AND (a.version IS NULL OR a.version < d.version)"""
+    ).fetchone()["n"]
+    event_type_counts = {row["event_type"]: row["n"] for row in conn.execute(
+        "SELECT event_type, COUNT(*) AS n FROM events GROUP BY event_type ORDER BY event_type"
+    )}
+    decision_resolution_seconds = []
+    for row in conn.execute("SELECT created_at, decided_at FROM decisions WHERE decided_at IS NOT NULL"):
+        decision_resolution_seconds.append((parse_time(row["decided_at"]) - parse_time(row["created_at"])).total_seconds())
+    decision_ack_seconds = []
+    for row in conn.execute(
+        """SELECT d.decided_at, a.acknowledged_at FROM decision_acks a
+           JOIN decisions d ON d.id=a.decision_id WHERE d.decided_at IS NOT NULL"""
+    ):
+        decision_ack_seconds.append((parse_time(row["acknowledged_at"]) - parse_time(row["decided_at"])).total_seconds())
+    task_cycle_seconds = []
+    for row in conn.execute("SELECT created_at, updated_at FROM tasks WHERE status IN ('DONE','CANCELLED')"):
+        task_cycle_seconds.append((parse_time(row["updated_at"]) - parse_time(row["created_at"])).total_seconds())
+
+    def duration_stats(values):
+        if not values:
+            return {"count": 0, "average_seconds": None, "maximum_seconds": None}
+        return {
+            "count": len(values),
+            "average_seconds": round(sum(values) / len(values), 3),
+            "maximum_seconds": round(max(values), 3),
+        }
+
+    return {
+        "task_counts": counts, "workstream_counts": workstream_counts,
+        "completed_workstream_forecast_outcomes": forecast_outcomes,
+        "event_count": events, "agent_run_count": runs,
+        "failed_agent_runs": failed_runs, "unacknowledged_resolved_decisions": unacked,
+        "event_type_counts": event_type_counts,
+        "decision_resolution_latency": duration_stats(decision_resolution_seconds),
+        "decision_ack_latency": duration_stats(decision_ack_seconds),
+        "terminal_task_cycle_time": duration_stats(task_cycle_seconds),
+        "doctor": doctor(conn),
+    }
+
+
+def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
+    render_board(root)
+    conn = connect(root)
+    try:
+        snapshot = mission_snapshot(conn)
+        events = []
+        for row in conn.execute("SELECT * FROM events ORDER BY seq"):
+            data = dict(row)
+            data["payload"] = json_load(data.pop("payload_json"), {})
+            events.append(data)
+        runs = [dict(row) for row in conn.execute("SELECT * FROM agent_runs ORDER BY started_at")]
+        summary = audit_summary(conn)
+    finally:
+        conn.close()
+
+    output = Path(output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {"format_version": 1, "created_at": utcnow(), "swarmctl_version": VERSION,
+                "source_root": str(root), "include_artifacts": bool(include_artifacts)}
+    with tempfile.TemporaryDirectory(prefix="swarm-audit-") as tmp:
+        stage = Path(tmp) / "swarm-audit"
+        stage.mkdir()
+        (stage / "snapshot.json").write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (stage / "events.jsonl").write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events), encoding="utf-8")
+        (stage / "agent-runs.json").write_text(json.dumps(runs, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (stage / "health.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        shutil.copy2(root / "views" / "BOARD.md", stage / "BOARD.md")
+        source_db = connect(root)
+        audit_db = sqlite3.connect(str(stage / "state.sqlite3"))
+        try:
+            source_db.backup(audit_db)
+        finally:
+            audit_db.close()
+            source_db.close()
+        package_root = Path(__file__).resolve().parent
+        if (package_root / "guidance").exists():
+            shutil.copytree(package_root / "guidance", stage / "guidance")
+        if (root / "prompts").exists():
+            shutil.copytree(root / "prompts", stage / "prompts")
+        if (root / "runs").exists():
+            shutil.copytree(root / "runs", stage / "runs")
+        audit_guide = textwrap.dedent("""\
+            # How to review this swarm run
+
+            Start with `snapshot.json`, `health.json`, and `BOARD.md`. Use `events.jsonl` to
+            reconstruct causality and `agent-runs.json` plus `runs/` to inspect individual
+            invocations. The SQLite database is included for custom queries.
+
+            Review for: stale facts, weak or unstable workstreams, forecast misses, speculative
+            tasks, duplicated work, missing checkpoints,
+            long human-decision propagation, expired leases, weak verification, manager churn,
+            excessive fan-out, and work that bypassed canonical state.
+
+            Secrets warning: prompts, stdout, stderr, and registered artifacts may contain
+            sensitive material. Inspect this archive before sharing it outside your organization.
+            """)
+        (stage / "REVIEW_ME.md").write_text(audit_guide, encoding="utf-8")
+        copied = []
+        skipped = []
+        if include_artifacts:
+            artifact_dir = stage / "artifacts"
+            artifact_dir.mkdir()
+            limit = max_artifact_mb * 1024 * 1024
+            for artifact in snapshot["artifacts"]:
+                path = Path(artifact["path"])
+                if path.is_file() and path.stat().st_size <= limit:
+                    target = artifact_dir / (artifact["id"] + "-" + path.name)
+                    shutil.copy2(path, target)
+                    copied.append({"id": artifact["id"], "archive_path": str(target.relative_to(stage))})
+                else:
+                    skipped.append({"id": artifact["id"], "path": str(path), "reason": "missing, non-file, or over size limit"})
+        (stage / "artifact-export.json").write_text(json.dumps({"copied": copied, "skipped": skipped}, indent=2) + "\n", encoding="utf-8")
+        files = []
+        for path in sorted(stage.rglob("*")):
+            if path.is_file():
+                sha, size = hash_file(path)
+                files.append({"path": str(path.relative_to(stage)), "sha256": sha, "size_bytes": size})
+        manifest["files"] = files
+        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        with zipfile.ZipFile(str(output), "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(stage.rglob("*")):
+                if path.is_file():
+                    archive.write(str(path), str(path.relative_to(stage.parent)))
+    return output
+
+
+def print_json(value):
+    print(json.dumps(value, indent=2, ensure_ascii=False))
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--root", help="Swarm workspace (default: $SWARM_ROOT or .swarm)")
+    p.add_argument("--version", action="version", version=VERSION)
+    sub = p.add_subparsers(dest="command", required=True)
+
+    init = sub.add_parser("init", help="Create a mission workspace")
+    init.add_argument("--objective", required=True)
+    init.add_argument("--success", action="append", default=[], help="Repeatable success condition")
+    init.add_argument("--constraint", action="append", default=[], help="Repeatable safety or scope boundary")
+
+    sub.add_parser("status", help="Show the current canonical snapshot")
+    sub.add_parser("board", help="Regenerate the Markdown board")
+    sub.add_parser("report", help="Generate the executive workstream and action report")
+    sub.add_parser("reconcile", help="Apply deterministic readiness and lease transitions")
+    sub.add_parser("doctor", help="Check state invariants")
+    sub.add_parser("setup-check", help="Validate harness integration without launching an agent")
+
+    ask = sub.add_parser("ask", help="Start a read-only briefing inquiry")
+    ask.add_argument("--question", required=True)
+    ask.add_argument("--workstream")
+    ask.add_argument("--depends-on", action="append", default=[])
+    ask.add_argument("--actor", default="human")
+
+    workstream = sub.add_parser("workstream", help="Manage executive-level workstreams")
+    workstream_sub = workstream.add_subparsers(dest="workstream_command", required=True)
+    workstream_add = workstream_sub.add_parser("add")
+    workstream_add.add_argument("--name", required=True)
+    workstream_add.add_argument("--outcome", required=True)
+    workstream_add.add_argument("--status", type=str.upper, choices=sorted(VALID_WORKSTREAM_STATES), default="PLANNED")
+    workstream_add.add_argument("--actor", default="manager")
+    workstream_update = workstream_sub.add_parser("update")
+    workstream_update.add_argument("workstream_id")
+    workstream_update.add_argument("--status", type=str.upper, choices=sorted(VALID_WORKSTREAM_STATES))
+    workstream_update.add_argument("--summary")
+    workstream_update.add_argument("--forecast-earliest")
+    workstream_update.add_argument("--forecast-latest")
+    workstream_update.add_argument("--forecast-confidence", type=str.lower, choices=sorted(VALID_FORECAST_CONFIDENCE))
+    workstream_update.add_argument("--forecast-basis")
+    workstream_update.add_argument("--actor", default="manager")
+    workstream_link = workstream_sub.add_parser("link-task")
+    workstream_link.add_argument("workstream_id")
+    workstream_link.add_argument("--task", required=True)
+    workstream_link.add_argument("--actor", default="manager")
+    workstream_sub.add_parser("list")
+    workstream_show = workstream_sub.add_parser("show")
+    workstream_show.add_argument("workstream_id")
+
+    task = sub.add_parser("task", help="Manage tasks")
+    task_sub = task.add_subparsers(dest="task_command", required=True)
+    add = task_sub.add_parser("add")
+    add.add_argument("--title", required=True)
+    add.add_argument("--description", required=True)
+    add.add_argument("--kind", choices=sorted(VALID_TASK_KINDS), required=True)
+    add.add_argument("--acceptance", action="append", default=[], required=True)
+    add.add_argument("--depends-on", action="append", default=[])
+    add.add_argument("--workstream", help="Executive workstream that owns this task")
+    add.add_argument("--priority", type=int, default=50)
+    add.add_argument("--actor", default="manager")
+    add.add_argument("--ready", action="store_true", help="Authorize immediately")
+    approve = task_sub.add_parser("approve")
+    approve.add_argument("task_id")
+    approve.add_argument("--actor", default="manager")
+    claim = task_sub.add_parser("claim")
+    claim.add_argument("task_id")
+    claim.add_argument("--agent", required=True)
+    claim.add_argument("--lease-seconds", type=int, default=1800)
+    checkpoint = task_sub.add_parser("checkpoint")
+    checkpoint.add_argument("task_id")
+    checkpoint.add_argument("--agent", required=True)
+    checkpoint.add_argument("--summary", required=True)
+    checkpoint.add_argument("--next-action", required=True)
+    checkpoint.add_argument("--lease-seconds", type=int, default=1800)
+    complete = task_sub.add_parser("complete")
+    complete.add_argument("task_id")
+    complete.add_argument("--agent", required=True)
+    complete.add_argument("--result", required=True)
+    complete.add_argument("--verification", action="append", default=[], required=True)
+    complete.add_argument("--artifact", action="append", default=[])
+    cancel = task_sub.add_parser("cancel")
+    cancel.add_argument("task_id")
+    cancel.add_argument("--actor", default="manager")
+    cancel.add_argument("--reason", required=True)
+    block = task_sub.add_parser("block")
+    block.add_argument("task_id")
+    block.add_argument("--agent", required=True)
+    block.add_argument("--kind", choices=sorted(VALID_BLOCKER_KINDS), required=True)
+    block.add_argument("--question", required=True)
+    block.add_argument("--recommendation")
+    block.add_argument("--option", action="append", default=[])
+    task_sub.add_parser("list")
+    show = task_sub.add_parser("show")
+    show.add_argument("task_id")
+
+    decision = sub.add_parser("decision", help="Manage durable decisions")
+    decision_sub = decision.add_subparsers(dest="decision_command", required=True)
+    decision_sub.add_parser("list")
+    resolve = decision_sub.add_parser("resolve")
+    resolve.add_argument("decision_id")
+    resolve.add_argument("--answer", required=True)
+    resolve.add_argument("--actor", default="human")
+    revise = decision_sub.add_parser("revise")
+    revise.add_argument("decision_id")
+    revise.add_argument("--answer", required=True)
+    revise.add_argument("--actor", default="human")
+    link = decision_sub.add_parser("link")
+    link.add_argument("decision_id")
+    link.add_argument("--task", required=True)
+    link.add_argument("--actor", default="manager")
+    ack = decision_sub.add_parser("ack")
+    ack.add_argument("decision_id")
+    ack.add_argument("--task", required=True)
+    ack.add_argument("--agent", required=True)
+
+    fact = sub.add_parser("fact", help="Record sourced, time-bounded operational facts")
+    fact_sub = fact.add_subparsers(dest="fact_command", required=True)
+    fact_list = fact_sub.add_parser("list")
+    fact_list.add_argument("--include-expired", action="store_true")
+    fact_record = fact_sub.add_parser("record")
+    fact_record.add_argument("--subject", required=True)
+    fact_record.add_argument("--value", required=True)
+    fact_record.add_argument("--source", required=True)
+    fact_record.add_argument("--actor", required=True)
+    fact_record.add_argument("--task")
+    fact_record.add_argument("--observed-at")
+    fact_record.add_argument("--expires-at")
+    fact_record.add_argument("--ttl-seconds", type=int)
+
+    inbox_p = sub.add_parser("inbox", help="Read all events since an agent cursor")
+    inbox_p.add_argument("--agent", required=True)
+    inbox_p.add_argument("--task", help="Limit events to one task and its dependencies")
+    inbox_p.add_argument("--after", type=int)
+    inbox_p.add_argument("--advance", action="store_true")
+
+    prompt_p = sub.add_parser("prompt", help="Generate a grounded role prompt")
+    prompt_p.add_argument("--role", choices=["manager", "worker", "liaison", "status", "briefer", "verifier"], required=True)
+    prompt_p.add_argument("--agent", required=True)
+    prompt_p.add_argument("--task")
+    prompt_p.add_argument("--write", action="store_true")
+
+    dispatch_p = sub.add_parser("dispatch", help="Invoke the configured third-party harness")
+    dispatch_p.add_argument("--role", choices=["manager", "worker", "liaison", "status", "briefer", "verifier"], required=True)
+    dispatch_p.add_argument("--agent", required=True)
+    dispatch_p.add_argument("--task")
+    dispatch_p.add_argument("--dry-run", action="store_true")
+
+    run_p = sub.add_parser("run", help="Run manager/worker cycles through the configured harness")
+    run_p.add_argument("--max-cycles", type=int, default=20)
+    run_p.add_argument("--dry-run", action="store_true")
+
+    mission_p = sub.add_parser("mission", help="Manage mission lifecycle")
+    mission_sub = mission_p.add_subparsers(dest="mission_command", required=True)
+    phase = mission_sub.add_parser("phase")
+    phase.add_argument("phase")
+    phase.add_argument("--actor", default="manager")
+    done = mission_sub.add_parser("complete")
+    done.add_argument("--evidence", required=True)
+    done.add_argument("--actor", default="manager")
+
+    export_p = sub.add_parser("export", help="Create a reviewable audit ZIP")
+    export_p.add_argument("--output", required=True)
+    export_p.add_argument("--include-artifacts", action="store_true")
+    export_p.add_argument("--max-artifact-mb", type=int, default=25)
+    return p
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    root = root_path(args.root)
+    try:
+        if args.command == "init":
+            mission_id = initialize(root, args.objective, args.success, args.constraint)
+            print_json({"root": str(root), "mission_id": mission_id, "board": str(root / "views" / "BOARD.md")})
+            return 0
+
+        if args.command == "board":
+            print(render_board(root))
+            return 0
+
+        if args.command == "report":
+            print(render_status_report(root))
+            return 0
+
+        if args.command == "reconcile":
+            conn = connect(root)
+            try:
+                print_json({"changed": reconcile_conn(conn)})
+            finally:
+                conn.close()
+            render_board(root)
+            return 0
+
+        if args.command == "status":
+            conn = connect(root)
+            try:
+                reconcile_conn(conn)
+                print_json(mission_snapshot(conn))
+            finally:
+                conn.close()
+            return 0
+
+        if args.command == "doctor":
+            conn = connect(root)
+            try:
+                result = doctor(conn)
+            finally:
+                conn.close()
+            print_json(result)
+            return 0 if result["ok"] else 2
+
+        if args.command == "setup-check":
+            result = setup_check(root)
+            print_json(result)
+            return 0 if result["ok"] else 2
+
+        if args.command == "ask":
+            conn = connect(root)
+            try:
+                question = args.question.strip()
+                title = "Inquiry: %s" % question.splitlines()[0][:100]
+                task_id = add_task(
+                    conn, title, question, "briefing",
+                    [
+                        "Answer distinguishes observed facts from inference",
+                        "Answer cites durable task, event, artifact, or source identifiers",
+                        "Answer states confidence, uncertainty, and recommended next action",
+                    ],
+                    args.depends_on, 40, args.actor, True, args.workstream,
+                )
+                print_json({"inquiry_task_id": task_id, "next": "Run the orchestrator, then use task show"})
+            finally:
+                conn.close()
+            render_board(root)
+            return 0
+
+        if args.command == "workstream":
+            conn = connect(root)
+            try:
+                if args.workstream_command == "add":
+                    workstream_id = add_workstream(conn, args.name, args.outcome, args.actor, args.status)
+                    print_json({"workstream_id": workstream_id})
+                elif args.workstream_command == "update":
+                    update_workstream(
+                        conn, args.workstream_id, args.actor, args.status, args.summary,
+                        args.forecast_earliest, args.forecast_latest,
+                        args.forecast_confidence, args.forecast_basis,
+                    )
+                    print_json(workstream_dict(conn, workstream_row(conn, args.workstream_id)))
+                elif args.workstream_command == "link-task":
+                    changed = link_task_workstream(conn, args.workstream_id, args.task, args.actor)
+                    print_json({"workstream_id": args.workstream_id, "task_id": args.task, "changed": changed})
+                elif args.workstream_command == "list":
+                    print_json([workstream_dict(conn, row) for row in conn.execute(
+                        "SELECT * FROM workstreams ORDER BY created_at")])
+                elif args.workstream_command == "show":
+                    print_json(workstream_dict(conn, workstream_row(conn, args.workstream_id)))
+            finally:
+                conn.close()
+            render_board(root)
+            render_status_report(root)
+            return 0
+
+        if args.command == "task":
+            conn = connect(root)
+            try:
+                if args.task_command == "add":
+                    task_id = add_task(conn, args.title, args.description, args.kind, args.acceptance,
+                                       args.depends_on, args.priority, args.actor, args.ready, args.workstream)
+                    print_json({"task_id": task_id})
+                elif args.task_command == "approve":
+                    approve_task(conn, args.task_id, args.actor)
+                    print_json({"task_id": args.task_id, "authorized": True})
+                elif args.task_command == "claim":
+                    generation = claim_task(conn, args.task_id, args.agent, args.lease_seconds)
+                    print_json({"task_id": args.task_id, "agent": args.agent, "generation": generation})
+                elif args.task_command == "checkpoint":
+                    checkpoint_task(conn, args.task_id, args.agent, args.summary, args.next_action, args.lease_seconds)
+                    print_json({"task_id": args.task_id, "status": "RUNNING"})
+                elif args.task_command == "complete":
+                    complete_task(conn, args.task_id, args.agent, args.result, args.verification, args.artifact)
+                    print_json({"task_id": args.task_id, "status": "DONE"})
+                elif args.task_command == "cancel":
+                    cancel_task(conn, args.task_id, args.actor, args.reason)
+                    print_json({"task_id": args.task_id, "status": "CANCELLED"})
+                elif args.task_command == "block":
+                    decision_id = block_task(conn, args.task_id, args.agent, args.kind, args.question,
+                                             args.recommendation, args.option)
+                    print_json({"task_id": args.task_id, "status": "BLOCKED", "decision_id": decision_id})
+                elif args.task_command == "list":
+                    reconcile_conn(conn)
+                    print_json([task_dict(conn, r) for r in conn.execute(
+                        "SELECT * FROM tasks ORDER BY priority DESC, created_at")])
+                elif args.task_command == "show":
+                    reconcile_conn(conn)
+                    print_json(task_dict(conn, task_row(conn, args.task_id)))
+            finally:
+                conn.close()
+            render_board(root)
+            return 0
+
+        if args.command == "decision":
+            conn = connect(root)
+            try:
+                if args.decision_command == "list":
+                    reconcile_conn(conn)
+                    print_json([decision_dict(conn, r) for r in conn.execute(
+                        "SELECT * FROM decisions ORDER BY status, created_at")])
+                elif args.decision_command == "resolve":
+                    version = resolve_decision(conn, args.decision_id, args.answer, args.actor)
+                    print_json({"decision_id": args.decision_id, "status": "RESOLVED", "version": version})
+                elif args.decision_command == "revise":
+                    version = revise_decision(conn, args.decision_id, args.answer, args.actor)
+                    print_json({"decision_id": args.decision_id, "status": "RESOLVED", "version": version})
+                elif args.decision_command == "link":
+                    linked = link_decision(conn, args.decision_id, args.task, args.actor)
+                    print_json({"decision_id": args.decision_id, "task_id": args.task, "linked": linked})
+                elif args.decision_command == "ack":
+                    acknowledge_decision(conn, args.decision_id, args.task, args.agent)
+                    print_json({"decision_id": args.decision_id, "task_id": args.task, "acknowledged": True})
+            finally:
+                conn.close()
+            render_board(root)
+            return 0
+
+        if args.command == "fact":
+            conn = connect(root)
+            try:
+                if args.fact_command == "list":
+                    reconcile_conn(conn)
+                    if args.include_expired:
+                        rows = conn.execute("SELECT * FROM facts ORDER BY subject, observed_at DESC")
+                    else:
+                        rows = conn.execute("SELECT * FROM facts WHERE status='CURRENT' ORDER BY subject")
+                    print_json([dict(row) for row in rows])
+                else:
+                    fact_id = record_fact(
+                        conn, args.subject, args.value, args.source, args.actor, args.task,
+                        args.observed_at, args.expires_at, args.ttl_seconds,
+                    )
+                    print_json({"fact_id": fact_id})
+            finally:
+                conn.close()
+            render_board(root)
+            return 0
+
+        if args.command == "inbox":
+            conn = connect(root)
+            try:
+                reconcile_conn(conn)
+                print_json(inbox(conn, args.agent, args.after, args.advance, args.task))
+            finally:
+                conn.close()
+            return 0
+
+        if args.command == "prompt":
+            if args.write:
+                print(write_prompt(root, args.role, args.agent, args.task))
+            else:
+                print(build_prompt(root, args.role, args.agent, args.task))
+            return 0
+
+        if args.command == "dispatch":
+            print_json(dispatch(root, args.role, args.agent, args.task, args.dry_run))
+            render_board(root)
+            return 0
+
+        if args.command == "run":
+            print_json(run_loop(root, args.max_cycles, args.dry_run))
+            render_board(root)
+            return 0
+
+        if args.command == "mission":
+            conn = connect(root)
+            try:
+                if args.mission_command == "phase":
+                    set_mission_phase(conn, args.phase, args.actor)
+                    print_json({"phase": args.phase.upper()})
+                else:
+                    complete_mission(conn, args.evidence, args.actor)
+                    print_json({"status": "DONE"})
+            finally:
+                conn.close()
+            render_board(root)
+            return 0
+
+        if args.command == "export":
+            print(export_audit(root, args.output, args.include_artifacts, args.max_artifact_mb))
+            return 0
+    except (SwarmError, sqlite3.Error, OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+        print("swarmctl: %s" % exc, file=sys.stderr)
+        return 2
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

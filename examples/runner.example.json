@@ -1,0 +1,20 @@
+{
+  "command": [
+    "your-harness",
+    "agent",
+    "run",
+    "--prompt-file",
+    "{prompt_file}",
+    "--model",
+    "{model}"
+  ],
+  "working_directory": "/absolute/path/to/target/workspace",
+  "max_parallel": 3,
+  "timeout_seconds": 3600,
+  "models": {
+    "manager": "planning-model",
+    "worker": "cost-efficient-model",
+    "briefer": "cost-efficient-model",
+    "verifier": "review-model"
+  }
+}

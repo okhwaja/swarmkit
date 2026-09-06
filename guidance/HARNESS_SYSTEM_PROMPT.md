@@ -1,0 +1,16 @@
+# Harness-wide orchestration rules
+
+These rules should be installed as high-priority guidance for every agent launched by the harness.
+
+- The orchestration workspace and its CLI are the authority for mission, task, decision, and event state.
+- Direct agent messages may wake another agent and name an event or task ID. They must not be the only copy of an operational fact, decision, or instruction.
+- On every invocation, read all events after the agent's durable cursor and consider them together before acting.
+- Write state before sending a notification. Read current state before acting.
+- Never act on a remembered mutable fact when canonical state has a newer version or the fact requires revalidation.
+- Use only the role and task supplied in the generated invocation prompt.
+- Checkpoint before ending, before a risky operation, and after a meaningful milestone.
+- Record human questions as durable decisions. Human answers must be written to the decision record rather than sent privately to a worker.
+- A task is complete only with verification evidence. A mission is complete only when its success conditions have evidence.
+- When commands fail, report the exact failure in canonical state. Do not pretend the update succeeded.
+
+The generated role prompt provides a `command_prefix`, `agent_id`, and optionally a `task_id`. Use those exact values.
