@@ -1,18 +1,18 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.3.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.4.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
 ```text
 usage: swarmctl [-h] [--root ROOT] [--version]
-                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
+                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
 Durable, harness-neutral orchestration for ambiguous multi-agent work.
 
 positional arguments:
-  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
+  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
     init                Create a mission workspace
     status              Show the current canonical snapshot
     board               Regenerate the Markdown board
@@ -23,6 +23,8 @@ positional arguments:
                         agent
     ask                 Start a read-only briefing inquiry
     policy              Install and apply reusable workflow policy packs
+    extension           Install delivery adapters for external systems
+    delivery            Manage the durable external-delivery outbox
     workstream          Manage executive-level workstreams
     task                Manage tasks
     decision            Manage durable decisions
@@ -143,6 +145,172 @@ optional arguments:
   --actor ACTOR
 ```
 
+## `swarmctl delivery`
+
+```text
+usage: swarmctl delivery [-h]
+                         {enqueue,enqueue-report,list,show,claim,sent,fail,retry,cancel,dispatch}
+                         ...
+
+positional arguments:
+  {enqueue,enqueue-report,list,show,claim,sent,fail,retry,cancel,dispatch}
+    enqueue             Snapshot an existing file and enqueue it
+    enqueue-report      Generate the current status report and enqueue it
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl delivery cancel`
+
+```text
+usage: swarmctl delivery cancel [-h] [--actor ACTOR] --reason REASON
+                                delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --actor ACTOR
+  --reason REASON
+```
+
+## `swarmctl delivery claim`
+
+```text
+usage: swarmctl delivery claim [-h] --agent AGENT
+                               [--lease-seconds LEASE_SECONDS]
+                               delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --agent AGENT
+  --lease-seconds LEASE_SECONDS
+```
+
+## `swarmctl delivery dispatch`
+
+```text
+usage: swarmctl delivery dispatch [-h] --agent AGENT [--dry-run] delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --agent AGENT
+  --dry-run
+```
+
+## `swarmctl delivery enqueue`
+
+```text
+usage: swarmctl delivery enqueue [-h] --extension EXTENSION --channel CHANNEL
+                                 --subject SUBJECT --recipient RECIPIENT
+                                 [--metadata METADATA] --idempotency-key
+                                 IDEMPOTENCY_KEY [--actor ACTOR] --content
+                                 CONTENT
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --extension EXTENSION
+  --channel CHANNEL
+  --subject SUBJECT
+  --recipient RECIPIENT
+  --metadata METADATA   Repeatable name=value
+  --idempotency-key IDEMPOTENCY_KEY
+  --actor ACTOR
+  --content CONTENT
+```
+
+## `swarmctl delivery enqueue-report`
+
+```text
+usage: swarmctl delivery enqueue-report [-h] --extension EXTENSION --channel
+                                        CHANNEL --subject SUBJECT --recipient
+                                        RECIPIENT [--metadata METADATA]
+                                        --idempotency-key IDEMPOTENCY_KEY
+                                        [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --extension EXTENSION
+  --channel CHANNEL
+  --subject SUBJECT
+  --recipient RECIPIENT
+  --metadata METADATA   Repeatable name=value
+  --idempotency-key IDEMPOTENCY_KEY
+  --actor ACTOR
+```
+
+## `swarmctl delivery fail`
+
+```text
+usage: swarmctl delivery fail [-h] --agent AGENT --error ERROR delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --agent AGENT
+  --error ERROR
+```
+
+## `swarmctl delivery list`
+
+```text
+usage: swarmctl delivery list [-h]
+                              [--status {CANCELLED,CLAIMED,FAILED,PENDING,SENT}]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --status {CANCELLED,CLAIMED,FAILED,PENDING,SENT}
+```
+
+## `swarmctl delivery retry`
+
+```text
+usage: swarmctl delivery retry [-h] [--actor ACTOR] delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --actor ACTOR
+```
+
+## `swarmctl delivery sent`
+
+```text
+usage: swarmctl delivery sent [-h] --agent AGENT --receipt RECEIPT delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --agent AGENT
+  --receipt RECEIPT
+```
+
+## `swarmctl delivery show`
+
+```text
+usage: swarmctl delivery show [-h] delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help   show this help message and exit
+```
+
 ## `swarmctl dispatch`
 
 ```text
@@ -178,6 +346,65 @@ optional arguments:
   --output OUTPUT
   --include-artifacts
   --max-artifact-mb MAX_ARTIFACT_MB
+```
+
+## `swarmctl extension`
+
+```text
+usage: swarmctl extension [-h] {install,validate,list,show} ...
+
+positional arguments:
+  {install,validate,list,show}
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl extension install`
+
+```text
+usage: swarmctl extension install [-h] [--actor ACTOR] [--force] source
+
+positional arguments:
+  source         Extension directory or extension.json path
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --actor ACTOR
+  --force
+```
+
+## `swarmctl extension list`
+
+```text
+usage: swarmctl extension list [-h]
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl extension show`
+
+```text
+usage: swarmctl extension show [-h] extension_id
+
+positional arguments:
+  extension_id
+
+optional arguments:
+  -h, --help    show this help message and exit
+```
+
+## `swarmctl extension validate`
+
+```text
+usage: swarmctl extension validate [-h] source
+
+positional arguments:
+  source      Extension directory or extension.json path
+
+optional arguments:
+  -h, --help  show this help message and exit
 ```
 
 ## `swarmctl fact`

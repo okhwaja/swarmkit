@@ -23,6 +23,7 @@ Read these files before changing configuration:
 3. `guidance/HARNESS_SYSTEM_PROMPT.md`
 4. `docs/MODEL_GUIDANCE.md`
 5. `docs/POLICY_PACKS.md`
+6. `docs/EXTENSIONS.md`
 
 Treat the SQLite database and append-only event log as canonical. Markdown
 status files are generated views, not an agent-to-agent message bus.
@@ -64,6 +65,8 @@ record:
 - how installed harness skills are exposed to a non-interactive role invocation;
 - whether required skills such as `adversarial-review` can be invoked from a
   generated task prompt.
+- whether provider skills intended for delivery extensions, such as email, can
+  return a durable provider receipt to a non-interactive invocation.
 
 Do not guess at any of these. If the harness cannot expose fresh-session
 semantics or reliable exit status, record that as a blocker.
@@ -87,7 +90,7 @@ field is an argv array. Swarmkit replaces these placeholders inside individual
 arguments:
 
 - `{prompt_file}` — absolute path to the generated role prompt; required
-- `{role}` — manager, worker, verifier, briefer, liaison, or status
+- `{role}` — manager, worker, verifier, briefer, liaison, status, or extension
 - `{task_id}` — the assigned task or dispatch identifier
 - `{agent_id}` — unique identity for this invocation
 - `{root}` — absolute mission root
@@ -113,6 +116,7 @@ Example shape only—replace it with the target harness's real syntax:
     "manager": "",
     "worker": "",
     "briefer": "",
+    "extension": "",
     "verifier": ""
   }
 }
@@ -166,6 +170,22 @@ Confirm a generated manager prompt lists the installed policy. If this machine
 will use a pack that names harness skills, run a disposable invocation of every
 required skill with the intended role and record the result. A missing skill is
 a setup limitation, not permission to weaken the workflow silently.
+
+Validate that delivery-extension support survived packaging:
+
+```bash
+python3 /absolute/path/to/swarmctl.py extension validate \
+  /absolute/path/to/swarmkit/examples/extensions/harness-email
+```
+
+If this machine will send status email, copy that example to an
+organization-owned directory, replace its example recipient allowlist, review
+its guidance, and install the copy. Queue a harmless test file and run
+`delivery dispatch N-ID --agent setup-emailer --dry-run`. Confirm the envelope
+contains only the intended subject, recipient, content path/hash, and
+idempotency key. A live send requires explicit human approval and a harmless
+recipient; if performed, confirm `delivery show N-ID` contains the provider
+receipt. Never use a production mailing list for setup tests.
 
 ### 2. Manager round trip
 
@@ -245,6 +265,8 @@ Write `SETUP_REPORT.md` with:
 - authentication and permission prerequisites, without secret values;
 - evidence that invocations are non-interactive and start fresh contexts;
 - installed policy packs, named-skill availability, and fresh-session policy support;
+- installed delivery extensions, provider-skill availability, recipient
+  allowlists, and acknowledgement behavior;
 - results for all six acceptance-test groups;
 - concurrency, timeout, and retry limitations;
 - exact commands an operator should use to initialize and start a real mission;

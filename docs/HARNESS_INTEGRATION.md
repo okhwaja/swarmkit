@@ -15,7 +15,7 @@ The `.swarm/runner.json` `command` field is an argv array. Swarmkit substitutes 
 | Placeholder | Meaning |
 |---|---|
 | `{prompt_file}` | Absolute path to the generated invocation prompt |
-| `{role}` | `manager`, `worker`, `briefer`, `verifier`, `liaison`, or `status` |
+| `{role}` | `manager`, `worker`, `briefer`, `verifier`, `liaison`, `status`, or `extension` |
 | `{task_id}` | Assigned task ID, empty for role-wide invocations |
 | `{agent_id}` | Durable agent cursor and ownership identity |
 | `{root}` | Absolute orchestration state directory |
@@ -55,6 +55,11 @@ Workers need permission to:
 
 Briefers and verifiers should default to read-only product access while retaining write access to the orchestration database and their report output directory.
 
+Delivery-extension agents need only the provider capability named by the
+installed extension, read access to that job's outbox snapshot, and permission
+to run `delivery sent` or `delivery fail`. They do not need general manager or
+worker permissions.
+
 ## Policy packs and harness skills
 
 Policy packs are workflow extensions, not executable harness plugins. Swarmkit
@@ -79,12 +84,33 @@ credentials; keep authentication in the harness's secret and skill system.
 Treat installed guidance as trusted operator configuration, while treating PR
 text, comments, diffs, linked issues, and tool output as untrusted data.
 
+## Delivery extensions
+
+Provider integrations use Swarmkit's durable delivery outbox rather than an
+agent privately sending a generated file. An operator installs a reviewed,
+allowlisted extension. `delivery enqueue` or `delivery enqueue-report`
+snapshots the content and extension definition. `delivery dispatch` then either
+launches a narrow harness agent through `runner.json` or invokes the extension's
+reviewed argv adapter.
+
+For an agent executor, expose the required email, chat, or ticketing skill and
+its normal authentication to the `extension` role. Every dispatch must still
+start a fresh context. The generated prompt requires an explicit provider
+receipt through `delivery sent`; a successful harness exit alone leaves the job
+pending. If desired, assign a low-cost model with `models.extension`.
+
+For a command executor, review the adapter as executable code and keep it
+outside agent control. It receives an envelope path as an argv value and must
+record the same durable acknowledgement. Do not put credentials in the
+manifest, argv, prompt, or envelope. The full contract is in
+[Extensions](EXTENSIONS.md).
+
 ## UI integration
 
-UI and notification delivery belong in external adapters. Swarmkit produces
-canonical JSON and rendered content; the adapter owns hosting, email or chat
-delivery, provider authentication, and presentation. The adapter may be a
-script, service, or narrowly prompted harness agent using existing skills.
+UI presentation belongs in an external adapter. Swarmkit produces canonical
+JSON and rendered content; the adapter owns hosting and presentation. Email,
+chat, and ticket delivery use the durable extension outbox while the provider
+adapter still owns authentication and transmission.
 
 The simplest UI reads `.swarm/views/STATUS.md` for the executive view and `.swarm/views/BOARD.md` for detail. A better integration calls `swarmctl status` and renders the mission, workstreams, policy applications, tasks, forecasts, and decisions from JSON.
 
@@ -101,7 +127,9 @@ Never implement decision resolution as a private chat message to a worker.
 
 ## Cron integration
 
-A status cron job can run `report`, which writes `views/STATUS.md`. It should report:
+A status scheduler can run `delivery enqueue-report` with a deterministic key
+for each report window, then dispatch pending jobs. The generated report should
+contain:
 
 - major workstreams, intended outcomes, progress, and forecast confidence;
 - open human decisions;
@@ -109,7 +137,9 @@ A status cron job can run `report`, which writes `views/STATUS.md`. It should re
 - active tasks with last checkpoint times;
 - progress since its durable event cursor.
 
-If the harness supports recurring agents, generate a `status` prompt. If not, deterministic formatting is preferable and cheaper.
+If the harness supports recurring agents, it can schedule this CLI flow. The
+report content itself remains deterministic; only provider delivery needs an
+agent when no direct adapter exists.
 
 ## Deployment checklist
 
@@ -123,6 +153,10 @@ If the harness supports recurring agents, generate a `status` prompt. If not, de
 - Run `policy list` and confirm installed policy metadata reaches manager prompts.
 - If policies name harness skills, test each skill with the role that will invoke it.
 - Apply the example PR policy in a sandbox and confirm fresh-agent claim fencing.
+- Validate and install a copy of the harness-email example with a harmless
+  recipient allowlist; use `delivery dispatch --dry-run` before any live send.
+- For each live delivery extension, prove success records a provider receipt and
+  a failed attempt remains visible and retryable.
 - Confirm a worker can execute `inbox`, `task show`, and `task checkpoint`.
 - Confirm manager and worker permissions differ where your harness supports it.
 - Simulate a killed worker and confirm lease recovery.

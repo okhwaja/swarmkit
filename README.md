@@ -10,7 +10,7 @@ To create a portable ZIP:
 python3 scripts/package.py
 ```
 
-This writes `dist/swarmkit-0.3.0.zip` with the CLI, guidance, documentation, examples, policy packs, and tests.
+This writes `dist/swarmkit-0.4.0.zip` with the CLI, guidance, documentation, examples, policy packs, delivery extensions, and tests.
 
 If another agent will connect Swarmkit to the harness on the destination
 machine, give that agent [SETUP_AGENT.md](SETUP_AGENT.md) as its assignment.
@@ -38,6 +38,8 @@ flowchart TD
     W2 --> DB
     B --> DB
     DB --> V[Generated board]
+    DB --> O[Durable delivery outbox]
+    O --> E[Harness agent or provider adapter]
     DB --> X[Audit ZIP]
 ```
 
@@ -49,8 +51,8 @@ The manager does not need to know the full task plan at the beginning. It starts
 - `bin/swarmctl`: a portable launcher.
 - `SETUP_AGENT.md`: a complete harness-installation assignment and acceptance suite.
 - `guidance/`: strict role contracts suitable for smaller or less reliable models.
-- `docs/`: explanations, operating procedures, policy-pack authoring, and harness integration guidance.
-- `examples/`: an ambiguous pipeline mission, runner configuration, and example policy packs.
+- `docs/`: explanations, operating procedures, extension authoring, and harness integration guidance.
+- `examples/`: an ambiguous pipeline mission, runner configuration, policy packs, and a harness-email delivery extension.
 - `docs/CLI_REFERENCE.md`: generated exact CLI syntax and options.
 - `scripts/check_docs.py`: deterministic documentation and contract checks.
 - `scripts/release_check.py`: source and extracted-package release verification.
@@ -87,6 +89,7 @@ This creates:
   runner.json
   prompts/
   runs/
+  outbox/
   views/BOARD.md
 ```
 
@@ -110,6 +113,7 @@ Edit `runner.json` so `command` invokes your harness. The command is an argument
     "manager": "your-stronger-planning-model",
     "worker": "your-lower-cost-model",
     "briefer": "your-lower-cost-model",
+    "extension": "your-lower-cost-model",
     "verifier": "your-stronger-review-model"
   }
 }
@@ -171,6 +175,44 @@ This creates five ordered tasks: implement and open the PR, run the harness's
 again from a fresh agent identity, and resolve any final findings. See
 [Policy packs](docs/POLICY_PACKS.md) for the contract and authoring guide.
 
+## Connecting reports to email, chat, or another system
+
+Swarmkit generates report content and owns a durable delivery outbox; an
+extension uses capabilities and authentication that already exist in your
+harness or a reviewed command-line adapter. The core never stores provider
+credentials.
+
+Validate and install the bundled agent-executor example after copying it and
+replacing its recipient allowlist:
+
+```bash
+bin/swarmctl extension validate examples/extensions/harness-email
+
+bin/swarmctl --root /work/my-run/.swarm extension install \
+  examples/extensions/harness-email \
+  --actor human
+```
+
+Queue an immutable executive report, then dispatch the returned delivery ID:
+
+```bash
+bin/swarmctl --root /work/my-run/.swarm delivery enqueue-report \
+  --extension harness-email-example \
+  --channel email \
+  --subject "Pipeline recovery status" \
+  --recipient replace-me@example.com \
+  --idempotency-key "pipeline-status-2026-09-05T2200Z"
+
+bin/swarmctl --root /work/my-run/.swarm delivery dispatch N-ID \
+  --agent status-emailer
+```
+
+The extension must record a provider receipt before the delivery becomes
+`SENT`. Leases, explicit retry, content hashes, and idempotency keys make
+timeouts and context loss observable and recoverable. See
+[Extensions](docs/EXTENSIONS.md) for the manifest, scheduler, command-adapter,
+UI, and security contracts.
+
 ## Answering a blocked question
 
 List canonical decisions:
@@ -202,7 +244,7 @@ bin/swarmctl --root /work/my-run/.swarm doctor
 bin/swarmctl --root /work/my-run/.swarm status
 ```
 
-Your existing UI or cron job can invoke these commands. `report` writes `views/STATUS.md` with the mission, major workstreams, expected timing, human needs, invariant failures, failed runs, and active work. A status agent is optional; most status reporting should be deterministic formatting of the canonical state.
+Your existing UI or scheduler can invoke these commands. `report` writes `views/STATUS.md` with the mission, major workstreams, expected timing, human needs, invariant failures, failed runs, delivery failures, and active work. A status agent is optional; most status reporting should be deterministic formatting of the canonical state. Use a delivery extension when the report must be pushed externally.
 
 Record a mutable operational fact with a source and expiry:
 
@@ -230,7 +272,7 @@ The archive contains:
 
 - the SQLite database;
 - a complete chronological `events.jsonl`;
-- mission, task, decision, acknowledgment, and artifact records;
+- mission, task, decision, acknowledgment, artifact, extension, and delivery records;
 - all generated agent prompts;
 - captured harness stdout and stderr;
 - the final board and invariant report;
@@ -256,7 +298,7 @@ Do not compensate for a weaker model with one enormous prompt. Give it a narrow 
 
 The system should spend parallelism on gathering independent evidence. It should converge before tightly coupled changes. One worker owns a coherent implementation; short-lived agents can investigate, brief, and verify around it.
 
-Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
+Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [Extensions](docs/EXTENSIONS.md) for delivery adapters, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
 
 To exercise the state machine without an AI harness, run the synthetic demonstration against a new directory:
 

@@ -7,7 +7,7 @@ Use enough instruction to remove ambiguity about protocol, ownership, and stoppi
 A smaller model should receive five layers of context:
 
 1. A short harness-wide contract that applies to every agent.
-2. One role guide: manager, worker, briefer, verifier, liaison, or status reporter.
+2. One role guide: manager, worker, briefer, verifier, liaison, status reporter, or delivery extension.
 3. The current mission and exactly one assigned task when applicable.
 4. All unseen durable events and current linked decisions.
 5. Exact CLI commands for recording progress, blocking, and completion.
@@ -28,6 +28,8 @@ If a behavior can be checked deterministically, enforce it outside the model.
 | Worker claims success vaguely | Required verification statements |
 | Dead worker holds work forever | Expiring lease |
 | Board becomes stale | Board is generated from SQLite |
+| Email agent exits without sending | Delivery remains pending until a provider receipt is recorded |
+| Retried delivery sends twice | Stable idempotency key plus provider-side deduplication |
 
 Prompting alone is a weak enforcement mechanism. A repeated failure should usually lead to a state-machine or validation change.
 
@@ -83,6 +85,11 @@ You may use a stronger model for the manager and verifier while using a cheaper 
 - require a verifier before mission completion.
 
 Do not assume a more expensive model is automatically required. Evaluate the complete system on representative ambiguous missions. Better state, tools, and constraints can matter more than a longer prompt.
+
+For delivery agents, make the prompt even narrower than a worker prompt: one
+immutable content file, one subject, an allowlisted recipient set, one provider
+capability, and exactly two terminal updates (`delivery sent` or `delivery
+fail`). Do not give an emailer the manager's planning context.
 
 ## Suggested evaluation cases
 

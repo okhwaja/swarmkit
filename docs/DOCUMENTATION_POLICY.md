@@ -14,6 +14,7 @@ release metadata agree in the same commit.
 | `SETUP_AGENT.md` | Destination-machine discovery and acceptance tests |
 | `docs/SYSTEM_EXPLAINER.md` | Architecture, invariants, and design rationale |
 | `docs/POLICY_PACKS.md` | Policy-pack schema, lifecycle, and authoring contract |
+| `docs/EXTENSIONS.md` | Delivery-extension manifest, outbox, adapter, and operations contract |
 | `docs/CLI_REFERENCE.md` | Generated exact commands, arguments, choices, and defaults |
 | `guidance/*.md` | Normative behavior for launched roles |
 | `CHANGELOG.md` | User-visible changes, versions, and migrations |
@@ -50,8 +51,8 @@ operator could actually follow the instructions.
 ## Automated guarantees
 
 `check_docs.py` verifies required documents, internal links, version/package
-alignment, public command presence, required policy-pack coverage, and bundled
-policy manifests. `release_check.py` runs tests and documentation checks both in
+alignment, public command presence, required extension coverage, and bundled
+policy and delivery-extension manifests. `release_check.py` runs tests and documentation checks both in
 the source tree and in a newly built, extracted distribution ZIP.
 
 CI runs the same release check. Do not bypass it for documentation-only changes:

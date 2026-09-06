@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0
+
+- Added reviewed delivery extensions with agent and direct-command executors.
+- Added a durable, hashed outbox with recipient allowlists, idempotency keys,
+  leases, explicit provider acknowledgements, failures, and retries.
+- Added `delivery enqueue-report` so schedulers can generate executive status
+  content separately from provider transmission.
+- Added extension and delivery state to boards, status reports, health checks,
+  and audit exports.
+- Added the harness-email example and operator, setup, integration, and
+  extension-authoring documentation.
+- Extended the release gate to validate delivery-extension docs, manifests,
+  lifecycle tests, and extracted package behavior.
+
 ## 0.3.0
 
 - Added declarative policy packs for organization- and project-specific agent

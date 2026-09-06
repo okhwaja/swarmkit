@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check documentation, public commands, versions, links, and bundled policy packs."""
+"""Check documentation, public commands, versions, links, and bundled extensions."""
 
 import argparse
 import json
@@ -21,6 +21,7 @@ REQUIRED_DOCUMENTS = [
     "SETUP_AGENT.md",
     "CHANGELOG.md",
     "docs/DOCUMENTATION_POLICY.md",
+    "docs/EXTENSIONS.md",
     "docs/CLI_REFERENCE.md",
     "docs/HARNESS_INTEGRATION.md",
     "docs/MODEL_GUIDANCE.md",
@@ -30,14 +31,15 @@ REQUIRED_DOCUMENTS = [
 ]
 
 REQUIRED_MENTIONS = {
-    "README.md": ["policy install", "policy apply", "docs/POLICY_PACKS.md"],
-    "SETUP_AGENT.md": ["policy list", "fresh-session"],
-    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review"],
-    "docs/MODEL_GUIDANCE.md": ["policy pack"],
-    "docs/SYSTEM_EXPLAINER.md": ["Policy packs"],
-    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review"],
-    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy"],
-    "guidance/manager.md": ["policy apply"],
+    "README.md": ["policy install", "policy apply", "docs/POLICY_PACKS.md", "delivery enqueue-report", "docs/EXTENSIONS.md"],
+    "SETUP_AGENT.md": ["policy list", "fresh-session", "extension validate", "delivery dispatch"],
+    "docs/EXTENSIONS.md": ["idempotency", "provider receipt", "recipient_policy"],
+    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review", "delivery enqueue-report"],
+    "docs/MODEL_GUIDANCE.md": ["policy pack", "delivery sent"],
+    "docs/SYSTEM_EXPLAINER.md": ["Policy packs", "Delivery extensions"],
+    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review", "delivery enqueue-report"],
+    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy", "delivery"],
+    "guidance/manager.md": ["policy apply", "delivery extension"],
     "guidance/worker.md": ["policy"],
     "guidance/verifier.md": ["policy"],
 }
@@ -96,7 +98,7 @@ def run_checks():
         errors.append("CLI reference is stale; run python3 scripts/generate_cli_docs.py")
 
     commands = root_commands()
-    for command in {"policy", "setup-check", "run", "report", "export"}:
+    for command in {"policy", "extension", "delivery", "setup-check", "run", "report", "export"}:
         if command not in commands:
             errors.append("Missing documented root command: %s" % command)
 
@@ -112,6 +114,18 @@ def run_checks():
                 errors.append("Empty policy guidance: %s" % manifest_path.parent)
         except (swarmctl.SwarmError, OSError, ValueError) as exc:
             errors.append("Invalid policy pack %s: %s" % (manifest_path.parent, exc))
+    extension_root = PACKAGE_ROOT / "examples" / "extensions"
+    extension_manifests = sorted(extension_root.glob("*/extension.json"))
+    if not extension_manifests:
+        errors.append("No example delivery extensions found")
+    for manifest_path in extension_manifests:
+        try:
+            manifest, guidance, _ = swarmctl.read_extension_source(manifest_path.parent)
+            json.dumps(manifest)
+            if not guidance.strip():
+                errors.append("Empty extension guidance: %s" % manifest_path.parent)
+        except (swarmctl.SwarmError, OSError, ValueError) as exc:
+            errors.append("Invalid delivery extension %s: %s" % (manifest_path.parent, exc))
     return errors
 
 

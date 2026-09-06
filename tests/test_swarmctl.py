@@ -311,9 +311,17 @@ class SwarmLifecycleTest(unittest.TestCase):
             policy_table = upgraded.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='policy_applications'"
             ).fetchone()
+            extension_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='extensions'"
+            ).fetchone()
+            delivery_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='deliveries'"
+            ).fetchone()
             self.assertEqual(version, swarmctl.SCHEMA_VERSION)
             self.assertIsNotNone(table)
             self.assertIsNotNone(policy_table)
+            self.assertIsNotNone(extension_table)
+            self.assertIsNotNone(delivery_table)
         finally:
             upgraded.close()
 
@@ -424,6 +432,166 @@ class SwarmLifecycleTest(unittest.TestCase):
         }
         with self.assertRaises(swarmctl.SwarmError):
             swarmctl.validate_policy_manifest(manifest)
+
+    def test_delivery_outbox_is_idempotent_allowlisted_and_acknowledged(self):
+        extension_source = PACKAGE_ROOT / "examples" / "extensions" / "harness-email"
+        content = self.base / "status.md"
+        content.write_text("# Status\n\nPipeline is recovering.\n", encoding="utf-8")
+        conn = self.connection()
+        try:
+            installed = swarmctl.install_extension(conn, extension_source, "human")
+            self.assertEqual(installed["id"], "harness-email-example")
+            manager_prompt = swarmctl.build_prompt(self.root, "manager", "manager")
+            self.assertIn("harness-email-example", manager_prompt)
+            queued = swarmctl.enqueue_delivery(
+                self.root, conn, "harness-email-example", "email", "Pipeline status",
+                ["replace-me@example.com"], content, ["window=hour-22"],
+                "status-hour-22", "scheduler",
+            )
+            self.assertTrue(queued["created"])
+            duplicate = swarmctl.enqueue_delivery(
+                self.root, conn, "harness-email-example", "email", "Pipeline status",
+                ["replace-me@example.com"], content, ["window=hour-22"],
+                "status-hour-22", "scheduler",
+            )
+            self.assertFalse(duplicate["created"])
+            self.assertEqual(duplicate["id"], queued["id"])
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.enqueue_delivery(
+                    self.root, conn, "harness-email-example", "email", "Different",
+                    ["replace-me@example.com"], content, [], "status-hour-22", "scheduler",
+                )
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.enqueue_delivery(
+                    self.root, conn, "harness-email-example", "email", "Pipeline status",
+                    ["outside@example.net"], content, [], "outside", "scheduler",
+                )
+            claimed = swarmctl.claim_delivery(conn, queued["id"], "emailer-one", 600)
+            self.assertEqual(claimed["status"], "CLAIMED")
+            swarmctl.mark_delivery_failed(conn, queued["id"], "emailer-one", "provider unavailable")
+            swarmctl.retry_delivery(conn, queued["id"], "operator")
+            swarmctl.claim_delivery(conn, queued["id"], "emailer-two", 600)
+            swarmctl.mark_delivery_sent(conn, queued["id"], "emailer-two", "provider-message-123")
+            final = swarmctl.delivery_dict(
+                conn, conn.execute("SELECT * FROM deliveries WHERE id=?", (queued["id"],)).fetchone()
+            )
+            self.assertEqual(final["status"], "SENT")
+            self.assertEqual(final["attempt_count"], 2)
+            self.assertEqual(final["provider_receipt"], "provider-message-123")
+            self.assertTrue(final["content_intact"])
+            lease_job = swarmctl.enqueue_delivery(
+                self.root, conn, "harness-email-example", "email", "Lease test",
+                ["replace-me@example.com"], content, [], "lease-test", "test",
+            )
+            swarmctl.claim_delivery(conn, lease_job["id"], "lost-emailer", -1)
+            self.assertIn((lease_job["id"], "PENDING"), swarmctl.reconcile_conn(conn))
+            self.assertTrue(swarmctl.doctor(conn)["ok"])
+        finally:
+            conn.close()
+        audit_path = self.base / "delivery-audit.zip"
+        swarmctl.export_audit(self.root, audit_path)
+        with zipfile.ZipFile(str(audit_path)) as archive:
+            names = set(archive.namelist())
+            self.assertTrue(any(name.startswith("swarm-audit/outbox/%s/" % queued["id"]) for name in names))
+            snapshot = json.loads(archive.read("swarm-audit/snapshot.json"))
+            self.assertEqual(snapshot["deliveries"][0]["provider_receipt"], "provider-message-123")
+
+    def test_command_delivery_extension_requires_durable_ack(self):
+        extension_dir = self.base / "command-extension"
+        extension_dir.mkdir()
+        adapter_code = (
+            "import json,subprocess,sys; e=json.load(open(sys.argv[1])); "
+            "subprocess.run([sys.executable,sys.argv[2],'--root',sys.argv[3],"
+            "'delivery','sent',e['delivery_id'],'--agent',sys.argv[4],"
+            "'--receipt','provider-test-receipt'],check=True)"
+        )
+        manifest = {
+            "schema_version": 1,
+            "id": "test-command-email",
+            "version": "1.0.0",
+            "name": "Test command email",
+            "kind": "delivery",
+            "description": "Test-only provider adapter",
+            "handles": ["email"],
+            "guidance": "GUIDANCE.md",
+            "executor": {
+                "type": "command",
+                "command": [
+                    sys.executable, "-c", adapter_code, "{envelope_file}",
+                    str(PACKAGE_ROOT / "swarmctl.py"), "{root}", "{agent_id}",
+                ],
+            },
+            "recipient_policy": {
+                "allowed_recipients": ["test@example.com"],
+                "allowed_domains": [],
+            },
+        }
+        (extension_dir / "extension.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (extension_dir / "GUIDANCE.md").write_text("Use the test adapter.\n", encoding="utf-8")
+        content = self.base / "message.txt"
+        content.write_text("test message\n", encoding="utf-8")
+        conn = self.connection()
+        try:
+            swarmctl.install_extension(conn, extension_dir, "test")
+            queued = swarmctl.enqueue_delivery(
+                self.root, conn, "test-command-email", "email", "Test",
+                ["test@example.com"], content, [], "command-test-1", "test",
+            )
+        finally:
+            conn.close()
+        dry_run = swarmctl.dispatch_delivery(self.root, queued["id"], "command-emailer", True)
+        self.assertEqual(dry_run["executor_type"], "command")
+        self.assertTrue(Path(dry_run["envelope_path"]).is_file())
+        result = swarmctl.dispatch_delivery(self.root, queued["id"], "command-emailer")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["delivery_status"], "SENT")
+        conn = self.connection()
+        try:
+            row = conn.execute("SELECT * FROM deliveries WHERE id=?", (queued["id"],)).fetchone()
+            self.assertEqual(row["provider_receipt"], "provider-test-receipt")
+        finally:
+            conn.close()
+
+        manifest["id"] = "test-unacknowledged-email"
+        manifest["executor"]["command"] = [
+            sys.executable, "-c", "print('no provider receipt')", "{envelope_file}",
+        ]
+        (extension_dir / "extension.json").write_text(json.dumps(manifest), encoding="utf-8")
+        conn = self.connection()
+        try:
+            swarmctl.install_extension(conn, extension_dir, "test")
+            unacknowledged = swarmctl.enqueue_delivery(
+                self.root, conn, "test-unacknowledged-email", "email", "Unacknowledged",
+                ["test@example.com"], content, [], "command-test-unack", "test",
+            )
+        finally:
+            conn.close()
+        result = swarmctl.dispatch_delivery(self.root, unacknowledged["id"], "unack-emailer")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["delivery_status"], "PENDING")
+        conn = self.connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM deliveries WHERE id=?", (unacknowledged["id"],)
+            ).fetchone()
+            self.assertIn("without recording provider acknowledgment", row["last_error"])
+        finally:
+            conn.close()
+
+    def test_delivery_extension_manifest_rejects_shell_and_open_recipients(self):
+        base = {
+            "schema_version": 1, "id": "bad-extension", "version": "1",
+            "name": "Bad", "kind": "delivery", "description": "Invalid",
+            "handles": ["email"], "guidance": "GUIDANCE.md",
+            "executor": {"type": "command", "command": ["sh", "{envelope_file}"]},
+            "recipient_policy": {"allowed_recipients": ["test@example.com"], "allowed_domains": []},
+        }
+        with self.assertRaises(swarmctl.SwarmError):
+            swarmctl.validate_extension_manifest(base)
+        base["executor"] = {"type": "agent"}
+        base["recipient_policy"] = {"allowed_recipients": [], "allowed_domains": []}
+        with self.assertRaises(swarmctl.SwarmError):
+            swarmctl.validate_extension_manifest(base)
 
     def test_setup_check_rejects_unconfigured_runner(self):
         result = swarmctl.setup_check(self.root)

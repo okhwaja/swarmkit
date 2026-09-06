@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "harness-email-example",
+  "version": "1.0.0",
+  "name": "Harness email delivery",
+  "kind": "delivery",
+  "description": "Delegates an immutable Swarmkit report to an agent with the harness's existing email skill and authentication.",
+  "handles": [
+    "email"
+  ],
+  "guidance": "GUIDANCE.md",
+  "executor": {
+    "type": "agent"
+  },
+  "recipient_policy": {
+    "allowed_recipients": [
+      "replace-me@example.com"
+    ],
+    "allowed_domains": []
+  }
+}

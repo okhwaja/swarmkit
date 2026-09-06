@@ -57,6 +57,19 @@ A briefer investigates a question without interrupting workers. It reads the eve
 
 Status is a view of the database. The generated board and invariant checker usually provide enough information for a cron job. If a model formats the report, it receives the current canonical state rather than an old conversation transcript.
 
+### Delivery extensions and outbox
+
+Swarmkit can hand a finished report or artifact to email, chat, ticketing, or
+another provider without building those providers into the core. It first
+copies the content into an immutable, hashed outbox entry. A reviewed extension
+then uses either a narrow harness agent with existing skills and authentication,
+or a direct command adapter.
+
+The job is durable: it has an idempotency key, lease, attempts, errors, and a
+provider receipt. A process exit is not proof of delivery. Only a recorded
+provider acknowledgement moves it to `SENT`; ambiguous attempts remain visible
+and recoverable.
+
 ### Time-bounded facts
 
 Operational observations are stored as facts with a subject, value, source, observation time, and optional expiry. Recording a newer fact for the same subject supersedes the old one. The reconciler marks expired facts automatically, so an agent cannot mistake an hours-old health check for current evidence merely because it remembers the text.
@@ -107,6 +120,8 @@ Deterministic code handles:
 - event ordering and inbox cursors;
 - decision propagation and acknowledgment;
 - policy validation, task-graph creation, and fresh-agent constraints;
+- extension validation, recipient allowlists, immutable outbox records, leases,
+  idempotency, acknowledgements, and delivery audit history;
 - generated board state;
 - workstream/task relationships and executive report structure;
 - invariant checks;
@@ -119,7 +134,7 @@ Models handle:
 - proposing and implementing changes;
 - recognizing meaningful uncertainty;
 - independent verification and briefing.
-- invoking harness-provided skills named by trusted policy guidance.
+- invoking harness-provided skills named by trusted policy or delivery guidance.
 
 This division is deliberate. Models make judgments; code enforces bookkeeping.
 
@@ -144,6 +159,7 @@ Export an audit archive after every significant mission, including unsuccessful 
 - decisions that took too long to reach workers;
 - agents acting on stale facts;
 - repeated lease expiration;
+- failed, repeatedly retried, or unacknowledged external deliveries;
 - completion claims with weak verification;
 - too many manager cycles that create no useful state change.
 

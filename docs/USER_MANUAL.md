@@ -11,6 +11,8 @@ In the commands below, replace `/work/my-run/.swarm` with your mission's state d
 | Connect Swarmkit to a harness on a new machine | Give the setup agent `SETUP_AGENT.md`, then require its setup report and audit ZIP | The agent discovers local CLI details but must pass Swarmkit's fixed integration gates |
 | Start an ambiguous objective | Run `swarmctl init`, configure `runner.json`, then run `swarmctl run` | The manager creates bounded discovery work and progressively forms the plan |
 | Get the executive view | Run `swarmctl report` and open `views/STATUS.md` | You see major workstreams, outcomes, progress, forecast ranges, confidence, and needs from you |
+| Receive the executive view by email | Install an allowlisted delivery extension, enqueue the report, and dispatch the returned job | Swarmkit snapshots the report and tracks the send until the provider returns a receipt |
+| Inspect delivery problems | Run `swarmctl delivery list` or open the report/board | You see pending, claimed, failed, sent, and cancelled jobs with attempt history |
 | Inspect all execution detail | Run `swarmctl board` and open `views/BOARD.md` | You see every task, workstream relationship, decision, fact, and recent event |
 | Inspect one workstream | Run `swarmctl workstream show WS-ID` | You get its narrative, forecast, tasks, and open decisions as JSON |
 | Apply an organization-specific workflow | Install a reviewed policy pack, then run `swarmctl policy apply` | Swarmkit creates and enforces the pack's ordered task graph and guidance |
@@ -92,13 +94,58 @@ Open `/work/my-run/.swarm/views/STATUS.md`. It answers:
 
 An unknown forecast is valid during early discovery. Forecasts are required to include a basis when the manager records a date.
 
-For a scheduled email, use a delivery extension that runs `report` at the
-desired interval and passes `views/STATUS.md` to your organization's email tool.
-The extension may be a narrow harness agent with an email skill or a
-deterministic script. Swarmkit generates the content but does not send email or
-store mail credentials.
+For a scheduled email, use the delivery outbox journey below. Your scheduler
+chooses the interval. Swarmkit generates and snapshots the content; a narrow
+harness agent or reviewed command adapter performs the send with credentials
+that stay outside Swarmkit.
 
 For a pull-based UI, render `swarmctl status` JSON or serve the two generated Markdown files from an authenticated internal endpoint.
+
+## Journey: deliver a report through an extension
+
+Start from the bundled example. Copy it, replace its recipient allowlist, and
+review its guidance before installation:
+
+```bash
+swarmctl extension validate /opt/company/swarmkit-extensions/status-email
+
+swarmctl --root /work/my-run/.swarm extension install \
+  /opt/company/swarmkit-extensions/status-email \
+  --actor human
+```
+
+Create one immutable job for one intended report window:
+
+```bash
+swarmctl --root /work/my-run/.swarm delivery enqueue-report \
+  --extension harness-email-example \
+  --channel email \
+  --subject "Pipeline recovery status" \
+  --recipient leader@example.com \
+  --idempotency-key "pipeline-status-2026-09-05T2200Z" \
+  --actor status-scheduler
+```
+
+Dispatch the returned ID through the extension:
+
+```bash
+swarmctl --root /work/my-run/.swarm delivery dispatch N-ID \
+  --agent status-emailer
+```
+
+Try `--dry-run` first to inspect the exact prompt, envelope, and invocation. A
+job becomes `SENT` only after the agent or adapter records a provider receipt.
+If it becomes `FAILED`, inspect it and make retry an explicit decision:
+
+```bash
+swarmctl --root /work/my-run/.swarm delivery show N-ID
+swarmctl --root /work/my-run/.swarm delivery retry N-ID --actor human
+```
+
+Reusing the same idempotency key with the same payload returns the existing job;
+reusing it with different content or recipients is rejected. See
+[Extensions](EXTENSIONS.md) for scheduler, command-adapter, allowlist, and
+security details.
 
 ## Journey 3: inspect a workstream
 
