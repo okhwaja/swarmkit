@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+
+- Added `SERVICE` missions for persistent logical agents whose model contexts
+  are replaced on every invocation.
+- Added idempotent cases with dedicated workstreams, immutable intake payloads,
+  policy applications, derived lifecycle state, and audit coverage.
+- Added idempotent case signals for author responses, new revisions, provider
+  events, external-blocker resolution, and explicit follow-up wake tasks.
+- Added complete case context to generated prompts and task-scoped event inboxes.
+- Added the provider-neutral `human-gated-change-review` example policy.
+- Added persistent-service setup, ingress, scheduling, human-gate, operations,
+  and smaller-model guidance.
+- Extended the documentation and extracted-package release gates for service
+  mode, public case commands, and both bundled policy workflows.
+
 ## 0.4.0
 
 - Added reviewed delivery extensions with agent and direct-command executors.

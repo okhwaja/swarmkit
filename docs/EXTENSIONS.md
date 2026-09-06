@@ -11,6 +11,12 @@ There are two extension mechanisms:
 
 Policy packs are documented in [POLICY_PACKS.md](POLICY_PACKS.md). This document defines delivery extensions.
 
+Persistent-service ingress is a third integration boundary, but not an
+installed extension type: an organization-owned webhook or polling adapter
+validates provider events and calls `case open` or `case signal`. Swarmkit then
+owns the idempotent case and workflow. See
+[Persistent services](PERSISTENT_SERVICES.md).
+
 ## Why delivery uses an outbox
 
 Generating a report and sending it are different operations. `swarmctl report` is deterministic and local. A provider call can time out, be retried, or succeed while the local process loses its response. Swarmkit therefore snapshots the content first and creates a durable delivery job:

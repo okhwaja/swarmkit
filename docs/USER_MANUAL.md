@@ -2,7 +2,7 @@
 
 This manual is for the person who assigns a mission, follows its progress, answers questions, and asks for investigations. You do not need to understand the internal event database.
 
-In the commands below, replace `/work/my-run/.swarm` with your mission's state directory. Commands return IDs such as `WS-...`, `T-...`, and `D-...`; copy those IDs into later commands.
+In the commands below, replace `/work/my-run/.swarm` with your mission's state directory. Commands return IDs such as `C-...`, `WS-...`, `T-...`, and `D-...`; copy those IDs into later commands.
 
 ## Common journeys
 
@@ -10,6 +10,10 @@ In the commands below, replace `/work/my-run/.swarm` with your mission's state d
 |---|---|---|
 | Connect Swarmkit to a harness on a new machine | Give the setup agent `SETUP_AGENT.md`, then require its setup report and audit ZIP | The agent discovers local CLI details but must pass Swarmkit's fixed integration gates |
 | Start an ambiguous objective | Run `swarmctl init`, configure `runner.json`, then run `swarmctl run` | The manager creates bounded discovery work and progressively forms the plan |
+| Create a persistent logical agent | Initialize with `--mode SERVICE`, install reviewed policies, and connect an ingress adapter | The service remains available while idle, but each case runs in fresh model sessions |
+| Submit work to a persistent agent | Run `case open` with a provider-stable source/external ID | Duplicate notifications collapse into one durable case and workstream |
+| Record an author reply or new revision | Run `case signal`, optionally with `--decision` or `--wake` | The response reaches every future owner and resumes or creates only the intended work |
+| Inspect a standing agent's queue | Run `case list`, `report`, or open the generated board | You see active cases and those waiting for human or external input |
 | Get the executive view | Run `swarmctl report` and open `views/STATUS.md` | You see major workstreams, outcomes, progress, forecast ranges, confidence, and needs from you |
 | Receive the executive view by email | Install an allowlisted delivery extension, enqueue the report, and dispatch the returned job | Swarmkit snapshots the report and tracks the send until the provider returns a receipt |
 | Inspect delivery problems | Run `swarmctl delivery list` or open the report/board | You see pending, claimed, failed, sent, and cancelled jobs with attempt history |
@@ -76,6 +80,90 @@ swarmctl --root /work/my-run/.swarm run --max-cycles 20
 ```
 
 The command stops when the mission finishes, needs a human decision, has no ready work, or reaches the cycle limit. A stopped command does not mean the mission failed or completed; inspect the report.
+
+## Journey: create a persistent review agent
+
+Create a service mission rather than keeping one model conversation alive:
+
+```bash
+swarmctl --root /work/change-reviewer/.swarm init \
+  --mode SERVICE \
+  --objective "Independently review submitted engineering changes" \
+  --success "Every request reaches an evidence-backed disposition" \
+  --constraint "Only I may authorize approval"
+```
+
+Install a reviewed copy of the example workflow:
+
+```bash
+swarmctl --root /work/change-reviewer/.swarm policy install \
+  /opt/company/swarmkit-policies/human-gated-change-review \
+  --actor human
+```
+
+When you or a provider notification submits a change:
+
+```bash
+swarmctl --root /work/change-reviewer/.swarm case open \
+  --source review-provider \
+  --external-id project/change/42 \
+  --title "Review change 42" \
+  --objective "Reach an independent, human-authorized disposition" \
+  --payload /work/intake/event-8001.json \
+  --policy human-gated-change-review \
+  --var change_ref=https://review.example/42 \
+  --var review_skill=adversarial-review \
+  --var 'verification_command=python3 -m unittest' \
+  --ready
+
+swarmctl --root /work/change-reviewer/.swarm run --max-cycles 10
+```
+
+The example policy creates a cold review and digestible explainer, asks you for
+an approve/withhold decision, carries out only the authority you grant, waits
+durably for requested changes, and uses a fresh verifier for the final
+disposition.
+
+When answering that gate, select one of the offered options as well as giving
+your reasons:
+
+```bash
+swarmctl --root /work/change-reviewer/.swarm decision resolve D-ID \
+  --choice withhold \
+  --answer "Withhold until the retry path has a concurrency test"
+```
+
+For approval and similarly high-risk actions, configure the provider adapter to
+require `decision require-choice D-ID --choice approve`; do not give the review
+agent an ungated approval capability.
+
+If approval is withheld, inspect the case to find the open external blocker:
+
+```bash
+swarmctl --root /work/change-reviewer/.swarm case show C-ID
+```
+
+An author response is recorded by the ingress adapter and linked to that
+blocker:
+
+```bash
+swarmctl --root /work/change-reviewer/.swarm case signal C-ID \
+  --source review-provider \
+  --external-id event-9001 \
+  --kind author_response \
+  --body "Revision 7 addresses the requested change" \
+  --decision D-ID
+```
+
+The next fresh owner must verify the claim. Contradictions or requests to
+reinterpret your conditions return to you as a new human decision. A new
+revision after completion can use `case signal --wake` to create one follow-up
+task.
+
+Your webhook, polling, or notification adapter stays outside Swarmkit. It owns
+provider signature verification and authentication; Swarmkit owns idempotent
+intake, state, and auditability. See [Persistent services](PERSISTENT_SERVICES.md)
+for the complete setup and safety contract.
 
 ## Journey 2: get an executive update
 
@@ -335,7 +423,7 @@ swarmctl --root /work/my-run/.swarm export \
   --include-artifacts
 ```
 
-The archive includes `REVIEW_ME.md`. Give the entire ZIP to a reviewer or analysis model and ask it to identify stale facts, duplicated work, poor decomposition, decision delays, context-rotation failures, weak verification, forecast misses, or excessive manager churn.
+The archive includes `REVIEW_ME.md`. Give the entire ZIP to a reviewer or analysis model and ask it to identify stale facts, duplicated work, poor decomposition, decision delays, context-rotation failures, weak verification, forecast misses, or excessive manager churn. For a service mission, `cases.json` contains complete case and signal histories while `snapshot.json` stays compact.
 
 Prompts, captured output, and artifacts may contain confidential data. Inspect the ZIP before sharing it outside your trusted environment.
 
@@ -382,5 +470,6 @@ Marking a workstream `DONE` is rejected while any linked task remains non-termin
 | Correct your answer | `decision revise` |
 | Repair stale scheduling state | `reconcile` |
 | Review the orchestration itself | `export` |
+| Inspect or submit standing-service work | `case list`, `case open`, or `case signal` |
 
 Changing the mission's objective or issuing an immediate stop directive is not yet a first-class command. Stop unattended cycles before making such a change, record the direction through your controlled operator procedure, and do not disguise it as a briefing inquiry.

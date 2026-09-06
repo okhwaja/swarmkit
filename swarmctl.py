@@ -19,8 +19,8 @@ import textwrap
 import zipfile
 
 
-VERSION = "0.4.0"
-SCHEMA_VERSION = "4"
+VERSION = "0.5.0"
+SCHEMA_VERSION = "5"
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
 TERMINAL_TASK_STATES = {"DONE", "CANCELLED"}
 VALID_TASK_KINDS = {"discovery", "implementation", "verification", "briefing"}
@@ -35,6 +35,8 @@ VALID_BLOCKER_KINDS = {
     "resource_conflict",
 }
 VALID_DELIVERY_STATES = {"PENDING", "CLAIMED", "SENT", "FAILED", "CANCELLED"}
+VALID_CASE_STATES = {"OPEN", "ACTIVE", "WAITING_HUMAN", "WAITING_EXTERNAL", "VERIFYING", "DONE", "CANCELLED"}
+VALID_MISSION_MODES = {"FINITE", "SERVICE"}
 
 
 class SwarmError(Exception):
@@ -196,6 +198,52 @@ CREATE TABLE IF NOT EXISTS policy_application_tasks (
     fresh_session_from TEXT,
     PRIMARY KEY (application_id, stage_id)
 );
+CREATE TABLE IF NOT EXISTS cases (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    priority INTEGER NOT NULL DEFAULT 50,
+    workstream_id TEXT NOT NULL REFERENCES workstreams(id) ON DELETE RESTRICT,
+    policy_application_id TEXT REFERENCES policy_applications(id) ON DELETE SET NULL,
+    payload_path TEXT,
+    payload_sha256 TEXT,
+    payload_size_bytes INTEGER,
+    metadata_json TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    result_summary TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT,
+    UNIQUE (mission_id, source, external_id)
+);
+CREATE TABLE IF NOT EXISTS case_tasks (
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (case_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS case_signals (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    author TEXT,
+    body TEXT NOT NULL,
+    payload_path TEXT,
+    payload_sha256 TEXT,
+    payload_size_bytes INTEGER,
+    metadata_json TEXT NOT NULL,
+    resolves_decision_id TEXT REFERENCES decisions(id) ON DELETE SET NULL,
+    recorded_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (mission_id, source, external_id)
+);
 CREATE TABLE IF NOT EXISTS extensions (
     id TEXT PRIMARY KEY,
     version TEXT NOT NULL,
@@ -280,6 +328,10 @@ CREATE TABLE IF NOT EXISTS decision_acks (
     acknowledged_at TEXT NOT NULL,
     PRIMARY KEY (decision_id, task_id)
 );
+CREATE TABLE IF NOT EXISTS decision_outcomes (
+    decision_id TEXT PRIMARY KEY REFERENCES decisions(id) ON DELETE CASCADE,
+    selected_option TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS facts (
     id TEXT PRIMARY KEY,
     mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
@@ -339,6 +391,9 @@ CREATE INDEX IF NOT EXISTS idx_workstreams_status ON workstreams(status, updated
 CREATE INDEX IF NOT EXISTS idx_task_workstreams_workstream ON task_workstreams(workstream_id);
 CREATE INDEX IF NOT EXISTS idx_policy_applications_policy ON policy_applications(policy_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_policy_application_tasks_task ON policy_application_tasks(task_id);
+CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_case_tasks_case ON case_tasks(case_id);
+CREATE INDEX IF NOT EXISTS idx_case_signals_case ON case_signals(case_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_runs_delivery ON delivery_runs(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_events_seq ON events(seq);
@@ -360,14 +415,20 @@ def ensure_schema(conn):
            ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
         (VERSION,),
     )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES('mission_mode', 'FINITE')"
+    )
     conn.commit()
 
 
-def initialize(root, objective, success, constraints):
+def initialize(root, objective, success, constraints, mode="FINITE"):
+    mode = mode.upper()
+    if mode not in VALID_MISSION_MODES:
+        raise SwarmError("Invalid mission mode: %s" % mode)
     if db_path(root).exists():
         raise SwarmError("Workspace already exists at %s" % root)
     root.mkdir(parents=True, exist_ok=True)
-    for name in ("prompts", "runs", "views", "outbox"):
+    for name in ("prompts", "runs", "views", "outbox", "intake"):
         (root / name).mkdir(exist_ok=True)
     conn = connect(root, require=False)
     try:
@@ -376,6 +437,7 @@ def initialize(root, objective, success, constraints):
         mission_id = make_id("M")
         conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
         conn.execute("INSERT INTO meta(key, value) VALUES('swarmctl_version', ?)", (VERSION,))
+        conn.execute("INSERT INTO meta(key, value) VALUES('mission_mode', ?)", (mode,))
         conn.execute(
             "INSERT INTO missions(id, objective, success_json, constraints_json, created_at, updated_at) VALUES(?,?,?,?,?,?)",
             (mission_id, objective, json_dump(success), json_dump(constraints), now, now),
@@ -411,6 +473,11 @@ def mission(conn):
     if not row:
         raise SwarmError("Mission record is missing")
     return row
+
+
+def mission_mode(conn):
+    row = conn.execute("SELECT value FROM meta WHERE key='mission_mode'").fetchone()
+    return row["value"] if row else "FINITE"
 
 
 def add_event(conn, mission_id, entity_type, entity_id, event_type, actor, payload=None):
@@ -1566,6 +1633,7 @@ def reconcile_conn(conn, actor="reconciler"):
             conn.execute("UPDATE tasks SET status='PROPOSED', updated_at=? WHERE id=?", (now, row["id"]))
             add_event(conn, row["mission_id"], "task", row["id"], "TASK_DECISION_CLEARED", actor)
             changed.append((row["id"], "PROPOSED"))
+    changed.extend(reconcile_cases(conn, actor))
     conn.commit()
     return changed
 
@@ -1661,6 +1729,517 @@ def hash_file(path):
             digest.update(block)
             size += len(block)
     return digest.hexdigest(), size
+
+
+def case_row(conn, case_id):
+    row = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown case: %s" % case_id)
+    return row
+
+
+def snapshot_case_payload(root, case_id, payload, name):
+    if not payload:
+        return None, None, None
+    source = Path(payload).expanduser().resolve()
+    if not source.is_file():
+        raise SwarmError("Case payload is not a file: %s" % source)
+    source_sha, source_size = hash_file(source)
+    destination_dir = root / "intake" / case_id
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    suffix = source.suffix if source.suffix else ".txt"
+    destination = destination_dir / (name + suffix)
+    shutil.copy2(source, destination)
+    copied_sha, copied_size = hash_file(destination)
+    if copied_sha != source_sha or copied_size != source_size:
+        raise SwarmError("Case payload changed while it was being snapshotted")
+    return str(destination), copied_sha, copied_size
+
+
+def case_payload_intact(path, expected_sha, expected_size):
+    if not path:
+        return True
+    candidate = Path(path)
+    if not candidate.is_file():
+        return False
+    sha, size = hash_file(candidate)
+    return sha == expected_sha and size == expected_size
+
+
+def signal_dict(row):
+    data = dict(row)
+    data["metadata"] = json_load(data.pop("metadata_json"), {})
+    data["payload_intact"] = case_payload_intact(
+        data["payload_path"], data["payload_sha256"], data["payload_size_bytes"]
+    )
+    return data
+
+
+def case_dict(conn, row):
+    data = dict(row)
+    data["metadata"] = json_load(data.pop("metadata_json"), {})
+    data["payload_intact"] = case_payload_intact(
+        data["payload_path"], data["payload_sha256"], data["payload_size_bytes"]
+    )
+    data["tasks"] = [dict(item) for item in conn.execute(
+        """SELECT t.id, t.title, t.kind, t.status, t.owner, t.next_action, t.result,
+           t.created_at, t.updated_at FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+           WHERE ct.case_id=? ORDER BY t.rowid""",
+        (row["id"],),
+    )]
+    data["signals"] = [signal_dict(item) for item in conn.execute(
+        "SELECT * FROM case_signals WHERE case_id=? ORDER BY created_at", (row["id"],)
+    )]
+    data["open_decisions"] = [decision_dict(conn, item) for item in conn.execute(
+        """SELECT DISTINCT d.* FROM case_tasks ct
+           JOIN decision_tasks dt ON dt.task_id=ct.task_id
+           JOIN decisions d ON d.id=dt.decision_id
+           WHERE ct.case_id=? AND d.status='OPEN' ORDER BY d.created_at""",
+        (row["id"],),
+    )]
+    return data
+
+
+def case_summary(conn, row):
+    case = dict(row)
+    decisions = [dict(item) for item in conn.execute(
+        """SELECT DISTINCT d.id, d.kind, d.question, d.recommendation
+           FROM case_tasks ct JOIN decision_tasks dt ON dt.task_id=ct.task_id
+           JOIN decisions d ON d.id=dt.decision_id
+           WHERE ct.case_id=? AND d.status='OPEN' ORDER BY d.created_at""",
+        (case["id"],),
+    )]
+    task_counts = {item["status"]: item["n"] for item in conn.execute(
+        """SELECT t.status, COUNT(*) AS n FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+           WHERE ct.case_id=? GROUP BY t.status""",
+        (case["id"],),
+    )}
+    return {
+        "id": case["id"], "source": case["source"],
+        "external_id": case["external_id"], "title": case["title"],
+        "objective": case["objective"], "status": case["status"],
+        "priority": case["priority"], "workstream_id": case["workstream_id"],
+        "policy_application_id": case["policy_application_id"],
+        "result_summary": case["result_summary"], "task_counts": task_counts,
+        "open_decisions": decisions, "updated_at": case["updated_at"],
+        "closed_at": case["closed_at"],
+    }
+
+
+def link_case_task(conn, case_id, task_id, actor):
+    case = case_row(conn, case_id)
+    task = task_row(conn, task_id)
+    if case["mission_id"] != task["mission_id"]:
+        raise SwarmError("Case and task belong to different missions")
+    prior = conn.execute("SELECT case_id FROM case_tasks WHERE task_id=?", (task_id,)).fetchone()
+    if prior and prior["case_id"] != case_id:
+        raise SwarmError("Task %s already belongs to case %s" % (task_id, prior["case_id"]))
+    task_workstream = conn.execute(
+        "SELECT workstream_id FROM task_workstreams WHERE task_id=?", (task_id,)
+    ).fetchone()
+    if task_workstream and task_workstream["workstream_id"] != case["workstream_id"]:
+        raise SwarmError("Task belongs to a different workstream than case %s" % case_id)
+    if not task_workstream:
+        conn.execute(
+            "INSERT INTO task_workstreams(task_id, workstream_id) VALUES(?,?)",
+            (task_id, case["workstream_id"]),
+        )
+    conn.execute("INSERT OR IGNORE INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, task_id))
+    now = utcnow()
+    conn.execute(
+        "UPDATE cases SET status='ACTIVE', closed_at=NULL, updated_at=? WHERE id=?",
+        (now, case_id),
+    )
+    conn.execute(
+        """UPDATE workstreams SET status='ACTIVE', updated_at=?
+           WHERE id=? AND status NOT IN ('ACTIVE')""",
+        (now, case["workstream_id"]),
+    )
+    add_event(conn, case["mission_id"], "case", case_id, "CASE_TASK_LINKED", actor, {
+        "task_id": task_id,
+    })
+    conn.commit()
+    return not prior
+
+
+def open_case(root, conn, source, external_id, title, objective, priority, actor,
+              acceptance, payload=None, metadata_items=None, policy_id=None,
+              policy_variables=None, ready=False):
+    values = {
+        "source": source.strip(), "external_id": external_id.strip(),
+        "title": title.strip(), "objective": objective.strip(),
+    }
+    for name, value in values.items():
+        if not value:
+            raise SwarmError("Case %s may not be empty" % name)
+    metadata = parse_metadata(metadata_items or [])
+    source_payload = Path(payload).expanduser().resolve() if payload else None
+    if source_payload and not source_payload.is_file():
+        raise SwarmError("Case payload is not a file: %s" % source_payload)
+    payload_sha, payload_size = hash_file(source_payload) if source_payload else (None, None)
+    request_fingerprint = hashlib.sha256(json_dump({
+        "source": values["source"], "external_id": values["external_id"],
+        "title": values["title"], "objective": values["objective"],
+        "priority": priority, "acceptance": acceptance or [],
+        "payload_sha256": payload_sha, "metadata": metadata,
+        "policy_id": policy_id, "policy_variables": parse_policy_variables(policy_variables or []),
+        "ready": bool(ready),
+    }).encode("utf-8")).hexdigest()
+    current_mission = mission(conn)
+    if current_mission["status"] == "DONE":
+        raise SwarmError("Cannot open a case in a completed mission")
+    existing = conn.execute(
+        "SELECT * FROM cases WHERE mission_id=? AND source=? AND external_id=?",
+        (current_mission["id"], values["source"], values["external_id"]),
+    ).fetchone()
+    if existing:
+        if existing["request_fingerprint"] != request_fingerprint:
+            raise SwarmError("Case source/external-id already belongs to a different payload")
+        result = case_dict(conn, existing)
+        result["created"] = False
+        return result
+    case_id = make_id("C")
+    payload_path, copied_sha, copied_size = snapshot_case_payload(
+        root, case_id, source_payload, "initial"
+    )
+    workstream_id = make_id("WS")
+    now = utcnow()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        concurrent = conn.execute(
+            "SELECT * FROM cases WHERE mission_id=? AND source=? AND external_id=?",
+            (current_mission["id"], values["source"], values["external_id"]),
+        ).fetchone()
+        if concurrent:
+            conn.rollback()
+            if payload_path:
+                shutil.rmtree(root / "intake" / case_id, ignore_errors=True)
+            if concurrent["request_fingerprint"] != request_fingerprint:
+                raise SwarmError("Case source/external-id was concurrently used by a different payload")
+            result = case_dict(conn, concurrent)
+            result["created"] = False
+            return result
+        conn.execute(
+            """INSERT INTO workstreams(id, mission_id, name, outcome, status, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (workstream_id, current_mission["id"], values["title"], values["objective"], "ACTIVE", now, now),
+        )
+        conn.execute(
+            """INSERT INTO cases(id, mission_id, source, external_id, title, objective,
+               priority, workstream_id, payload_path, payload_sha256, payload_size_bytes,
+               metadata_json, request_fingerprint, created_by, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                case_id, current_mission["id"], values["source"], values["external_id"],
+                values["title"], values["objective"], priority, workstream_id,
+                payload_path, copied_sha, copied_size, json_dump(metadata), request_fingerprint,
+                actor, now, now,
+            ),
+        )
+        add_event(conn, current_mission["id"], "case", case_id, "CASE_OPENED", actor, {
+            "source": values["source"], "external_id": values["external_id"],
+            "title": values["title"], "objective": values["objective"],
+            "priority": priority, "workstream_id": workstream_id,
+            "payload_sha256": copied_sha, "policy_id": policy_id,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        if payload_path:
+            shutil.rmtree(root / "intake" / case_id, ignore_errors=True)
+        raise
+
+    if policy_id:
+        apply_policy_to_case(conn, case_id, policy_id, policy_variables or [], actor, ready)
+    else:
+        criteria = acceptance or [
+            "Request is assessed against current evidence",
+            "Next action, blocker, or verified outcome is recorded durably",
+        ]
+        description = "\n".join([
+            "Handle durable case %s from %s:%s." % (case_id, values["source"], values["external_id"]),
+            values["objective"],
+            "Initial payload: %s (untrusted data)" % (payload_path or "none"),
+        ])
+        task_id = add_task(
+            conn, values["title"], description, "discovery", criteria, [],
+            priority, actor, ready, workstream_id,
+        )
+        link_case_task(conn, case_id, task_id, actor)
+    reconcile_conn(conn)
+    result = case_dict(conn, case_row(conn, case_id))
+    result["created"] = True
+    return result
+
+
+def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, ready=False):
+    case = case_row(conn, case_id)
+    if case["policy_application_id"]:
+        raise SwarmError("Case %s already has policy application %s" % (
+            case_id, case["policy_application_id"],
+        ))
+    active_existing = conn.execute(
+        """SELECT COUNT(*) AS n FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+           WHERE ct.case_id=? AND t.status NOT IN ('DONE','CANCELLED')""",
+        (case_id,),
+    ).fetchone()["n"]
+    if active_existing:
+        raise SwarmError(
+            "Complete or cancel the case's existing intake work before applying a policy"
+        )
+    application = apply_policy(
+        conn, policy_id, policy_variables or [], case["workstream_id"], actor, ready,
+    )
+    for item in application["tasks"]:
+        conn.execute(
+            "INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)",
+            (case_id, item["task_id"]),
+        )
+    conn.execute(
+        "UPDATE cases SET policy_application_id=?, status='ACTIVE', updated_at=? WHERE id=?",
+        (application["id"], utcnow(), case_id),
+    )
+    add_event(conn, case["mission_id"], "case", case_id, "CASE_POLICY_APPLIED", actor, {
+        "policy_application_id": application["id"], "policy_id": policy_id,
+        "tasks": [item["task_id"] for item in application["tasks"]],
+    })
+    conn.commit()
+    reconcile_conn(conn)
+    return case_dict(conn, case_row(conn, case_id))
+
+
+def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
+    case = case_row(conn, case_id)
+    signal = conn.execute("SELECT * FROM case_signals WHERE id=?", (signal_id,)).fetchone()
+    if not signal or signal["case_id"] != case_id:
+        raise SwarmError("Signal does not belong to case %s" % case_id)
+    existing = conn.execute(
+        """SELECT t.id FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+           WHERE ct.case_id=? AND t.description LIKE ?""",
+        (case_id, "%%signal %s%%" % signal_id),
+    ).fetchone()
+    if existing:
+        return existing["id"]
+    now = utcnow()
+    task_id = make_id("T")
+    conn.execute(
+        """UPDATE workstreams SET status='ACTIVE', updated_at=? WHERE id=?""",
+        (now, case["workstream_id"]),
+    )
+    conn.execute(
+        """INSERT INTO tasks(id, mission_id, title, description, kind, priority,
+           authorized, acceptance_json, created_at, updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (
+            task_id, case["mission_id"], "Assess follow-up: %s" % case["title"],
+            "Assess durable signal %s for case %s and record the justified next action." %
+            (signal_id, case_id), "discovery", case["priority"], 1 if ready else 0,
+            json_dump([
+                "Signal is assessed against current case evidence",
+                "Response, blocker, or next action is recorded durably",
+            ]), now, now,
+        ),
+    )
+    conn.execute("INSERT INTO task_workstreams(task_id, workstream_id) VALUES(?,?)", (
+        task_id, case["workstream_id"],
+    ))
+    conn.execute("INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, task_id))
+    conn.execute(
+        "UPDATE cases SET status='ACTIVE', closed_at=NULL, updated_at=? WHERE id=?",
+        (now, case_id),
+    )
+    add_event(conn, case["mission_id"], "task", task_id, "TASK_PROPOSED", actor, {
+        "title": "Assess follow-up: %s" % case["title"], "kind": "discovery",
+        "authorized": bool(ready), "case_id": case_id, "signal_id": signal_id,
+        "workstream_id": case["workstream_id"],
+    })
+    add_event(conn, case["mission_id"], "case", case_id, "CASE_WOKEN", actor, {
+        "signal_id": signal_id, "task_id": task_id,
+    })
+    conn.commit()
+    reconcile_conn(conn)
+    return task_id
+
+
+def add_case_signal(root, conn, case_id, source, external_id, kind, author, body,
+                    actor, payload=None, metadata_items=None, decision_id=None,
+                    wake=False):
+    case = case_row(conn, case_id)
+    source = source.strip()
+    external_id = external_id.strip()
+    kind = kind.strip()
+    body = body.strip()
+    if not source or not external_id or not kind or not body:
+        raise SwarmError("Signal source, external-id, kind, and body are required")
+    if decision_id and wake:
+        raise SwarmError("Use either --decision or --wake for one signal, not both")
+    if decision_id:
+        decision = decision_row(conn, decision_id)
+        linked = conn.execute(
+            """SELECT 1 FROM decision_tasks dt JOIN case_tasks ct ON ct.task_id=dt.task_id
+               WHERE dt.decision_id=? AND ct.case_id=?""",
+            (decision_id, case_id),
+        ).fetchone()
+        if not linked:
+            raise SwarmError("Decision %s is not linked to case %s" % (decision_id, case_id))
+        if decision["status"] not in {"OPEN", "RESOLVED"}:
+            raise SwarmError("Decision %s cannot be resolved" % decision_id)
+    metadata = parse_metadata(metadata_items or [])
+    source_payload = Path(payload).expanduser().resolve() if payload else None
+    if source_payload and not source_payload.is_file():
+        raise SwarmError("Signal payload is not a file: %s" % source_payload)
+    payload_sha, _ = hash_file(source_payload) if source_payload else (None, None)
+    existing = conn.execute(
+        "SELECT * FROM case_signals WHERE mission_id=? AND source=? AND external_id=?",
+        (case["mission_id"], source, external_id),
+    ).fetchone()
+    if existing:
+        same = (
+            existing["case_id"] == case_id and existing["kind"] == kind and
+            (existing["author"] or "") == (author or "") and existing["body"] == body and
+            existing["payload_sha256"] == payload_sha and
+            json_load(existing["metadata_json"], {}) == metadata and
+            existing["resolves_decision_id"] == decision_id
+        )
+        if not same:
+            raise SwarmError("Signal source/external-id already belongs to a different payload")
+        if decision_id and decision_row(conn, decision_id)["status"] == "OPEN":
+            resolve_decision(conn, decision_id, body, actor)
+        wake_task_id = None
+        if wake:
+            wake_task_id = wake_case_from_signal(conn, case_id, existing["id"], actor, ready=True)
+        result = signal_dict(existing)
+        result["created"] = False
+        result["wake_task_id"] = wake_task_id
+        return result
+    signal_id = make_id("S")
+    payload_path, copied_sha, copied_size = snapshot_case_payload(
+        root, case_id, source_payload, "signal-%s" % signal_id
+    )
+    now = utcnow()
+    conn.execute(
+        """INSERT INTO case_signals(id, mission_id, case_id, source, external_id,
+           kind, author, body, payload_path, payload_sha256, payload_size_bytes,
+           metadata_json, resolves_decision_id, recorded_by, created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            signal_id, case["mission_id"], case_id, source, external_id, kind,
+            author, body, payload_path, copied_sha, copied_size, json_dump(metadata),
+            decision_id, actor, now,
+        ),
+    )
+    add_event(conn, case["mission_id"], "signal", signal_id, "CASE_SIGNAL_RECORDED", actor, {
+        "case_id": case_id, "source": source, "external_id": external_id,
+        "kind": kind, "author": author, "payload_sha256": copied_sha,
+        "resolves_decision_id": decision_id,
+    })
+    add_event(conn, case["mission_id"], "case", case_id, "CASE_UPDATED_BY_SIGNAL", actor, {
+        "signal_id": signal_id, "kind": kind, "resolves_decision_id": decision_id,
+    })
+    conn.commit()
+    if decision_id and decision_row(conn, decision_id)["status"] == "OPEN":
+        resolve_decision(conn, decision_id, body, actor)
+    wake_task_id = None
+    if wake:
+        wake_task_id = wake_case_from_signal(conn, case_id, signal_id, actor, ready=True)
+    reconcile_conn(conn)
+    result = signal_dict(conn.execute("SELECT * FROM case_signals WHERE id=?", (signal_id,)).fetchone())
+    result["created"] = True
+    result["wake_task_id"] = wake_task_id
+    return result
+
+
+def cancel_case(conn, case_id, actor, reason):
+    case = case_row(conn, case_id)
+    if not reason.strip():
+        raise SwarmError("Case cancellation requires a reason")
+    if case["status"] in {"DONE", "CANCELLED"}:
+        raise SwarmError("Case %s is already terminal" % case_id)
+    now = utcnow()
+    linked_tasks = conn.execute(
+        """SELECT t.* FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+           WHERE ct.case_id=? AND t.status NOT IN ('DONE','CANCELLED')""",
+        (case_id,),
+    ).fetchall()
+    for task in linked_tasks:
+        conn.execute(
+            """UPDATE tasks SET status='CANCELLED', owner=NULL, lease_until=NULL,
+               result=?, updated_at=? WHERE id=?""",
+            (reason, now, task["id"]),
+        )
+        add_event(conn, case["mission_id"], "task", task["id"], "TASK_CANCELLED", actor, {
+            "reason": reason, "case_id": case_id,
+        })
+    conn.execute(
+        """UPDATE cases SET status='CANCELLED', result_summary=?, updated_at=?, closed_at=?
+           WHERE id=?""",
+        (reason, now, now, case_id),
+    )
+    conn.execute(
+        """UPDATE workstreams SET status='CANCELLED', progress_summary=?, updated_at=?
+           WHERE id=?""",
+        (reason, now, case["workstream_id"]),
+    )
+    add_event(conn, case["mission_id"], "case", case_id, "CASE_CANCELLED", actor, {
+        "reason": reason, "cancelled_tasks": [task["id"] for task in linked_tasks],
+    })
+    conn.commit()
+
+
+def reconcile_cases(conn, actor="reconciler"):
+    changed = []
+    now = utcnow()
+    for case in conn.execute("SELECT * FROM cases WHERE status <> 'CANCELLED'").fetchall():
+        tasks = conn.execute(
+            """SELECT t.status, t.result FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+               WHERE ct.case_id=?""",
+            (case["id"],),
+        ).fetchall()
+        decisions = conn.execute(
+            """SELECT DISTINCT d.kind FROM case_tasks ct
+               JOIN decision_tasks dt ON dt.task_id=ct.task_id
+               JOIN decisions d ON d.id=dt.decision_id
+               WHERE ct.case_id=? AND d.status='OPEN'""",
+            (case["id"],),
+        ).fetchall()
+        kinds = {row["kind"] for row in decisions}
+        if kinds & {"human_decision", "missing_access", "safety_stop"}:
+            status = "WAITING_HUMAN"
+        elif kinds:
+            status = "WAITING_EXTERNAL"
+        elif not tasks:
+            status = "OPEN"
+        elif all(row["status"] in TERMINAL_TASK_STATES for row in tasks):
+            status = "DONE" if any(row["status"] == "DONE" for row in tasks) else "CANCELLED"
+        elif any(row["status"] == "VERIFYING" for row in tasks):
+            status = "VERIFYING"
+        else:
+            status = "ACTIVE"
+        if status != case["status"]:
+            result_summary = case["result_summary"]
+            if status == "DONE" and not result_summary:
+                results = [row["result"] for row in tasks if row["result"]]
+                result_summary = results[-1] if results else "All case tasks reached terminal state"
+            closed_at = now if status in {"DONE", "CANCELLED"} else None
+            conn.execute(
+                """UPDATE cases SET status=?, result_summary=?, updated_at=?, closed_at=?
+                   WHERE id=?""",
+                (status, result_summary, now, closed_at, case["id"]),
+            )
+            workstream_status = {
+                "OPEN": "ACTIVE", "ACTIVE": "ACTIVE", "WAITING_HUMAN": "BLOCKED",
+                "WAITING_EXTERNAL": "BLOCKED", "VERIFYING": "VERIFYING",
+                "DONE": "DONE", "CANCELLED": "CANCELLED",
+            }[status]
+            conn.execute(
+                """UPDATE workstreams SET status=?, progress_summary=?, updated_at=? WHERE id=?""",
+                (workstream_status, result_summary, now, case["workstream_id"]),
+            )
+            add_event(conn, case["mission_id"], "case", case["id"], "CASE_STATUS_CHANGED", actor, {
+                "from": case["status"], "to": status,
+            })
+            changed.append((case["id"], status))
+    return changed
 
 
 def register_artifact(conn, task_id, value, kind="work-product", note=None, actor=None):
@@ -1765,12 +2344,46 @@ def block_task(conn, task_id, agent, kind, question, recommendation, options):
     return decision_id
 
 
-def resolve_decision(conn, decision_id, answer, actor):
+def validate_decision_choice(row, choice):
+    if choice is None:
+        return None
+    choice = choice.strip()
+    options = json_load(row["options_json"], [])
+    if not choice:
+        raise SwarmError("Decision choice may not be empty")
+    if choice not in options:
+        raise SwarmError("Decision choice must exactly match one option: %s" % ", ".join(options))
+    return choice
+
+
+def require_decision_choice(conn, decision_id, choice):
+    row = decision_row(conn, decision_id)
+    if row["status"] != "RESOLVED":
+        raise SwarmError("Decision %s is not resolved" % decision_id)
+    outcome = conn.execute(
+        "SELECT selected_option FROM decision_outcomes WHERE decision_id=?", (decision_id,)
+    ).fetchone()
+    if not outcome:
+        raise SwarmError("Decision %s has no structured selected option" % decision_id)
+    if outcome["selected_option"] != choice:
+        raise SwarmError(
+            "Decision %s selected %s, not required choice %s" %
+            (decision_id, outcome["selected_option"], choice)
+        )
+    return {
+        "authorized": True, "decision_id": decision_id,
+        "selected_option": outcome["selected_option"], "version": row["version"],
+        "decided_by": row["decided_by"], "decided_at": row["decided_at"],
+    }
+
+
+def resolve_decision(conn, decision_id, answer, actor, choice=None):
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = decision_row(conn, decision_id)
         if row["status"] != "OPEN":
             raise SwarmError("Decision %s is already %s" % (decision_id, row["status"]))
+        selected_option = validate_decision_choice(row, choice)
         now = utcnow()
         version = row["version"] + 1
         changed = conn.execute(
@@ -1780,11 +2393,17 @@ def resolve_decision(conn, decision_id, answer, actor):
         )
         if changed.rowcount != 1:
             raise SwarmError("Decision %s was resolved concurrently" % decision_id)
+        if selected_option:
+            conn.execute(
+                "INSERT INTO decision_outcomes(decision_id, selected_option) VALUES(?,?)",
+                (decision_id, selected_option),
+            )
         blocked = [r["task_id"] for r in conn.execute(
             "SELECT task_id FROM decision_tasks WHERE decision_id=?", (decision_id,)
         )]
         add_event(conn, row["mission_id"], "decision", decision_id, "DECISION_RESOLVED", actor, {
-            "answer": answer, "version": version, "affected_tasks": blocked,
+            "answer": answer, "selected_option": selected_option,
+            "version": version, "affected_tasks": blocked,
         })
         conn.commit()
     except Exception:
@@ -1794,18 +2413,25 @@ def resolve_decision(conn, decision_id, answer, actor):
     return version
 
 
-def revise_decision(conn, decision_id, answer, actor):
+def revise_decision(conn, decision_id, answer, actor, choice=None):
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = decision_row(conn, decision_id)
         if row["status"] != "RESOLVED":
             raise SwarmError("Decision %s must be resolved before it can be revised" % decision_id)
+        selected_option = validate_decision_choice(row, choice)
         now = utcnow()
         version = row["version"] + 1
         conn.execute(
             "UPDATE decisions SET answer=?, decided_by=?, decided_at=?, version=?, updated_at=? WHERE id=?",
             (answer, actor, now, version, now, decision_id),
         )
+        conn.execute("DELETE FROM decision_outcomes WHERE decision_id=?", (decision_id,))
+        if selected_option:
+            conn.execute(
+                "INSERT INTO decision_outcomes(decision_id, selected_option) VALUES(?,?)",
+                (decision_id, selected_option),
+            )
         affected = [r["task_id"] for r in conn.execute(
             "SELECT task_id FROM decision_tasks WHERE decision_id=?", (decision_id,)
         )]
@@ -1818,7 +2444,8 @@ def revise_decision(conn, decision_id, answer, actor):
                     ("Acknowledge revised decision %s version %d" % (decision_id, version), now, task_id),
                 )
         add_event(conn, row["mission_id"], "decision", decision_id, "DECISION_REVISED", actor, {
-            "answer": answer, "version": version, "affected_tasks": affected,
+            "answer": answer, "selected_option": selected_option,
+            "version": version, "affected_tasks": affected,
         })
         conn.commit()
     except Exception:
@@ -1916,8 +2543,12 @@ def set_mission_phase(conn, phase, actor):
     conn.commit()
 
 
-def complete_mission(conn, evidence, actor):
+def complete_mission(conn, evidence, actor, shutdown_service=False):
     m = mission(conn)
+    if mission_mode(conn) == "SERVICE" and not shutdown_service:
+        raise SwarmError(
+            "SERVICE missions stay active when idle; pass --shutdown-service to terminate deliberately"
+        )
     active = conn.execute(
         "SELECT COUNT(*) AS n FROM tasks WHERE status NOT IN ('DONE','CANCELLED')"
     ).fetchone()["n"]
@@ -1949,6 +2580,9 @@ def task_dict(conn, row):
     data["decisions"] = [r["decision_id"] for r in conn.execute(
         "SELECT decision_id FROM decision_tasks WHERE task_id=? ORDER BY decision_id", (row["id"],)
     )]
+    data["case_ids"] = [r["case_id"] for r in conn.execute(
+        "SELECT case_id FROM case_tasks WHERE task_id=? ORDER BY case_id", (row["id"],)
+    )]
     workstream = conn.execute(
         "SELECT workstream_id FROM task_workstreams WHERE task_id=?", (row["id"],)
     ).fetchone()
@@ -1970,6 +2604,10 @@ def decision_dict(conn, row):
         "SELECT task_id, version, agent_id, acknowledged_at FROM decision_acks WHERE decision_id=? ORDER BY task_id",
         (row["id"],),
     )]
+    outcome = conn.execute(
+        "SELECT selected_option FROM decision_outcomes WHERE decision_id=?", (row["id"],)
+    ).fetchone()
+    data["selected_option"] = outcome["selected_option"] if outcome else None
     return data
 
 
@@ -2004,6 +2642,7 @@ def workstream_dict(conn, row):
 
 def mission_snapshot(conn):
     m = dict(mission(conn))
+    m["mode"] = mission_mode(conn)
     m["success"] = json_load(m.pop("success_json"), [])
     m["constraints"] = json_load(m.pop("constraints_json"), [])
     tasks = [task_dict(conn, r) for r in conn.execute("SELECT * FROM tasks ORDER BY priority DESC, created_at")]
@@ -2021,6 +2660,9 @@ def mission_snapshot(conn):
     policy_applications = [policy_application_dict(conn, r["id"]) for r in conn.execute(
         "SELECT id FROM policy_applications ORDER BY created_at"
     )]
+    cases = [case_summary(conn, r) for r in conn.execute(
+        "SELECT * FROM cases ORDER BY priority DESC, created_at"
+    )]
     extensions = [extension_summary(r) for r in conn.execute(
         "SELECT * FROM extensions ORDER BY id"
     )]
@@ -2031,7 +2673,7 @@ def mission_snapshot(conn):
         "mission": m, "workstreams": workstreams, "tasks": tasks,
         "decisions": decisions, "facts": facts, "artifacts": artifacts,
         "policies": policies, "policy_applications": policy_applications,
-        "extensions": extensions, "deliveries": deliveries,
+        "cases": cases, "extensions": extensions, "deliveries": deliveries,
     }
 
 
@@ -2070,6 +2712,7 @@ def render_board(root):
         "# Swarm board", "",
         "Generated from canonical state. Do not edit this file by hand.", "",
         "- Mission: `%s`" % m["id"],
+        "- Mode: **%s**" % m["mode"],
         "- Status: **%s**" % m["status"],
         "- Phase: **%s**" % m["phase"],
         "- Updated: %s" % m["updated_at"], "",
@@ -2079,6 +2722,24 @@ def render_board(root):
     lines.extend(["- %s" % item for item in m["success"]] or ["- None recorded"])
     lines.extend(["", "## Constraints", ""])
     lines.extend(["- %s" % item for item in m["constraints"]] or ["- None recorded"])
+    lines.extend([
+        "", "## Cases", "",
+        "| ID | State | Source | External ID | Case | Open decisions |",
+        "|---|---|---|---|---|---|",
+    ])
+    active_cases = [case for case in snapshot["cases"] if case["status"] not in {"DONE", "CANCELLED"}]
+    recent_cases = sorted(
+        [case for case in snapshot["cases"] if case["status"] in {"DONE", "CANCELLED"}],
+        key=lambda item: item["updated_at"], reverse=True,
+    )[:20]
+    for case in active_cases + recent_cases:
+        decisions = ", ".join("`%s`" % item["id"] for item in case["open_decisions"]) or "No"
+        lines.append("| `%s` | %s | %s | %s | %s | %s |" % (
+            case["id"], case["status"], md_escape(case["source"]),
+            md_escape(case["external_id"]), md_escape(case["title"]), decisions,
+        ))
+    if not active_cases and not recent_cases:
+        lines.append("| — | — | — | — | No persistent-service cases | — |")
     lines.extend([
         "", "## Workstreams", "",
         "| ID | State | Workstream | Intended outcome | Forecast | Needs human |",
@@ -2203,7 +2864,16 @@ def inbox(conn, agent, after=None, advance=False, task_id=None):
         run_ids = [r["id"] for r in conn.execute(
             "SELECT id FROM agent_runs WHERE task_id IN (%s)" % placeholders, task_ids
         )]
-        entity_ids = task_ids + decision_ids + artifact_ids + fact_ids + run_ids
+        case_ids = [r["case_id"] for r in conn.execute(
+            "SELECT case_id FROM case_tasks WHERE task_id IN (%s)" % placeholders, task_ids
+        )]
+        signal_ids = []
+        if case_ids:
+            case_placeholders = ",".join("?" for _ in case_ids)
+            signal_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM case_signals WHERE case_id IN (%s)" % case_placeholders, case_ids
+            )]
+        entity_ids = task_ids + decision_ids + artifact_ids + fact_ids + run_ids + case_ids + signal_ids
         entity_placeholders = ",".join("?" for _ in entity_ids)
         m = mission(conn)
         rows = conn.execute(
@@ -2244,13 +2914,18 @@ def build_prompt(root, role, agent, task_id=None):
     conn = connect(root)
     try:
         snapshot = mission_snapshot(conn)
+        active_case_details = [case_dict(conn, row) for row in conn.execute(
+            "SELECT * FROM cases WHERE status NOT IN ('DONE','CANCELLED') ORDER BY priority DESC, created_at"
+        )] if role == "manager" else []
         unseen = inbox(conn, agent, advance=False, task_id=task_id)
         task = None
         if task_id:
             task = task_dict(conn, task_row(conn, task_id))
             linked = [decision_dict(conn, decision_row(conn, d)) for d in task["decisions"]]
+            linked_cases = [case_dict(conn, case_row(conn, case_id)) for case_id in task["case_ids"]]
         else:
             linked = []
+            linked_cases = []
     finally:
         conn.close()
     cli = Path(__file__).resolve()
@@ -2269,18 +2944,38 @@ def build_prompt(root, role, agent, task_id=None):
         "command_prefix": command_prefix,
         "mission": snapshot["mission"],
         "task": task,
+        "linked_cases": linked_cases,
         "linked_decisions": linked,
         "unseen_events": unseen,
     }
     if role == "manager":
         context["installed_policies"] = snapshot["policies"]
-        context["policy_applications"] = snapshot["policy_applications"]
+        context["active_policy_applications"] = [
+            item for item in snapshot["policy_applications"]
+            if item["status"] not in {"DONE", "CANCELLED"}
+        ]
+        context["recent_terminal_policy_applications"] = [{
+            "id": item["id"], "policy_id": item["policy_id"],
+            "policy_version": item["policy_version"], "status": item["status"],
+            "created_at": item["created_at"],
+        } for item in snapshot["policy_applications"]
+          if item["status"] in {"DONE", "CANCELLED"}][-10:]
+        context["active_cases"] = [
+            item for item in active_case_details
+        ]
+        context["recent_terminal_cases"] = sorted(
+            [item for item in snapshot["cases"] if item["status"] in {"DONE", "CANCELLED"}],
+            key=lambda item: item["updated_at"], reverse=True,
+        )[:10]
         context["installed_extensions"] = snapshot["extensions"]
         context["delivery_outbox"] = [{
             "id": item["id"], "status": item["status"], "channel": item["channel"],
             "extension_id": item["extension_id"], "subject": item["subject"],
             "attempt_count": item["attempt_count"], "last_error": item["last_error"],
-        } for item in snapshot["deliveries"]]
+        } for item in (
+            [delivery for delivery in snapshot["deliveries"] if delivery["status"] not in {"SENT", "CANCELLED"}] +
+            [delivery for delivery in snapshot["deliveries"] if delivery["status"] in {"SENT", "CANCELLED"}][-10:]
+        )]
     return "\n".join([
         guide_text.rstrip(),
         "",
@@ -2322,13 +3017,28 @@ def render_status_report(root):
     counts = {}
     for task in snapshot["tasks"]:
         counts[task["status"]] = counts.get(task["status"], 0) + 1
+    open_cases = [case for case in snapshot["cases"] if case["status"] not in {"DONE", "CANCELLED"}]
+    recent_terminal_cases = sorted(
+        [case for case in snapshot["cases"] if case["status"] in {"DONE", "CANCELLED"}],
+        key=lambda item: item["updated_at"], reverse=True,
+    )[:10]
     lines = [
         "# Executive swarm status", "", "Generated %s" % utcnow(), "",
-        "## Mission", "", "- Status: **%s**" % m["status"],
+        "## Mission", "", "- Mode: **%s**" % m["mode"],
+        "- Status: **%s**" % m["status"],
         "- Phase: **%s**" % m["phase"], "- Objective: %s" % m["objective"],
         "- Tasks: %s" % (", ".join("%s %s" % (count, state) for state, count in sorted(counts.items())) or "none"),
-        "", "## Major workstreams", "",
+        "", "## Persistent-service cases", "",
     ]
+    if not open_cases and not recent_terminal_cases:
+        lines.append("No cases have been submitted.")
+    for case in open_cases + recent_terminal_cases:
+        open_ids = ", ".join("`%s`" % item["id"] for item in case["open_decisions"]) or "none"
+        lines.append("- `%s` **%s** — %s; `%s:%s`; open decisions: %s" % (
+            case["id"], case["status"], case["title"], case["source"],
+            case["external_id"], open_ids,
+        ))
+    lines.extend(["", "## Major workstreams", ""])
     if not snapshot["workstreams"]:
         lines.append("No workstreams have been defined yet. During early discovery this means the executive view is still forming.")
     for workstream in snapshot["workstreams"]:
@@ -2376,6 +3086,11 @@ def render_status_report(root):
         urgent_lines.append("- Open `%s` blocker `%s`: %s" % (decision["kind"], decision["id"], decision["question"]))
     for run in failed_runs:
         urgent_lines.append("- Agent run `%s` exited %s at %s" % (run["id"], run["exit_code"], run["ended_at"]))
+    for case in open_cases:
+        if case["status"] == "WAITING_HUMAN":
+            urgent_lines.append("- Case `%s` is waiting for human input: %s" % (
+                case["id"], ", ".join(item["id"] for item in case["open_decisions"]),
+            ))
     for delivery in snapshot["deliveries"]:
         if delivery["status"] == "FAILED":
             urgent_lines.append("- Delivery `%s` failed after %s attempt(s): %s" % (
@@ -2670,13 +3385,19 @@ def setup_check(root):
         "All required role guidance is present" if not missing_guidance else
         "Missing role guidance: %s" % ", ".join(missing_guidance),
     )
-    example_policy = package_root / "examples" / "policy-packs" / "pr-adversarial-review"
+    example_policies = sorted((package_root / "examples" / "policy-packs").glob("*/policy.json"))
     try:
-        example_manifest, _, _ = read_policy_source(example_policy)
+        validated_policies = []
+        for policy_path in example_policies:
+            example_manifest, _, _ = read_policy_source(policy_path.parent)
+            validated_policies.append("%s@%s" % (
+                example_manifest["id"], example_manifest["version"],
+            ))
+        if not validated_policies:
+            raise SwarmError("No bundled policy packs found")
         record(
             "policy_pack_support", True,
-            "Bundled policy %s@%s is valid" %
-            (example_manifest["id"], example_manifest["version"]),
+            "Bundled policies are valid: %s" % ", ".join(validated_policies),
         )
     except (SwarmError, OSError) as exc:
         record("policy_pack_support", False, "Bundled policy validation failed: %s" % exc)
@@ -2779,6 +3500,8 @@ def doctor(conn):
     problems = []
     now = dt.datetime.now(dt.timezone.utc)
     current_mission = mission(conn)
+    if mission_mode(conn) not in VALID_MISSION_MODES:
+        problems.append({"severity": "error", "entity": current_mission["id"], "problem": "invalid mission mode"})
     for row in conn.execute("SELECT * FROM tasks"):
         if row["status"] in ACTIVE_TASK_STATES and not row["owner"]:
             problems.append({"severity": "error", "entity": row["id"], "problem": "active task has no owner"})
@@ -2834,6 +3557,40 @@ def doctor(conn):
                 "severity": "error", "entity": row["id"],
                 "problem": "policy application stages do not match its manifest snapshot",
             })
+    for row in conn.execute("SELECT * FROM cases"):
+        if row["status"] not in VALID_CASE_STATES:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid case state"})
+        if not case_payload_intact(row["payload_path"], row["payload_sha256"], row["payload_size_bytes"]):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "initial case payload is missing or does not match its immutable hash",
+            })
+        mismatched = conn.execute(
+            """SELECT t.id FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
+               LEFT JOIN task_workstreams tw ON tw.task_id=t.id
+               WHERE ct.case_id=? AND (tw.workstream_id IS NULL OR tw.workstream_id <> ?)""",
+            (row["id"], row["workstream_id"]),
+        ).fetchall()
+        if mismatched:
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "case tasks are missing or assigned to another workstream",
+            })
+    for row in conn.execute("SELECT * FROM case_signals"):
+        if not case_payload_intact(row["payload_path"], row["payload_sha256"], row["payload_size_bytes"]):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "case signal payload is missing or does not match its immutable hash",
+            })
+    for row in conn.execute(
+        """SELECT d.id, d.options_json, o.selected_option FROM decision_outcomes o
+           JOIN decisions d ON d.id=o.decision_id"""
+    ):
+        if row["selected_option"] not in json_load(row["options_json"], []):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "structured decision outcome does not match an offered option",
+            })
     for row in conn.execute("SELECT * FROM extensions"):
         try:
             validate_extension_manifest(json_load(row["manifest_json"], {}))
@@ -2886,6 +3643,9 @@ def audit_summary(conn):
     delivery_counts = {}
     for delivery in snap["deliveries"]:
         delivery_counts[delivery["status"]] = delivery_counts.get(delivery["status"], 0) + 1
+    case_counts = {}
+    for case in snap["cases"]:
+        case_counts[case["status"]] = case_counts.get(case["status"], 0) + 1
     workstream_counts = {}
     forecast_outcomes = []
     for workstream in snap["workstreams"]:
@@ -2936,6 +3696,7 @@ def audit_summary(conn):
     return {
         "task_counts": counts, "workstream_counts": workstream_counts,
         "policy_application_counts": policy_counts,
+        "case_counts": case_counts,
         "delivery_counts": delivery_counts,
         "completed_workstream_forecast_outcomes": forecast_outcomes,
         "event_count": events, "agent_run_count": runs,
@@ -2959,6 +3720,9 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
             data["payload"] = json_load(data.pop("payload_json"), {})
             events.append(data)
         runs = [dict(row) for row in conn.execute("SELECT * FROM agent_runs ORDER BY started_at")]
+        cases = [case_dict(conn, row) for row in conn.execute(
+            "SELECT * FROM cases ORDER BY created_at, id"
+        )]
         summary = audit_summary(conn)
     finally:
         conn.close()
@@ -2971,6 +3735,7 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
         stage = Path(tmp) / "swarm-audit"
         stage.mkdir()
         (stage / "snapshot.json").write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (stage / "cases.json").write_text(json.dumps(cases, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (stage / "events.jsonl").write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events), encoding="utf-8")
         (stage / "agent-runs.json").write_text(json.dumps(runs, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (stage / "health.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -2991,10 +3756,13 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
             shutil.copytree(root / "runs", stage / "runs")
         if (root / "outbox").exists():
             shutil.copytree(root / "outbox", stage / "outbox")
+        if (root / "intake").exists():
+            shutil.copytree(root / "intake", stage / "intake")
         audit_guide = textwrap.dedent("""\
             # How to review this swarm run
 
-            Start with `snapshot.json`, `health.json`, and `BOARD.md`. Use `events.jsonl` to
+            Start with `snapshot.json`, `health.json`, and `BOARD.md`. For a persistent service,
+            use `cases.json` for complete case and signal histories. Use `events.jsonl` to
             reconstruct causality and `agent-runs.json` plus `runs/` to inspect individual
             invocations. The SQLite database is included for custom queries.
 
@@ -3002,8 +3770,9 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
             tasks, duplicated work, missing checkpoints,
             long human-decision propagation, expired leases, weak verification, manager churn,
             excessive fan-out, policy stages that were skipped or claimed by disallowed agent
-            identities, named skills without evidence, failed or duplicated external deliveries,
-            missing provider receipts, and work that bypassed canonical state.
+            identities, named skills without evidence, duplicate inbound cases or signals,
+            missed follow-ups, failed or duplicated external deliveries, missing provider
+            receipts, and work that bypassed canonical state.
 
             Secrets warning: prompts, stdout, stderr, and registered artifacts may contain
             sensitive material. Inspect this archive before sharing it outside your organization.
@@ -3052,6 +3821,10 @@ def parser():
     init.add_argument("--objective", required=True)
     init.add_argument("--success", action="append", default=[], help="Repeatable success condition")
     init.add_argument("--constraint", action="append", default=[], help="Repeatable safety or scope boundary")
+    init.add_argument(
+        "--mode", type=str.upper, choices=sorted(VALID_MISSION_MODES), default="FINITE",
+        help="FINITE completes once; SERVICE remains available for durable cases",
+    )
 
     sub.add_parser("status", help="Show the current canonical snapshot")
     sub.add_parser("board", help="Regenerate the Markdown board")
@@ -3063,6 +3836,7 @@ def parser():
     ask = sub.add_parser("ask", help="Start a read-only briefing inquiry")
     ask.add_argument("--question", required=True)
     ask.add_argument("--workstream")
+    ask.add_argument("--case")
     ask.add_argument("--depends-on", action="append", default=[])
     ask.add_argument("--actor", default="human")
 
@@ -3086,6 +3860,52 @@ def parser():
     policy_sub.add_parser("applications")
     policy_application = policy_sub.add_parser("application")
     policy_application.add_argument("application_id")
+
+    case = sub.add_parser("case", help="Manage idempotent work requests for persistent services")
+    case_sub = case.add_subparsers(dest="case_command", required=True)
+    case_open = case_sub.add_parser("open")
+    case_open.add_argument("--source", required=True)
+    case_open.add_argument("--external-id", required=True)
+    case_open.add_argument("--title", required=True)
+    case_open.add_argument("--objective", required=True)
+    case_open.add_argument("--priority", type=int, default=50)
+    case_open.add_argument("--acceptance", action="append", default=[])
+    case_open.add_argument("--payload")
+    case_open.add_argument("--metadata", action="append", default=[], help="Repeatable name=value")
+    case_open.add_argument("--policy")
+    case_open.add_argument("--var", action="append", default=[], help="Policy value as name=value")
+    case_open.add_argument("--ready", action="store_true")
+    case_open.add_argument("--actor", default="ingress")
+    case_list = case_sub.add_parser("list")
+    case_list.add_argument("--status", type=str.upper, choices=sorted(VALID_CASE_STATES))
+    case_show = case_sub.add_parser("show")
+    case_show.add_argument("case_id")
+    case_apply = case_sub.add_parser("apply-policy")
+    case_apply.add_argument("case_id")
+    case_apply.add_argument("policy_id")
+    case_apply.add_argument("--var", action="append", default=[])
+    case_apply.add_argument("--ready", action="store_true")
+    case_apply.add_argument("--actor", default="manager")
+    case_link = case_sub.add_parser("link-task")
+    case_link.add_argument("case_id")
+    case_link.add_argument("--task", required=True)
+    case_link.add_argument("--actor", default="manager")
+    case_signal = case_sub.add_parser("signal")
+    case_signal.add_argument("case_id")
+    case_signal.add_argument("--source", required=True)
+    case_signal.add_argument("--external-id", required=True)
+    case_signal.add_argument("--kind", required=True)
+    case_signal.add_argument("--author")
+    case_signal.add_argument("--body", required=True)
+    case_signal.add_argument("--payload")
+    case_signal.add_argument("--metadata", action="append", default=[], help="Repeatable name=value")
+    case_signal.add_argument("--decision", help="Resolve this linked open decision with the signal body")
+    case_signal.add_argument("--wake", action="store_true", help="Create a ready follow-up task")
+    case_signal.add_argument("--actor", default="ingress")
+    case_cancel = case_sub.add_parser("cancel")
+    case_cancel.add_argument("case_id")
+    case_cancel.add_argument("--reason", required=True)
+    case_cancel.add_argument("--actor", default="human")
 
     extension = sub.add_parser("extension", help="Install delivery adapters for external systems")
     extension_sub = extension.add_subparsers(dest="extension_command", required=True)
@@ -3219,11 +4039,16 @@ def parser():
     resolve = decision_sub.add_parser("resolve")
     resolve.add_argument("decision_id")
     resolve.add_argument("--answer", required=True)
+    resolve.add_argument("--choice", help="Exact machine-readable option from the decision")
     resolve.add_argument("--actor", default="human")
     revise = decision_sub.add_parser("revise")
     revise.add_argument("decision_id")
     revise.add_argument("--answer", required=True)
+    revise.add_argument("--choice", help="Exact machine-readable option from the decision")
     revise.add_argument("--actor", default="human")
+    require_choice = decision_sub.add_parser("require-choice")
+    require_choice.add_argument("decision_id")
+    require_choice.add_argument("--choice", required=True)
     link = decision_sub.add_parser("link")
     link.add_argument("decision_id")
     link.add_argument("--task", required=True)
@@ -3277,6 +4102,7 @@ def parser():
     done = mission_sub.add_parser("complete")
     done.add_argument("--evidence", required=True)
     done.add_argument("--actor", default="manager")
+    done.add_argument("--shutdown-service", action="store_true")
 
     export_p = sub.add_parser("export", help="Create a reviewable audit ZIP")
     export_p.add_argument("--output", required=True)
@@ -3290,8 +4116,11 @@ def main(argv=None):
     root = root_path(args.root)
     try:
         if args.command == "init":
-            mission_id = initialize(root, args.objective, args.success, args.constraint)
-            print_json({"root": str(root), "mission_id": mission_id, "board": str(root / "views" / "BOARD.md")})
+            mission_id = initialize(root, args.objective, args.success, args.constraint, args.mode)
+            print_json({
+                "root": str(root), "mission_id": mission_id, "mode": args.mode,
+                "board": str(root / "views" / "BOARD.md"),
+            })
             return 0
 
         if args.command == "board":
@@ -3337,7 +4166,30 @@ def main(argv=None):
         if args.command == "ask":
             conn = connect(root)
             try:
+                inquiry_case = case_row(conn, args.case) if args.case else None
+                if inquiry_case and args.workstream and inquiry_case["workstream_id"] != args.workstream:
+                    raise SwarmError("Inquiry case and workstream do not match")
+                workstream_id = inquiry_case["workstream_id"] if inquiry_case else args.workstream
                 question = args.question.strip()
+                if not question:
+                    raise SwarmError("Inquiry question may not be empty")
+                if inquiry_case and inquiry_case["status"] == "CANCELLED":
+                    raise SwarmError("Cancelled case inquiries must use a separate workstream")
+                if inquiry_case and inquiry_case["status"] == "DONE":
+                    now = utcnow()
+                    conn.execute(
+                        "UPDATE cases SET status='ACTIVE', closed_at=NULL, updated_at=? WHERE id=?",
+                        (now, inquiry_case["id"]),
+                    )
+                    conn.execute(
+                        "UPDATE workstreams SET status='ACTIVE', updated_at=? WHERE id=?",
+                        (now, inquiry_case["workstream_id"]),
+                    )
+                    add_event(
+                        conn, inquiry_case["mission_id"], "case", inquiry_case["id"],
+                        "CASE_REOPENED_FOR_INQUIRY", args.actor, {"question": question},
+                    )
+                    conn.commit()
                 title = "Inquiry: %s" % question.splitlines()[0][:100]
                 task_id = add_task(
                     conn, title, question, "briefing",
@@ -3346,12 +4198,60 @@ def main(argv=None):
                         "Answer cites durable task, event, artifact, or source identifiers",
                         "Answer states confidence, uncertainty, and recommended next action",
                     ],
-                    args.depends_on, 40, args.actor, True, args.workstream,
+                    args.depends_on, 40, args.actor, True, workstream_id,
                 )
+                if inquiry_case:
+                    link_case_task(conn, inquiry_case["id"], task_id, args.actor)
                 print_json({"inquiry_task_id": task_id, "next": "Run the orchestrator, then use task show"})
             finally:
                 conn.close()
             render_board(root)
+            return 0
+
+        if args.command == "case":
+            conn = connect(root)
+            try:
+                if args.case_command == "open":
+                    print_json(open_case(
+                        root, conn, args.source, args.external_id, args.title,
+                        args.objective, args.priority, args.actor, args.acceptance,
+                        args.payload, args.metadata, args.policy, args.var, args.ready,
+                    ))
+                elif args.case_command == "list":
+                    reconcile_conn(conn)
+                    if args.status:
+                        rows = conn.execute(
+                            "SELECT * FROM cases WHERE status=? ORDER BY priority DESC, created_at",
+                            (args.status,),
+                        )
+                    else:
+                        rows = conn.execute("SELECT * FROM cases ORDER BY priority DESC, created_at")
+                    print_json([case_dict(conn, row) for row in rows])
+                elif args.case_command == "show":
+                    reconcile_conn(conn)
+                    print_json(case_dict(conn, case_row(conn, args.case_id)))
+                elif args.case_command == "apply-policy":
+                    print_json(apply_policy_to_case(
+                        conn, args.case_id, args.policy_id, args.var, args.actor, args.ready,
+                    ))
+                elif args.case_command == "link-task":
+                    print_json({
+                        "case_id": args.case_id, "task_id": args.task,
+                        "changed": link_case_task(conn, args.case_id, args.task, args.actor),
+                    })
+                elif args.case_command == "signal":
+                    print_json(add_case_signal(
+                        root, conn, args.case_id, args.source, args.external_id,
+                        args.kind, args.author, args.body, args.actor, args.payload,
+                        args.metadata, args.decision, args.wake,
+                    ))
+                elif args.case_command == "cancel":
+                    cancel_case(conn, args.case_id, args.actor, args.reason)
+                    print_json({"case_id": args.case_id, "status": "CANCELLED"})
+            finally:
+                conn.close()
+            render_board(root)
+            render_status_report(root)
             return 0
 
         if args.command == "policy":
@@ -3547,11 +4447,23 @@ def main(argv=None):
                     print_json([decision_dict(conn, r) for r in conn.execute(
                         "SELECT * FROM decisions ORDER BY status, created_at")])
                 elif args.decision_command == "resolve":
-                    version = resolve_decision(conn, args.decision_id, args.answer, args.actor)
-                    print_json({"decision_id": args.decision_id, "status": "RESOLVED", "version": version})
+                    version = resolve_decision(
+                        conn, args.decision_id, args.answer, args.actor, args.choice,
+                    )
+                    print_json({
+                        "decision_id": args.decision_id, "status": "RESOLVED",
+                        "selected_option": args.choice, "version": version,
+                    })
                 elif args.decision_command == "revise":
-                    version = revise_decision(conn, args.decision_id, args.answer, args.actor)
-                    print_json({"decision_id": args.decision_id, "status": "RESOLVED", "version": version})
+                    version = revise_decision(
+                        conn, args.decision_id, args.answer, args.actor, args.choice,
+                    )
+                    print_json({
+                        "decision_id": args.decision_id, "status": "RESOLVED",
+                        "selected_option": args.choice, "version": version,
+                    })
+                elif args.decision_command == "require-choice":
+                    print_json(require_decision_choice(conn, args.decision_id, args.choice))
                 elif args.decision_command == "link":
                     linked = link_decision(conn, args.decision_id, args.task, args.actor)
                     print_json({"decision_id": args.decision_id, "task_id": args.task, "linked": linked})
@@ -3617,7 +4529,7 @@ def main(argv=None):
                     set_mission_phase(conn, args.phase, args.actor)
                     print_json({"phase": args.phase.upper()})
                 else:
-                    complete_mission(conn, args.evidence, args.actor)
+                    complete_mission(conn, args.evidence, args.actor, args.shutdown_service)
                     print_json({"status": "DONE"})
             finally:
                 conn.close()

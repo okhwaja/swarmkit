@@ -24,6 +24,7 @@ Read these files before changing configuration:
 4. `docs/MODEL_GUIDANCE.md`
 5. `docs/POLICY_PACKS.md`
 6. `docs/EXTENSIONS.md`
+7. `docs/PERSISTENT_SERVICES.md`
 
 Treat the SQLite database and append-only event log as canonical. Markdown
 status files are generated views, not an agent-to-agent message bus.
@@ -67,6 +68,8 @@ record:
   generated task prompt.
 - whether provider skills intended for delivery extensions, such as email, can
   return a durable provider receipt to a non-interactive invocation.
+- for persistent services, which trusted webhook, polling, or scheduler adapter
+  will invoke `case open`, `case signal`, and bounded `run` commands.
 
 Do not guess at any of these. If the harness cannot expose fresh-session
 semantics or reliable exit status, record that as a blocker.
@@ -187,6 +190,20 @@ idempotency key. A live send requires explicit human approval and a harmless
 recipient; if performed, confirm `delivery show N-ID` contains the provider
 receipt. Never use a production mailing list for setup tests.
 
+Validate persistent-service support and its example policy:
+
+```bash
+python3 /absolute/path/to/swarmctl.py policy validate \
+  /absolute/path/to/swarmkit/examples/policy-packs/human-gated-change-review
+```
+
+If this installation will run a standing service, initialize a separate
+disposable mission with `--mode SERVICE`. Submit the same harmless `case open`
+command twice and confirm only one case and task graph exist. Record an
+idempotent `case signal`, then prove a fresh task invocation can read it. Do not
+connect a live provider webhook until signature validation, source/external-ID
+mapping, and shell-free argv handling have been reviewed.
+
 ### 2. Manager round trip
 
 Create a harmless objective asking the manager to create one workstream and one
@@ -267,6 +284,8 @@ Write `SETUP_REPORT.md` with:
 - installed policy packs, named-skill availability, and fresh-session policy support;
 - installed delivery extensions, provider-skill availability, recipient
   allowlists, and acknowledgement behavior;
+- service-mode support, ingress-adapter path, idempotency behavior, and
+  fresh-context evidence for standing agents;
 - results for all six acceptance-test groups;
 - concurrency, timeout, and retry limitations;
 - exact commands an operator should use to initialize and start a real mission;

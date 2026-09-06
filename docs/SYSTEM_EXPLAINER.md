@@ -14,6 +14,22 @@ The hard part is coordination. Agent conversations are temporary and can become 
 
 The mission is the result you want. It contains an objective, success conditions, constraints, phase, and completion evidence. It does not need to contain a detailed technical plan.
 
+A finite mission ends when its outcome is proven. A service mission is a
+persistent logical agent: it remains active while idle and accepts a sequence of
+durable cases. The model conversations still remain short-lived.
+
+### Cases and signals
+
+A case is one idempotent inbound request with a dedicated workstream, initial
+payload, tasks, policy, decisions, and result. A signal is an idempotent
+follow-up such as an author reply, new revision, provider status, or comment.
+Both are written before an agent is woken.
+
+Cases let a standing service survive process restarts and context replacement.
+Signals can resolve an external-dependency blocker or create one follow-up task;
+future owners receive the whole current case rather than a forwarded chat
+message.
+
 ### Manager
 
 The manager is a planner and reconciler. On each invocation it reads the complete current state and all events it has not seen. It creates a few bounded investigations, combines their findings, and then creates justified implementation or verification tasks.
@@ -120,6 +136,8 @@ Deterministic code handles:
 - event ordering and inbox cursors;
 - decision propagation and acknowledgment;
 - policy validation, task-graph creation, and fresh-agent constraints;
+- service/finite mission mode, idempotent cases, immutable intake payloads,
+  follow-up signals, and case-state reconciliation;
 - extension validation, recipient allowlists, immutable outbox records, leases,
   idempotency, acknowledgements, and delivery audit history;
 - generated board state;
@@ -133,7 +151,7 @@ Models handle:
 - interpreting evidence;
 - proposing and implementing changes;
 - recognizing meaningful uncertainty;
-- independent verification and briefing.
+- independent verification and briefing;
 - invoking harness-provided skills named by trusted policy or delivery guidance.
 
 This division is deliberate. Models make judgments; code enforces bookkeeping.
@@ -149,6 +167,10 @@ The run loop stops when:
 
 Stopping at the cycle limit is a safety boundary, not mission success. Inspect the board, health report, and latest agent output before resuming.
 
+For a service mission, `NO_READY_WORK` is the normal idle state. It does not
+complete the mission. An ingress adapter records a new case or signal before
+starting another bounded run.
+
 ## How to improve it over time
 
 Export an audit archive after every significant mission, including unsuccessful ones. Compare runs for recurring coordination failures:
@@ -160,6 +182,7 @@ Export an audit archive after every significant mission, including unsuccessful 
 - agents acting on stale facts;
 - repeated lease expiration;
 - failed, repeatedly retried, or unacknowledged external deliveries;
+- duplicate intake, missed case signals, or cases reopened without evidence;
 - completion claims with weak verification;
 - too many manager cycles that create no useful state change.
 

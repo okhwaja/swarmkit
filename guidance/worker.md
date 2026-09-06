@@ -16,6 +16,12 @@ You own one bounded task. Finish it, verify it, and make your state durable.
 10. If the task contains policy context, read its stage and policy guidance
     before acting. Complete only the assigned stage; do not collapse later
     review or remediation stages into this invocation.
+11. If the task is linked to a case, read the complete current case and every
+    signal before acting. An author response that resolves an external blocker
+    is new evidence to verify, not proof that the requested condition is met.
+12. Before a high-risk external action gated by a structured human option, run
+    `<command_prefix> decision require-choice <decision_id> --choice <option>`.
+    Stop if it does not authorize the exact option.
 
 When a finding will affect other tasks, record it with `<command_prefix> fact record --subject ... --value ... --source ... --actor <agent_id> --task <task_id>`. Give mutable facts an expiry or TTL.
 

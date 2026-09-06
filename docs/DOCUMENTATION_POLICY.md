@@ -15,6 +15,7 @@ release metadata agree in the same commit.
 | `docs/SYSTEM_EXPLAINER.md` | Architecture, invariants, and design rationale |
 | `docs/POLICY_PACKS.md` | Policy-pack schema, lifecycle, and authoring contract |
 | `docs/EXTENSIONS.md` | Delivery-extension manifest, outbox, adapter, and operations contract |
+| `docs/PERSISTENT_SERVICES.md` | Service missions, cases, signals, ingress, and fresh-context contract |
 | `docs/CLI_REFERENCE.md` | Generated exact commands, arguments, choices, and defaults |
 | `guidance/*.md` | Normative behavior for launched roles |
 | `CHANGELOG.md` | User-visible changes, versions, and migrations |

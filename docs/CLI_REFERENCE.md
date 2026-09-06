@@ -1,18 +1,18 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.4.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.5.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
 ```text
 usage: swarmctl [-h] [--root ROOT] [--version]
-                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
+                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
 Durable, harness-neutral orchestration for ambiguous multi-agent work.
 
 positional arguments:
-  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
+  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
     init                Create a mission workspace
     status              Show the current canonical snapshot
     board               Regenerate the Markdown board
@@ -23,6 +23,8 @@ positional arguments:
                         agent
     ask                 Start a read-only briefing inquiry
     policy              Install and apply reusable workflow policy packs
+    case                Manage idempotent work requests for persistent
+                        services
     extension           Install delivery adapters for external systems
     delivery            Manage the durable external-delivery outbox
     workstream          Manage executive-level workstreams
@@ -47,12 +49,13 @@ optional arguments:
 
 ```text
 usage: swarmctl ask [-h] --question QUESTION [--workstream WORKSTREAM]
-                    [--depends-on DEPENDS_ON] [--actor ACTOR]
+                    [--case CASE] [--depends-on DEPENDS_ON] [--actor ACTOR]
 
 optional arguments:
   -h, --help            show this help message and exit
   --question QUESTION
   --workstream WORKSTREAM
+  --case CASE
   --depends-on DEPENDS_ON
   --actor ACTOR
 ```
@@ -66,13 +69,147 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## `swarmctl case`
+
+```text
+usage: swarmctl case [-h]
+                     {open,list,show,apply-policy,link-task,signal,cancel} ...
+
+positional arguments:
+  {open,list,show,apply-policy,link-task,signal,cancel}
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl case apply-policy`
+
+```text
+usage: swarmctl case apply-policy [-h] [--var VAR] [--ready] [--actor ACTOR]
+                                  case_id policy_id
+
+positional arguments:
+  case_id
+  policy_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --var VAR
+  --ready
+  --actor ACTOR
+```
+
+## `swarmctl case cancel`
+
+```text
+usage: swarmctl case cancel [-h] --reason REASON [--actor ACTOR] case_id
+
+positional arguments:
+  case_id
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
+  --actor ACTOR
+```
+
+## `swarmctl case link-task`
+
+```text
+usage: swarmctl case link-task [-h] --task TASK [--actor ACTOR] case_id
+
+positional arguments:
+  case_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --task TASK
+  --actor ACTOR
+```
+
+## `swarmctl case list`
+
+```text
+usage: swarmctl case list [-h]
+                          [--status {ACTIVE,CANCELLED,DONE,OPEN,VERIFYING,WAITING_EXTERNAL,WAITING_HUMAN}]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --status {ACTIVE,CANCELLED,DONE,OPEN,VERIFYING,WAITING_EXTERNAL,WAITING_HUMAN}
+```
+
+## `swarmctl case open`
+
+```text
+usage: swarmctl case open [-h] --source SOURCE --external-id EXTERNAL_ID
+                          --title TITLE --objective OBJECTIVE
+                          [--priority PRIORITY] [--acceptance ACCEPTANCE]
+                          [--payload PAYLOAD] [--metadata METADATA]
+                          [--policy POLICY] [--var VAR] [--ready]
+                          [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --source SOURCE
+  --external-id EXTERNAL_ID
+  --title TITLE
+  --objective OBJECTIVE
+  --priority PRIORITY
+  --acceptance ACCEPTANCE
+  --payload PAYLOAD
+  --metadata METADATA   Repeatable name=value
+  --policy POLICY
+  --var VAR             Policy value as name=value
+  --ready
+  --actor ACTOR
+```
+
+## `swarmctl case show`
+
+```text
+usage: swarmctl case show [-h] case_id
+
+positional arguments:
+  case_id
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl case signal`
+
+```text
+usage: swarmctl case signal [-h] --source SOURCE --external-id EXTERNAL_ID
+                            --kind KIND [--author AUTHOR] --body BODY
+                            [--payload PAYLOAD] [--metadata METADATA]
+                            [--decision DECISION] [--wake] [--actor ACTOR]
+                            case_id
+
+positional arguments:
+  case_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --source SOURCE
+  --external-id EXTERNAL_ID
+  --kind KIND
+  --author AUTHOR
+  --body BODY
+  --payload PAYLOAD
+  --metadata METADATA   Repeatable name=value
+  --decision DECISION   Resolve this linked open decision with the signal body
+  --wake                Create a ready follow-up task
+  --actor ACTOR
+```
+
 ## `swarmctl decision`
 
 ```text
-usage: swarmctl decision [-h] {list,resolve,revise,link,ack} ...
+usage: swarmctl decision [-h]
+                         {list,resolve,revise,require-choice,link,ack} ...
 
 positional arguments:
-  {list,resolve,revise,link,ack}
+  {list,resolve,revise,require-choice,link,ack}
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -115,10 +252,24 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## `swarmctl decision require-choice`
+
+```text
+usage: swarmctl decision require-choice [-h] --choice CHOICE decision_id
+
+positional arguments:
+  decision_id
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --choice CHOICE
+```
+
 ## `swarmctl decision resolve`
 
 ```text
-usage: swarmctl decision resolve [-h] --answer ANSWER [--actor ACTOR]
+usage: swarmctl decision resolve [-h] --answer ANSWER [--choice CHOICE]
+                                 [--actor ACTOR]
                                  decision_id
 
 positional arguments:
@@ -127,13 +278,15 @@ positional arguments:
 optional arguments:
   -h, --help       show this help message and exit
   --answer ANSWER
+  --choice CHOICE  Exact machine-readable option from the decision
   --actor ACTOR
 ```
 
 ## `swarmctl decision revise`
 
 ```text
-usage: swarmctl decision revise [-h] --answer ANSWER [--actor ACTOR]
+usage: swarmctl decision revise [-h] --answer ANSWER [--choice CHOICE]
+                                [--actor ACTOR]
                                 decision_id
 
 positional arguments:
@@ -142,6 +295,7 @@ positional arguments:
 optional arguments:
   -h, --help       show this help message and exit
   --answer ANSWER
+  --choice CHOICE  Exact machine-readable option from the decision
   --actor ACTOR
 ```
 
@@ -468,7 +622,7 @@ optional arguments:
 
 ```text
 usage: swarmctl init [-h] --objective OBJECTIVE [--success SUCCESS]
-                     [--constraint CONSTRAINT]
+                     [--constraint CONSTRAINT] [--mode {FINITE,SERVICE}]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -476,6 +630,9 @@ optional arguments:
   --success SUCCESS     Repeatable success condition
   --constraint CONSTRAINT
                         Repeatable safety or scope boundary
+  --mode {FINITE,SERVICE}
+                        FINITE completes once; SERVICE remains available for
+                        durable cases
 ```
 
 ## `swarmctl mission`
@@ -494,11 +651,13 @@ optional arguments:
 
 ```text
 usage: swarmctl mission complete [-h] --evidence EVIDENCE [--actor ACTOR]
+                                 [--shutdown-service]
 
 optional arguments:
   -h, --help           show this help message and exit
   --evidence EVIDENCE
   --actor ACTOR
+  --shutdown-service
 ```
 
 ## `swarmctl mission phase`

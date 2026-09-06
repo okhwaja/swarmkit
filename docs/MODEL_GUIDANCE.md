@@ -12,6 +12,10 @@ A smaller model should receive five layers of context:
 4. All unseen durable events and current linked decisions.
 5. Exact CLI commands for recording progress, blocking, and completion.
 
+For a task linked to a persistent-service case, include the current case,
+immutable payload references, all signals, and open decisions. Do not include
+old provider transcripts unless they are recorded as case evidence.
+
 The generated prompt assembles these layers. Avoid adding the full history of every agent conversation.
 
 ## Put reliability in code
@@ -30,6 +34,9 @@ If a behavior can be checked deterministically, enforce it outside the model.
 | Board becomes stale | Board is generated from SQLite |
 | Email agent exits without sending | Delivery remains pending until a provider receipt is recorded |
 | Retried delivery sends twice | Stable idempotency key plus provider-side deduplication |
+| Webhook retry creates duplicate review | Unique case and signal source/external IDs |
+| Long-lived reviewer develops context rot | Persistent case state with a fresh invocation per task or attempt |
+| Author reply reaches only the old reviewer | Case signal plus task-scoped inbox events |
 
 Prompting alone is a weak enforcement mechanism. A repeated failure should usually lead to a state-machine or validation change.
 
@@ -49,6 +56,12 @@ pretending that generic reasoning is equivalent.
 Whenever a policy requires a fresh perspective, represent it as a separate task
 and use `fresh_session_from` to prevent identity reuse. Do not ask one long-lived
 conversation to forget its earlier conclusions.
+
+Persistent logical agents should use the same rule at a larger scale. Persist
+the service objective, constraints, reviewed policies, cases, decisions, and
+sourced facts. Rotate the actual model context on every dispatch. A smaller
+model is more reliable when it receives one current case than when it must
+reconstruct authority from weeks of conversation.
 
 ## Make every invocation mechanical
 

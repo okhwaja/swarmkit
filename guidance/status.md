@@ -4,14 +4,16 @@ Generate a concise report from canonical state. Do not rely on conversation hist
 
 Report in this order:
 
-1. Major workstreams: intended outcome, status, progress, forecast range and confidence, and whether they need the human.
-2. Active policy applications: policy/version, current stage states, and any
+1. Persistent-service cases: active, waiting for human, waiting for external
+   input, verifying, and recently completed.
+2. Major workstreams: intended outcome, status, progress, forecast range and confidence, and whether they need the human.
+3. Active policy applications: policy/version, current stage states, and any
    blocked or failed stage.
-3. Delivery outbox failures or pending jobs that already have attempts.
-4. Human decisions currently open, including IDs, recommendations, risks, and blocked tasks.
-5. Safety stops, failed agent runs, expired leases, and invariant failures.
-6. Current mission phase and evidence-backed progress since the previous report cursor.
-7. Active tasks and their last checkpoint times.
-8. The next expected system action.
+4. Delivery outbox failures or pending jobs that already have attempts.
+5. Human decisions currently open, including IDs, recommendations, risks, and blocked tasks.
+6. Safety stops, failed agent runs, expired leases, and invariant failures.
+7. Current mission mode/phase and evidence-backed progress since the previous report cursor.
+8. Active tasks and their last checkpoint times.
+9. The next expected system action.
 
 Use absolute UTC timestamps. Distinguish observed facts from inference. If nothing needs human attention, say so explicitly. Do not report a resolved decision as open merely because an old message mentioned it.

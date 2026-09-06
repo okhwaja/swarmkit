@@ -177,3 +177,16 @@ meaningful changes in the policy pack's own repository.
 Policy-generated tasks obey ordinary Swarmkit leases, decisions, checkpoints,
 artifacts, cancellation, and audit export rules. A policy does not bypass mission
 constraints or grant authority for external side effects.
+
+## Policies for persistent-service cases
+
+`case open --policy ...` applies a reviewed pack to one idempotent inbound case
+and links every generated stage to its dedicated workstream. Later signals and
+decision versions therefore reach the correct fresh task owner.
+
+The bundled `human-gated-change-review` example demonstrates cold analysis, a
+digestible explainer, a versioned human gate, an external-response wait, and a
+fresh final disposition check. It is intentionally provider-neutral. Copy and
+adapt it outside Swarmkit before production use; provider comments, approvals,
+skills, and credentials remain harness responsibilities. See
+[Persistent services](PERSISTENT_SERVICES.md).

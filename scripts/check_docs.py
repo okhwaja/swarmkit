@@ -26,22 +26,25 @@ REQUIRED_DOCUMENTS = [
     "docs/HARNESS_INTEGRATION.md",
     "docs/MODEL_GUIDANCE.md",
     "docs/POLICY_PACKS.md",
+    "docs/PERSISTENT_SERVICES.md",
     "docs/SYSTEM_EXPLAINER.md",
     "docs/USER_MANUAL.md",
 ]
 
 REQUIRED_MENTIONS = {
-    "README.md": ["policy install", "policy apply", "docs/POLICY_PACKS.md", "delivery enqueue-report", "docs/EXTENSIONS.md"],
-    "SETUP_AGENT.md": ["policy list", "fresh-session", "extension validate", "delivery dispatch"],
-    "docs/EXTENSIONS.md": ["idempotency", "provider receipt", "recipient_policy"],
-    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review", "delivery enqueue-report"],
-    "docs/MODEL_GUIDANCE.md": ["policy pack", "delivery sent"],
-    "docs/SYSTEM_EXPLAINER.md": ["Policy packs", "Delivery extensions"],
-    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review", "delivery enqueue-report"],
-    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy", "delivery"],
-    "guidance/manager.md": ["policy apply", "delivery extension"],
-    "guidance/worker.md": ["policy"],
-    "guidance/verifier.md": ["policy"],
+    "README.md": ["policy install", "policy apply", "delivery enqueue-report", "--mode SERVICE", "case open", "human-gated-change-review", "docs/PERSISTENT_SERVICES.md"],
+    "SETUP_AGENT.md": ["policy list", "extension validate", "delivery dispatch", "case open", "case signal", "fresh-context", "human-gated-change-review"],
+    "docs/EXTENSIONS.md": ["idempotency", "provider receipt", "recipient_policy", "case signal"],
+    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review", "delivery enqueue-report", "Persistent-service ingress", "case open", "case signal"],
+    "docs/MODEL_GUIDANCE.md": ["policy pack", "delivery sent", "persistent-service case", "context rot"],
+    "docs/PERSISTENT_SERVICES.md": ["persistent logical", "case open", "case signal", "decision require-choice", "--decision", "--wake"],
+    "docs/POLICY_PACKS.md": ["human-gated-change-review"],
+    "docs/SYSTEM_EXPLAINER.md": ["Policy packs", "Delivery extensions", "Cases and signals", "service mission"],
+    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review", "delivery enqueue-report", "persistent review agent", "case open", "case signal"],
+    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy", "delivery", "persistent logical", "case payloads"],
+    "guidance/manager.md": ["policy apply", "delivery extension", "SERVICE", "case signals"],
+    "guidance/worker.md": ["policy", "linked to a case"],
+    "guidance/verifier.md": ["policy", "case-linked verification"],
 }
 
 
@@ -98,7 +101,7 @@ def run_checks():
         errors.append("CLI reference is stale; run python3 scripts/generate_cli_docs.py")
 
     commands = root_commands()
-    for command in {"policy", "extension", "delivery", "setup-check", "run", "report", "export"}:
+    for command in {"policy", "case", "extension", "delivery", "setup-check", "run", "report", "export"}:
         if command not in commands:
             errors.append("Missing documented root command: %s" % command)
 

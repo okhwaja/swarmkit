@@ -10,7 +10,7 @@ To create a portable ZIP:
 python3 scripts/package.py
 ```
 
-This writes `dist/swarmkit-0.4.0.zip` with the CLI, guidance, documentation, examples, policy packs, delivery extensions, and tests.
+This writes `dist/swarmkit-0.5.0.zip` with the CLI, guidance, documentation, examples, policy packs, persistent-service cases, delivery extensions, and tests.
 
 If another agent will connect Swarmkit to the harness on the destination
 machine, give that agent [SETUP_AGENT.md](SETUP_AGENT.md) as its assignment.
@@ -26,6 +26,8 @@ An agent conversation is temporary. The database is permanent. Agents may notify
 flowchart TD
     H[Human] --> L[Liaison or UI]
     L --> DB[(SQLite state and event log)]
+    I[Webhook or polling adapter] --> C[Idempotent cases and signals]
+    C --> DB
     DB --> M[Manager reconciler]
     M --> DB
     P[Installed policy packs] --> M
@@ -52,7 +54,7 @@ The manager does not need to know the full task plan at the beginning. It starts
 - `SETUP_AGENT.md`: a complete harness-installation assignment and acceptance suite.
 - `guidance/`: strict role contracts suitable for smaller or less reliable models.
 - `docs/`: explanations, operating procedures, extension authoring, and harness integration guidance.
-- `examples/`: an ambiguous pipeline mission, runner configuration, policy packs, and a harness-email delivery extension.
+- `examples/`: an ambiguous pipeline mission, runner configuration, reusable policy packs, and a harness-email delivery extension.
 - `docs/CLI_REFERENCE.md`: generated exact CLI syntax and options.
 - `scripts/check_docs.py`: deterministic documentation and contract checks.
 - `scripts/release_check.py`: source and extracted-package release verification.
@@ -89,6 +91,7 @@ This creates:
   runner.json
   prompts/
   runs/
+  intake/
   outbox/
   views/BOARD.md
 ```
@@ -141,6 +144,44 @@ bin/swarmctl --root /work/my-run/.swarm run --max-cycles 20
 ```
 
 The loop launches the manager, reconciles state, claims up to `max_parallel` ready tasks, launches workers concurrently, and returns to the manager. It stops when the mission is complete, it needs a human decision, there is no ready work, or the cycle limit is reached.
+
+## Persistent agent services
+
+A persistent Swarmkit agent is a stable service identity backed by durable
+state, while every actual model invocation remains fresh. Initialize the
+standing mission with `--mode SERVICE`; it stays active when idle and accepts
+idempotent cases and follow-up signals:
+
+```bash
+bin/swarmctl --root /work/change-reviewer/.swarm init \
+  --mode SERVICE \
+  --objective "Independently review submitted engineering changes" \
+  --success "Every request reaches an evidence-backed disposition" \
+  --constraint "Only the human may authorize approval"
+
+bin/swarmctl --root /work/change-reviewer/.swarm policy install \
+  examples/policy-packs/human-gated-change-review \
+  --actor human
+
+bin/swarmctl --root /work/change-reviewer/.swarm case open \
+  --source review-provider \
+  --external-id project/change/42 \
+  --title "Review change 42" \
+  --objective "Reach an independent, human-authorized disposition" \
+  --payload /work/intake/event.json \
+  --policy human-gated-change-review \
+  --var change_ref=https://review.example/42 \
+  --var review_skill=adversarial-review \
+  --var 'verification_command=python3 -m unittest' \
+  --ready
+```
+
+Provider webhooks and polling stay in an organization-owned ingress adapter.
+It records new work through `case open`, author replies or new revisions through
+`case signal`, and then invokes a bounded `run`. Duplicate provider events do
+not create duplicate work. See [Persistent services](docs/PERSISTENT_SERVICES.md)
+for waits, human gates, fresh-context rotation, the generic change-review
+example, and adapter safety.
 
 ## Adding organization-specific workflows
 
@@ -272,6 +313,7 @@ The archive contains:
 
 - the SQLite database;
 - a complete chronological `events.jsonl`;
+- a compact `snapshot.json` plus complete persistent-service histories in `cases.json`;
 - mission, task, decision, acknowledgment, artifact, extension, and delivery records;
 - all generated agent prompts;
 - captured harness stdout and stderr;
@@ -298,7 +340,7 @@ Do not compensate for a weaker model with one enormous prompt. Give it a narrow 
 
 The system should spend parallelism on gathering independent evidence. It should converge before tightly coupled changes. One worker owns a coherent implementation; short-lived agents can investigate, brief, and verify around it.
 
-Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [Extensions](docs/EXTENSIONS.md) for delivery adapters, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
+Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Persistent services](docs/PERSISTENT_SERVICES.md) for standing-agent intake, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [Extensions](docs/EXTENSIONS.md) for delivery adapters, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
 
 To exercise the state machine without an AI harness, run the synthetic demonstration against a new directory:
 

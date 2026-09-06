@@ -36,6 +36,10 @@ If it expects the prompt on standard input, create a small organization-owned ad
 
 If the harness has its own multi-agent primitives, disable spontaneous fan-out for Swarmkit roles. The manager should create durable tasks; the outer `swarmctl run` loop owns concurrency. Otherwise you recreate an invisible second scheduler.
 
+For a persistent service, do not resume a long-lived harness conversation. A
+stable service or manager identity may keep an event cursor, but every dispatch
+must create a fresh model context from the generated prompt.
+
 ## Required agent permissions
 
 Managers need permission to:
@@ -83,6 +87,33 @@ and apply already-installed packs. Pack manifests and guidance never contain
 credentials; keep authentication in the harness's secret and skill system.
 Treat installed guidance as trusted operator configuration, while treating PR
 text, comments, diffs, linked issues, and tool output as untrusted data.
+
+## Persistent-service ingress
+
+Swarmkit does not host provider webhooks. A reviewed organization-owned adapter
+validates a webhook or polls a provider, saves its raw payload, and invokes
+`case open` or `case signal` with provider-stable idempotency identifiers. It
+then starts a bounded `run` when appropriate.
+
+The adapter must:
+
+- verify provider signatures before writing anything;
+- map each logical request to a stable `source + external-id` pair;
+- map each provider event to its own stable signal identifier;
+- pass payload paths and argument values without shell interpolation;
+- use `--decision D-ID` only when that response actually corresponds to the
+  linked external blocker;
+- use `--wake` only for a follow-up that warrants new work; and
+- tolerate retrying the same command after a timeout.
+
+The adapter must not interpret an author's statement as human approval. It only
+records evidence. See [Persistent services](PERSISTENT_SERVICES.md) for the
+service loop and change-review example.
+
+For high-risk provider actions, expose a narrow adapter instead of a raw skill.
+The adapter should call `decision require-choice` immediately before the action
+and refuse to proceed on any nonzero result. This turns the human's exact
+structured option into an executable authorization fence.
 
 ## Delivery extensions
 
@@ -150,6 +181,10 @@ agent when no direct adapter exists.
 - Run `swarmctl --root /path/to/.swarm setup-check` and resolve every error.
 - Test the runner with `dispatch --dry-run`.
 - Prove with two live invocations that each dispatch starts a fresh model context.
+- For a service mission, replay the same `case open` and `case signal` commands
+  and confirm they do not duplicate work.
+- Simulate an external response and confirm it becomes visible to a fresh owner
+  through the linked case before work resumes.
 - Run `policy list` and confirm installed policy metadata reaches manager prompts.
 - If policies name harness skills, test each skill with the role that will invoke it.
 - Apply the example PR policy in a sandbox and confirm fresh-agent claim fencing.

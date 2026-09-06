@@ -63,7 +63,12 @@ class SwarmLifecycleTest(unittest.TestCase):
                 "May ingestion pause during repair?", "Pause for the controlled window",
                 ["Pause", "Continue"],
             )
-            version = swarmctl.resolve_decision(conn, decision, "Pause", "human")
+            version = swarmctl.resolve_decision(conn, decision, "Pause", "human", "Pause")
+            self.assertEqual(swarmctl.decision_dict(conn, swarmctl.decision_row(conn, decision))["selected_option"], "Pause")
+            authorization = swarmctl.require_decision_choice(conn, decision, "Pause")
+            self.assertTrue(authorization["authorized"])
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.require_decision_choice(conn, decision, "Continue")
             self.assertEqual(swarmctl.task_row(conn, second)["status"], "READY")
             swarmctl.claim_task(conn, second, "worker-c", 1800)
             with self.assertRaises(swarmctl.SwarmError):
@@ -75,8 +80,12 @@ class SwarmLifecycleTest(unittest.TestCase):
             ).fetchone()
             self.assertEqual(ack["version"], version)
             swarmctl.checkpoint_task(conn, second, "worker-c", "Decision incorporated", "Repair", 1800)
-            revised = swarmctl.revise_decision(conn, decision, "Pause, but limit the window to ten minutes", "human")
+            revised = swarmctl.revise_decision(
+                conn, decision, "Pause, but limit the window to ten minutes", "human", "Pause"
+            )
             self.assertGreater(revised, version)
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.revise_decision(conn, decision, "Invalid choice", "human", "Unknown")
             self.assertEqual(swarmctl.task_row(conn, second)["status"], "READY")
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.complete_task(
@@ -149,6 +158,7 @@ class SwarmLifecycleTest(unittest.TestCase):
             names = set(archive.namelist())
             self.assertIn("swarm-audit/events.jsonl", names)
             self.assertIn("swarm-audit/snapshot.json", names)
+            self.assertIn("swarm-audit/cases.json", names)
             self.assertIn("swarm-audit/state.sqlite3", names)
             self.assertIn("swarm-audit/REVIEW_ME.md", names)
             snapshot = json.loads(archive.read("swarm-audit/snapshot.json"))
@@ -317,11 +327,16 @@ class SwarmLifecycleTest(unittest.TestCase):
             delivery_table = upgraded.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='deliveries'"
             ).fetchone()
+            case_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='cases'"
+            ).fetchone()
             self.assertEqual(version, swarmctl.SCHEMA_VERSION)
             self.assertIsNotNone(table)
             self.assertIsNotNone(policy_table)
             self.assertIsNotNone(extension_table)
             self.assertIsNotNone(delivery_table)
+            self.assertIsNotNone(case_table)
+            self.assertEqual(swarmctl.mission_mode(upgraded), "FINITE")
         finally:
             upgraded.close()
 
@@ -592,6 +607,155 @@ class SwarmLifecycleTest(unittest.TestCase):
         base["recipient_policy"] = {"allowed_recipients": [], "allowed_domains": []}
         with self.assertRaises(swarmctl.SwarmError):
             swarmctl.validate_extension_manifest(base)
+
+    def test_service_case_survives_waits_signals_and_fresh_invocations(self):
+        service_root = self.base / "service" / ".swarm"
+        swarmctl.initialize(
+            service_root,
+            "Continuously handle incoming engineering reviews",
+            ["Every accepted request reaches a durable disposition"],
+            ["Human approval authority may not be inferred"],
+            mode="SERVICE",
+        )
+        payload = self.base / "change.json"
+        payload.write_text('{"ref":"change/123","revision":"abc"}\n', encoding="utf-8")
+        conn = swarmctl.connect(service_root)
+        try:
+            self.assertEqual(swarmctl.mission_mode(conn), "SERVICE")
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.complete_mission(conn, "idle", "manager")
+            opened = swarmctl.open_case(
+                service_root, conn, "review-provider", "change-123", "Review change 123",
+                "Produce an independent review and durable disposition", 70, "webhook",
+                ["Disposition is supported by evidence"], payload,
+                ["repository=example/service"], ready=True,
+            )
+            self.assertTrue(opened["created"])
+            self.assertEqual(opened["status"], "ACTIVE")
+            duplicate = swarmctl.open_case(
+                service_root, conn, "review-provider", "change-123", "Review change 123",
+                "Produce an independent review and durable disposition", 70, "webhook",
+                ["Disposition is supported by evidence"], payload,
+                ["repository=example/service"], ready=True,
+            )
+            self.assertFalse(duplicate["created"])
+            self.assertEqual(duplicate["id"], opened["id"])
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.open_case(
+                    service_root, conn, "review-provider", "change-123", "Review change 123",
+                    "Produce an independent review and durable disposition", 70, "webhook",
+                    ["A different acceptance contract"], payload,
+                    ["repository=example/service"], ready=True,
+                )
+            task_id = opened["tasks"][0]["id"]
+            swarmctl.claim_task(conn, task_id, "reviewer-one", 1800)
+            decision_id = swarmctl.block_task(
+                conn, task_id, "reviewer-one", "external_dependency",
+                "Has the author addressed the requested change?", "Wait for a new revision",
+                ["Addressed", "Not addressed"],
+            )
+            swarmctl.reconcile_conn(conn)
+            self.assertEqual(swarmctl.case_row(conn, opened["id"])["status"], "WAITING_EXTERNAL")
+            response = swarmctl.add_case_signal(
+                service_root, conn, opened["id"], "review-provider", "event-9001",
+                "author_response", "author@example.com", "Revision def addresses the finding",
+                "webhook", decision_id=decision_id,
+            )
+            self.assertTrue(response["created"])
+            self.assertEqual(swarmctl.task_row(conn, task_id)["status"], "READY")
+            repeated = swarmctl.add_case_signal(
+                service_root, conn, opened["id"], "review-provider", "event-9001",
+                "author_response", "author@example.com", "Revision def addresses the finding",
+                "webhook", decision_id=decision_id,
+            )
+            self.assertFalse(repeated["created"])
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) AS n FROM case_signals").fetchone()["n"], 1
+            )
+            swarmctl.claim_task(conn, task_id, "reviewer-two", 1800)
+            prompt = swarmctl.build_prompt(service_root, "worker", "reviewer-two", task_id)
+            self.assertIn("Revision def addresses the finding", prompt)
+            self.assertIn("change-123", prompt)
+            swarmctl.acknowledge_decision(conn, decision_id, task_id, "reviewer-two")
+            swarmctl.complete_task(
+                conn, task_id, "reviewer-two", "Author response verified",
+                ["Revision def independently verified"], [],
+            )
+            self.assertEqual(swarmctl.case_row(conn, opened["id"])["status"], "DONE")
+            wake = swarmctl.add_case_signal(
+                service_root, conn, opened["id"], "review-provider", "event-9002",
+                "new_revision", "author@example.com", "Revision ghi was uploaded",
+                "webhook", wake=True,
+            )
+            self.assertTrue(wake["created"])
+            self.assertIsNotNone(wake["wake_task_id"])
+            current = swarmctl.case_dict(conn, swarmctl.case_row(conn, opened["id"]))
+            self.assertEqual(current["status"], "ACTIVE")
+            self.assertEqual(len(current["tasks"]), 2)
+            self.assertEqual(current["tasks"][-1]["status"], "READY")
+            self.assertTrue(swarmctl.doctor(conn)["ok"])
+        finally:
+            conn.close()
+
+        audit = self.base / "service-audit.zip"
+        swarmctl.export_audit(service_root, audit)
+        with zipfile.ZipFile(str(audit)) as archive:
+            names = set(archive.namelist())
+            self.assertTrue(any(name.startswith("swarm-audit/intake/") for name in names))
+            snapshot = json.loads(archive.read("swarm-audit/snapshot.json"))
+            self.assertEqual(snapshot["mission"]["mode"], "SERVICE")
+            self.assertEqual(len(snapshot["cases"]), 1)
+
+    def test_case_can_start_a_generic_policy_workflow(self):
+        policy_source = PACKAGE_ROOT / "examples" / "policy-packs" / "human-gated-change-review"
+        payload = self.base / "review-request.json"
+        payload.write_text('{"change":"https://review.example/42"}\n', encoding="utf-8")
+        conn = self.connection()
+        try:
+            swarmctl.install_policy(conn, policy_source, "human")
+            opened = swarmctl.open_case(
+                self.root, conn, "review-provider", "42", "Review change 42",
+                "Reach a human-authorized disposition", 80, "webhook", [], payload, [],
+                "human-gated-change-review",
+                [
+                    "change_ref=https://review.example/42",
+                    "review_skill=adversarial-review",
+                    "verification_command=python3 -m unittest",
+                ], True,
+            )
+            self.assertEqual(len(opened["tasks"]), 4)
+            self.assertIsNotNone(opened["policy_application_id"])
+            self.assertEqual(opened["tasks"][0]["status"], "READY")
+            prompt = swarmctl.build_prompt(
+                self.root, "verifier", "cold-reviewer", opened["tasks"][0]["id"]
+            )
+            self.assertIn("human-gated-change-review", prompt)
+            self.assertIn("https://review.example/42", prompt)
+        finally:
+            conn.close()
+
+    def test_case_cli_opens_and_reads_idempotent_request(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = swarmctl.main([
+                "--root", str(self.root), "case", "open",
+                "--source", "manual", "--external-id", "request-1",
+                "--title", "Review request one",
+                "--objective", "Return an evidence-backed disposition",
+                "--acceptance", "Disposition is recorded", "--ready",
+            ])
+        self.assertEqual(exit_code, 0)
+        opened = json.loads(output.getvalue())
+        self.assertTrue(opened["created"])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = swarmctl.main([
+                "--root", str(self.root), "case", "show", opened["id"],
+            ])
+        self.assertEqual(exit_code, 0)
+        shown = json.loads(output.getvalue())
+        self.assertEqual(shown["external_id"], "request-1")
+        self.assertEqual(shown["tasks"][0]["status"], "READY")
 
     def test_setup_check_rejects_unconfigured_runner(self):
         result = swarmctl.setup_check(self.root)
