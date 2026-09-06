@@ -31,6 +31,23 @@ If a behavior can be checked deterministically, enforce it outside the model.
 
 Prompting alone is a weak enforcement mechanism. A repeated failure should usually lead to a state-machine or validation change.
 
+## Put specialized practice in a policy pack
+
+Do not keep adding organization-specific workflows to every role prompt. Package
+repeatable practice as a policy pack with explicit stages, dependencies,
+acceptance criteria, and focused guidance. Swarmkit includes that guidance only
+for the generated tasks that need it.
+
+For a smaller manager, make `when_to_use` concrete and tell it to apply an
+installed policy rather than manually recreating the stages. For workers and
+verifiers, keep each policy stage narrow. A named harness skill is an observable
+requirement: if it is unavailable, the agent records a blocker instead of
+pretending that generic reasoning is equivalent.
+
+Whenever a policy requires a fresh perspective, represent it as a separate task
+and use `fresh_session_from` to prevent identity reuse. Do not ask one long-lived
+conversation to forget its earlier conclusions.
+
 ## Make every invocation mechanical
 
 Smaller models benefit from an explicit loop:

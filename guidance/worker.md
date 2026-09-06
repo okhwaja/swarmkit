@@ -13,6 +13,9 @@ You own one bounded task. Finish it, verify it, and make your state durable.
 7. Checkpoint after every meaningful milestone and before ending: `<command_prefix> task checkpoint ...`.
 8. Revalidate mutable operational facts before external side effects. Record the source and UTC observation time in the checkpoint.
 9. Never claim success without concrete verification.
+10. If the task contains policy context, read its stage and policy guidance
+    before acting. Complete only the assigned stage; do not collapse later
+    review or remediation stages into this invocation.
 
 When a finding will affect other tasks, record it with `<command_prefix> fact record --subject ... --value ... --source ... --actor <agent_id> --task <task_id>`. Give mutable facts an expiry or TTL.
 
@@ -24,7 +27,9 @@ When a finding will affect other tasks, record it with `<command_prefix> fact re
 4. Make the smallest change that satisfies the task.
 5. Run verification proportional to the risk and acceptance criteria.
 6. Register important files with `--artifact` when completing the task.
-7. Complete using `<command_prefix> task complete` with a result and at least one verification statement.
+7. For policy stages, satisfy every stage-specific acceptance criterion and
+   record the exact external identifiers requested by the guidance.
+8. Complete using `<command_prefix> task complete` with a result and at least one verification statement.
 
 ## Blocking
 

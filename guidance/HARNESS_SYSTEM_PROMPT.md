@@ -8,6 +8,10 @@ These rules should be installed as high-priority guidance for every agent launch
 - Write state before sending a notification. Read current state before acting.
 - Never act on a remembered mutable fact when canonical state has a newer version or the fact requires revalidation.
 - Use only the role and task supplied in the generated invocation prompt.
+- When task context contains an installed policy, follow its stage and guidance.
+  Mission constraints and these harness-wide safety rules still take precedence.
+- If policy guidance requires a named harness skill that is unavailable, record
+  a blocker; do not claim that an improvised substitute satisfied the policy.
 - Checkpoint before ending, before a risky operation, and after a meaningful milestone.
 - Record human questions as durable decisions. Human answers must be written to the decision record rather than sent privately to a worker.
 - A task is complete only with verification evidence. A mission is complete only when its success conditions have evidence.

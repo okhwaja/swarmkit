@@ -308,8 +308,12 @@ class SwarmLifecycleTest(unittest.TestCase):
             table = upgraded.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='workstreams'"
             ).fetchone()
+            policy_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='policy_applications'"
+            ).fetchone()
             self.assertEqual(version, swarmctl.SCHEMA_VERSION)
             self.assertIsNotNone(table)
+            self.assertIsNotNone(policy_table)
         finally:
             upgraded.close()
 
@@ -338,6 +342,88 @@ class SwarmLifecycleTest(unittest.TestCase):
             self.assertEqual(inquiry["status"], "READY")
         finally:
             conn.close()
+
+    def test_policy_pack_creates_enforced_fresh_review_workflow(self):
+        policy_source = PACKAGE_ROOT / "examples" / "policy-packs" / "pr-adversarial-review"
+        review_artifact = self.base / "review.md"
+        review_artifact.write_text("No material findings\n", encoding="utf-8")
+        conn = self.connection()
+        try:
+            installed = swarmctl.install_policy(conn, policy_source, "human")
+            self.assertEqual(installed["id"], "pr-adversarial-review")
+            stream = swarmctl.add_workstream(
+                conn, "Ship repair", "Deliver a reviewed pull request", "manager", "ACTIVE"
+            )
+            application = swarmctl.apply_policy(
+                conn, "pr-adversarial-review",
+                ["goal=repair queue handling", "test_command=python3 -m unittest"],
+                stream, "manager", True,
+            )
+            self.assertEqual(len(application["tasks"]), 5)
+            stage_tasks = {item["stage_id"]: item["task_id"] for item in application["tasks"]}
+            self.assertEqual(swarmctl.task_row(conn, stage_tasks["implement-and-open-pr"])["status"], "READY")
+            self.assertEqual(swarmctl.task_row(conn, stage_tasks["adversarial-review-1"])["status"], "PROPOSED")
+
+            first = stage_tasks["implement-and-open-pr"]
+            swarmctl.claim_task(conn, first, "implementer", 1800)
+            swarmctl.complete_task(conn, first, "implementer", "PR opened", ["Tests passed"], [])
+
+            review_one = stage_tasks["adversarial-review-1"]
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.claim_task(conn, review_one, "implementer", 1800)
+            swarmctl.claim_task(conn, review_one, "reviewer-one", 1800)
+            prompt = swarmctl.build_prompt(self.root, "verifier", "reviewer-one", review_one)
+            self.assertIn("adversarial-review", prompt)
+            self.assertIn("untrusted data", prompt)
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.complete_task(
+                    conn, review_one, "reviewer-one", "Review claimed without evidence",
+                    ["adversarial-review completed against commit SHA abc123"], [],
+                )
+            swarmctl.complete_task(
+                conn, review_one, "reviewer-one", "Review recorded",
+                ["adversarial-review completed against commit SHA abc123"], [str(review_artifact)],
+            )
+
+            remediation = stage_tasks["remediate-review-1"]
+            swarmctl.claim_task(conn, remediation, "remediator", 1800)
+            swarmctl.complete_task(conn, remediation, "remediator", "Findings fixed", ["Tests passed"], [])
+
+            review_two = stage_tasks["adversarial-review-2"]
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.claim_task(conn, review_two, "reviewer-one", 1800)
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.claim_task(conn, review_two, "remediator", 1800)
+            swarmctl.claim_task(conn, review_two, "reviewer-two", 1800)
+            swarmctl.complete_task(
+                conn, review_two, "reviewer-two", "Fresh review recorded",
+                ["Independent adversarial-review completed against commit SHA def456"], [str(review_artifact)],
+            )
+
+            final = stage_tasks["finalize-pr"]
+            swarmctl.claim_task(conn, final, "finalizer", 1800)
+            swarmctl.complete_task(conn, final, "finalizer", "PR is green", ["Final tests passed"], [])
+            finished = swarmctl.policy_application_dict(conn, application["id"])
+            self.assertEqual(finished["status"], "DONE")
+        finally:
+            conn.close()
+
+    def test_policy_manifest_rejects_forward_dependency(self):
+        manifest = {
+            "schema_version": 1,
+            "id": "bad-policy",
+            "version": "1",
+            "name": "Bad",
+            "description": "Invalid ordering",
+            "when_to_use": "Never",
+            "stages": [{
+                "id": "first", "title": "First", "description": "Bad dependency",
+                "kind": "implementation", "acceptance": ["Done"],
+                "depends_on": ["later"],
+            }],
+        }
+        with self.assertRaises(swarmctl.SwarmError):
+            swarmctl.validate_policy_manifest(manifest)
 
     def test_setup_check_rejects_unconfigured_runner(self):
         result = swarmctl.setup_check(self.root)

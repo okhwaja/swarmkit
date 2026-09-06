@@ -2,7 +2,7 @@
 
 Swarmkit is a small coordination layer for giving ambiguous objectives to a group of agents. It does not contain an AI model and does not depend on a particular agent product. Your existing harness launches the agents; Swarmkit gives those agents a shared state machine, durable inboxes, leases, decisions, generated status views, and a complete audit export.
 
-The package uses Python's standard library and SQLite. Copy the `orchestration` directory to the machine where the work happens.
+The package uses Python's standard library and SQLite. Copy the Swarmkit directory to the machine where the work happens.
 
 To create a portable ZIP:
 
@@ -10,7 +10,7 @@ To create a portable ZIP:
 python3 scripts/package.py
 ```
 
-This writes `dist/swarmkit-0.2.1.zip` with the CLI, guidance, documentation, examples, and tests.
+This writes `dist/swarmkit-0.3.0.zip` with the CLI, guidance, documentation, examples, policy packs, and tests.
 
 If another agent will connect Swarmkit to the harness on the destination
 machine, give that agent [SETUP_AGENT.md](SETUP_AGENT.md) as its assignment.
@@ -28,6 +28,8 @@ flowchart TD
     L --> DB[(SQLite state and event log)]
     DB --> M[Manager reconciler]
     M --> DB
+    P[Installed policy packs] --> M
+    P --> DB
     DB --> Q[Ready tasks]
     Q --> W1[Worker]
     Q --> W2[Worker]
@@ -47,9 +49,12 @@ The manager does not need to know the full task plan at the beginning. It starts
 - `bin/swarmctl`: a portable launcher.
 - `SETUP_AGENT.md`: a complete harness-installation assignment and acceptance suite.
 - `guidance/`: strict role contracts suitable for smaller or less reliable models.
-- `docs/`: explanations, operating procedures, and harness integration guidance.
-- `examples/`: an ambiguous pipeline mission and runner configuration.
-- `tests/`: lifecycle, decision propagation, inbox, lease, and export tests.
+- `docs/`: explanations, operating procedures, policy-pack authoring, and harness integration guidance.
+- `examples/`: an ambiguous pipeline mission, runner configuration, and example policy packs.
+- `docs/CLI_REFERENCE.md`: generated exact CLI syntax and options.
+- `scripts/check_docs.py`: deterministic documentation and contract checks.
+- `scripts/release_check.py`: source and extracted-package release verification.
+- `tests/`: lifecycle, policy workflow, documentation, decision propagation, inbox, lease, and export tests.
 
 ## Requirements
 
@@ -61,7 +66,7 @@ SQLite supports concurrent readers and short serialized writes. Swarmkit enables
 
 ## Five-minute setup
 
-From the copied `orchestration` directory:
+From the copied Swarmkit directory:
 
 ```bash
 chmod +x bin/swarmctl
@@ -132,6 +137,39 @@ bin/swarmctl --root /work/my-run/.swarm run --max-cycles 20
 ```
 
 The loop launches the manager, reconciles state, claims up to `max_parallel` ready tasks, launches workers concurrently, and returns to the manager. It stops when the mission is complete, it needs a human decision, there is no ready work, or the cycle limit is reached.
+
+## Adding organization-specific workflows
+
+Policy packs keep project or organization practices outside Swarmkit while
+making their stages durable and enforceable. A pack contributes declarative
+tasks, dependencies, fresh-agent constraints, and additional task guidance. It
+does not add provider credentials or executable code to the core.
+
+Validate and install the bundled PR-review example:
+
+```bash
+bin/swarmctl policy validate examples/policy-packs/pr-adversarial-review
+
+bin/swarmctl --root /work/my-run/.swarm policy install \
+  examples/policy-packs/pr-adversarial-review \
+  --actor human
+```
+
+Apply it when a workstream will produce a pull request:
+
+```bash
+bin/swarmctl --root /work/my-run/.swarm policy apply \
+  pr-adversarial-review \
+  --workstream WS-ID \
+  --var 'goal=prevent duplicate replay records' \
+  --var 'test_command=python3 -m unittest' \
+  --ready
+```
+
+This creates five ordered tasks: implement and open the PR, run the harness's
+`adversarial-review` skill, remediate and restore green checks, run the skill
+again from a fresh agent identity, and resolve any final findings. See
+[Policy packs](docs/POLICY_PACKS.md) for the contract and authoring guide.
 
 ## Answering a blocked question
 
@@ -218,7 +256,7 @@ Do not compensate for a weaker model with one enormous prompt. Give it a narrow 
 
 The system should spend parallelism on gathering independent evidence. It should converge before tightly coupled changes. One worker owns a coherent implementation; short-lived agents can investigate, brief, and verify around it.
 
-Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
+Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
 
 To exercise the state machine without an AI harness, run the synthetic demonstration against a new directory:
 

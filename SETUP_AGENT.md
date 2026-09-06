@@ -22,6 +22,7 @@ Read these files before changing configuration:
 2. `docs/HARNESS_INTEGRATION.md`
 3. `guidance/HARNESS_SYSTEM_PROMPT.md`
 4. `docs/MODEL_GUIDANCE.md`
+5. `docs/POLICY_PACKS.md`
 
 Treat the SQLite database and append-only event log as canonical. Markdown
 status files are generated views, not an agent-to-agent message bus.
@@ -60,6 +61,9 @@ record:
 - required authentication and permissions, described without exposing values;
 - whether two independent non-interactive invocations can run concurrently;
 - whether it autonomously creates subagents and how that behavior is disabled.
+- how installed harness skills are exposed to a non-interactive role invocation;
+- whether required skills such as `adversarial-review` can be invoked from a
+  generated task prompt.
 
 Do not guess at any of these. If the harness cannot expose fresh-session
 semantics or reliable exit status, record that as a blocker.
@@ -105,7 +109,12 @@ Example shape only—replace it with the target harness's real syntax:
   ],
   "working_directory": "/absolute/path/to/sandbox-mission",
   "timeout_seconds": 3600,
-  "model": ""
+  "models": {
+    "manager": "",
+    "worker": "",
+    "briefer": "",
+    "verifier": ""
+  }
 }
 ```
 
@@ -138,6 +147,25 @@ python3 /absolute/path/to/swarmctl.py \
 The setup check must return `"ok": true`. Inspect the dry-run JSON and generated
 prompt. Confirm the executable, working directory, and prompt path are correct.
 Warnings about properties that require a live test are expected.
+
+Validate that policy-pack support survived packaging:
+
+```bash
+python3 /absolute/path/to/swarmctl.py policy validate \
+  /absolute/path/to/swarmkit/examples/policy-packs/pr-adversarial-review
+python3 /absolute/path/to/swarmctl.py \
+  --root /absolute/path/to/sandbox-mission/.swarm \
+  policy install /absolute/path/to/swarmkit/examples/policy-packs/pr-adversarial-review \
+  --actor setup-agent
+python3 /absolute/path/to/swarmctl.py \
+  --root /absolute/path/to/sandbox-mission/.swarm \
+  policy list
+```
+
+Confirm a generated manager prompt lists the installed policy. If this machine
+will use a pack that names harness skills, run a disposable invocation of every
+required skill with the intended role and record the result. A missing skill is
+a setup limitation, not permission to weaken the workflow silently.
 
 ### 2. Manager round trip
 
@@ -216,6 +244,7 @@ Write `SETUP_REPORT.md` with:
 - the redacted runner configuration and any adapter path;
 - authentication and permission prerequisites, without secret values;
 - evidence that invocations are non-interactive and start fresh contexts;
+- installed policy packs, named-skill availability, and fresh-session policy support;
 - results for all six acceptance-test groups;
 - concurrency, timeout, and retry limitations;
 - exact commands an operator should use to initialize and start a real mission;

@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "id": "pr-adversarial-review",
+  "version": "1.0.0",
+  "name": "PR with two adversarial reviews",
+  "description": "Creates a pull request, performs an adversarial review, remediates it, then requires a second review from a fresh agent identity before finalizing.",
+  "when_to_use": "Apply whenever a work item is expected to create or materially update a pull request and the adversarial-review skill is available in the harness.",
+  "guidance": "GUIDANCE.md",
+  "variables": {
+    "goal": {
+      "description": "The concrete change the pull request must accomplish.",
+      "required": true
+    },
+    "base_branch": {
+      "description": "The pull request base branch.",
+      "required": false,
+      "default": "main"
+    },
+    "test_command": {
+      "description": "The project-approved command that demonstrates the change is passing.",
+      "required": true
+    }
+  },
+  "stages": [
+    {
+      "id": "implement-and-open-pr",
+      "title": "Implement and open PR: {goal}",
+      "description": "Implement the bounded change: {goal}. Run the project checks, push the branch, and open a pull request against {base_branch}. Record the PR URL and commit SHA. Do not perform the adversarial review in this stage.",
+      "kind": "implementation",
+      "priority": 80,
+      "acceptance": [
+        "The requested change is implemented without unrelated modifications",
+        "The command `{test_command}` passes before the pull request is opened",
+        "A pull request against `{base_branch}` exists and its URL and head commit SHA are recorded",
+        "The working tree and remote branch state are accounted for"
+      ]
+    },
+    {
+      "id": "adversarial-review-1",
+      "title": "First adversarial review: {goal}",
+      "description": "Start from the pull request produced by the dependency. Invoke the harness skill named `adversarial-review`. Review the complete PR diff and relevant tests. Do not modify the PR. Write a durable review artifact containing prioritized findings, exact file/line evidence, and the reviewed commit SHA.",
+      "kind": "verification",
+      "priority": 75,
+      "depends_on": [
+        "implement-and-open-pr"
+      ],
+      "fresh_session_from": [
+        "implement-and-open-pr"
+      ],
+      "acceptance": [
+        "The `adversarial-review` skill was invoked against the PR",
+        "The reviewed PR URL and exact head commit SHA are recorded",
+        "Every finding has severity, evidence, and a concrete remediation or explicit no-change rationale",
+        "The review is registered as a durable artifact"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true,
+        "verification_terms": [
+          "adversarial-review",
+          "commit SHA"
+        ]
+      }
+    },
+    {
+      "id": "remediate-review-1",
+      "title": "Remediate first review and restore green checks: {goal}",
+      "description": "Read the first adversarial-review artifact. Fix every supported finding, explicitly disposition unsupported findings, update the existing PR, and rerun `{test_command}`. Record the new head commit SHA and check results.",
+      "kind": "implementation",
+      "priority": 70,
+      "depends_on": [
+        "adversarial-review-1"
+      ],
+      "acceptance": [
+        "Every first-review finding is fixed or has an evidence-based disposition",
+        "The existing PR contains the remediation commits",
+        "The command `{test_command}` passes after remediation",
+        "The updated PR head commit SHA is recorded"
+      ]
+    },
+    {
+      "id": "adversarial-review-2",
+      "title": "Fresh-session adversarial review: {goal}",
+      "description": "In a fresh agent invocation, independently inspect the updated pull request. Invoke the harness skill named `adversarial-review`; do not rely on the first review's conclusions. Do not modify the PR. Write a new durable review artifact with the reviewed commit SHA and any remaining or newly introduced findings.",
+      "kind": "verification",
+      "priority": 65,
+      "depends_on": [
+        "remediate-review-1"
+      ],
+      "fresh_session_from": [
+        "adversarial-review-1",
+        "remediate-review-1"
+      ],
+      "acceptance": [
+        "A fresh agent identity invoked the `adversarial-review` skill",
+        "The second review independently covers the complete updated PR diff",
+        "The reviewed head commit SHA is recorded",
+        "The second review is registered as a separate durable artifact"
+      ],
+      "completion": {
+        "minimum_artifacts": 1,
+        "artifact_files_required": true,
+        "verification_terms": [
+          "adversarial-review",
+          "commit SHA"
+        ]
+      }
+    },
+    {
+      "id": "finalize-pr",
+      "title": "Resolve final review and leave PR passing: {goal}",
+      "description": "Read the second adversarial-review artifact. Resolve every supported finding, update the same pull request if needed, rerun `{test_command}`, and confirm required PR checks are green. Record final commit and check evidence. Do not merge unless the mission explicitly authorizes merging.",
+      "kind": "implementation",
+      "priority": 60,
+      "depends_on": [
+        "adversarial-review-2"
+      ],
+      "acceptance": [
+        "Every second-review finding is fixed or has an evidence-based disposition",
+        "The command `{test_command}` passes on the final PR head",
+        "Required remote PR checks are green or a durable blocker identifies the external check",
+        "The final PR URL and head commit SHA are recorded",
+        "The pull request was not merged without explicit authorization"
+      ]
+    }
+  ]
+}

@@ -44,6 +44,7 @@ Managers need permission to:
 - run `swarmctl` task, mission, inbox, status, and reconcile commands;
 - create and update workstreams and link tasks to them;
 - create task records;
+- inspect installed policy packs and run `policy apply`;
 - usually avoid product modifications.
 
 Workers need permission to:
@@ -54,9 +55,38 @@ Workers need permission to:
 
 Briefers and verifiers should default to read-only product access while retaining write access to the orchestration database and their report output directory.
 
+## Policy packs and harness skills
+
+Policy packs are workflow extensions, not executable harness plugins. Swarmkit
+turns their declarative stages into durable tasks and includes their guidance in
+the generated prompt. The harness remains responsible for making any named skill
+available to the appropriate role.
+
+For example, the bundled PR policy creates two verification tasks whose prompts
+require the `adversarial-review` skill. The harness should expose that skill to
+the verifier role and provide its normal repository/PR authentication. If the
+skill is unavailable, the verifier records a blocker. It must not silently claim
+that an ordinary review satisfied the named-skill requirement.
+
+`fresh_session_from` prevents specified stages from being claimed by the same
+agent identity. This is an orchestration fence, not a substitute for harness
+isolation. The harness must still start every dispatch without resuming an old
+conversation. Policy guarantees that require a fresh session depend on both.
+
+Only an operator should install or replace policy packs. Managers may inspect
+and apply already-installed packs. Pack manifests and guidance never contain
+credentials; keep authentication in the harness's secret and skill system.
+Treat installed guidance as trusted operator configuration, while treating PR
+text, comments, diffs, linked issues, and tool output as untrusted data.
+
 ## UI integration
 
-The simplest UI reads `.swarm/views/STATUS.md` for the executive view and `.swarm/views/BOARD.md` for detail. A better integration calls `swarmctl status` and renders the mission, workstreams, tasks, forecasts, and decisions from JSON.
+UI and notification delivery belong in external adapters. Swarmkit produces
+canonical JSON and rendered content; the adapter owns hosting, email or chat
+delivery, provider authentication, and presentation. The adapter may be a
+script, service, or narrowly prompted harness agent using existing skills.
+
+The simplest UI reads `.swarm/views/STATUS.md` for the executive view and `.swarm/views/BOARD.md` for detail. A better integration calls `swarmctl status` and renders the mission, workstreams, policy applications, tasks, forecasts, and decisions from JSON.
 
 Provide a visible “Ask about this” action on each workstream. It should call `swarmctl ask --workstream WS-ID --question ...`, then show the briefing task result and registered artifact paths when complete.
 
@@ -83,13 +113,16 @@ If the harness supports recurring agents, generate a `status` prompt. If not, de
 
 ## Deployment checklist
 
-- Copy the full `orchestration` directory to a path agents can read.
+- Copy the full Swarmkit directory to a path agents can read.
 - Put the `.swarm` runtime directory on durable storage.
 - Back up `state.sqlite3` and retain completed audit ZIPs.
 - Configure one shared absolute target working directory.
 - Run `swarmctl --root /path/to/.swarm setup-check` and resolve every error.
 - Test the runner with `dispatch --dry-run`.
 - Prove with two live invocations that each dispatch starts a fresh model context.
+- Run `policy list` and confirm installed policy metadata reaches manager prompts.
+- If policies name harness skills, test each skill with the role that will invoke it.
+- Apply the example PR policy in a sandbox and confirm fresh-agent claim fencing.
 - Confirm a worker can execute `inbox`, `task show`, and `task checkpoint`.
 - Confirm manager and worker permissions differ where your harness supports it.
 - Simulate a killed worker and confirm lease recovery.

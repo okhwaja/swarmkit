@@ -13,6 +13,8 @@ In the commands below, replace `/work/my-run/.swarm` with your mission's state d
 | Get the executive view | Run `swarmctl report` and open `views/STATUS.md` | You see major workstreams, outcomes, progress, forecast ranges, confidence, and needs from you |
 | Inspect all execution detail | Run `swarmctl board` and open `views/BOARD.md` | You see every task, workstream relationship, decision, fact, and recent event |
 | Inspect one workstream | Run `swarmctl workstream show WS-ID` | You get its narrative, forecast, tasks, and open decisions as JSON |
+| Apply an organization-specific workflow | Install a reviewed policy pack, then run `swarmctl policy apply` | Swarmkit creates and enforces the pack's ordered task graph and guidance |
+| Require two adversarial PR reviews | Apply the `pr-adversarial-review` policy with the change goal and test command | The PR moves through implementation, review, remediation, fresh review, and final-green stages |
 | Ask “what happened to X?” | Run `swarmctl ask --question ... --workstream WS-ID`, then resume `run` | A read-only briefer investigates without interrupting active workers |
 | Answer something blocking the swarm | Run `swarmctl decision list`, then `decision resolve` | Every affected task becomes eligible to resume and must acknowledge the answer |
 | Correct an earlier answer | Run `swarmctl decision revise` | Old acknowledgments become stale and active owners are fenced |
@@ -90,7 +92,11 @@ Open `/work/my-run/.swarm/views/STATUS.md`. It answers:
 
 An unknown forecast is valid during early discovery. Forecasts are required to include a basis when the manager records a date.
 
-For a scheduled email, have your scheduler run `report` at the desired interval and pass `views/STATUS.md` to your organization's email tool. Swarmkit generates the content but does not send email or store mail credentials.
+For a scheduled email, use a delivery extension that runs `report` at the
+desired interval and passes `views/STATUS.md` to your organization's email tool.
+The extension may be a narrow harness agent with an email skill or a
+deterministic script. Swarmkit generates the content but does not send email or
+store mail credentials.
 
 For a pull-based UI, render `swarmctl status` JSON or serve the two generated Markdown files from an authenticated internal endpoint.
 
@@ -120,6 +126,63 @@ Workstream statuses mean:
 | `VERIFYING` | Implementation is complete and evidence is being checked |
 | `DONE` | The intended outcome is verified and linked tasks are terminal |
 | `CANCELLED` | Evidence or changed priorities made the workstream unnecessary |
+
+## Journey: apply a reusable workflow policy
+
+Use policy packs for organization- or project-specific best practices that have
+an observable sequence. Packs live outside the Swarmkit core. An operator
+reviews and installs them; managers apply installed packs when their
+`when_to_use` description matches the work.
+
+Validate a pack before it can affect a mission:
+
+```bash
+swarmctl policy validate /opt/company/swarmkit-policies/pr-adversarial-review
+```
+
+Install it into this mission:
+
+```bash
+swarmctl --root /work/my-run/.swarm policy install \
+  /opt/company/swarmkit-policies/pr-adversarial-review \
+  --actor human
+```
+
+Apply it to the relevant workstream:
+
+```bash
+swarmctl --root /work/my-run/.swarm policy apply \
+  pr-adversarial-review \
+  --workstream WS-ID \
+  --var 'goal=prevent duplicate replay records' \
+  --var 'test_command=python3 -m unittest' \
+  --ready
+```
+
+This policy creates five dependency-ordered tasks:
+
+1. Implement the change, run tests, and open the PR.
+2. In a different agent invocation, run the `adversarial-review` skill and
+   register its findings as an artifact.
+3. Remediate supported findings and restore passing tests.
+4. In a fresh agent invocation, run `adversarial-review` again without inheriting
+   the first review's conclusion.
+5. Resolve remaining findings and leave the PR and required checks green.
+
+Inspect progress with:
+
+```bash
+swarmctl --root /work/my-run/.swarm policy applications
+swarmctl --root /work/my-run/.swarm policy application P-ID
+```
+
+Swarmkit prevents the first review from using the implementer's agent identity
+and prevents the second review from using the first reviewer's or remediator's
+identity. Your harness must also honor the fresh-session contract established
+during setup. If the named skill is unavailable, the agent should create a
+blocker rather than claiming it performed an equivalent review.
+
+See [Policy packs](POLICY_PACKS.md) for authoring, versioning, and trust rules.
 
 ## Journey 4: ask a question without interrupting workers
 

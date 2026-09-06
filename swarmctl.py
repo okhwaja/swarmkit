@@ -19,8 +19,8 @@ import textwrap
 import zipfile
 
 
-VERSION = "0.2.1"
-SCHEMA_VERSION = "2"
+VERSION = "0.3.0"
+SCHEMA_VERSION = "3"
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
 TERMINAL_TASK_STATES = {"DONE", "CANCELLED"}
 VALID_TASK_KINDS = {"discovery", "implementation", "verification", "briefing"}
@@ -164,6 +164,37 @@ CREATE TABLE IF NOT EXISTS task_workstreams (
     task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     workstream_id TEXT NOT NULL REFERENCES workstreams(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS policy_packs (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    when_to_use TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    guidance_text TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    installed_by TEXT NOT NULL,
+    installed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS policy_applications (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    policy_id TEXT NOT NULL REFERENCES policy_packs(id) ON DELETE RESTRICT,
+    policy_version TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    guidance_text TEXT NOT NULL,
+    variables_json TEXT NOT NULL,
+    workstream_id TEXT REFERENCES workstreams(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS policy_application_tasks (
+    application_id TEXT NOT NULL REFERENCES policy_applications(id) ON DELETE CASCADE,
+    stage_id TEXT NOT NULL,
+    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+    fresh_session_from TEXT,
+    PRIMARY KEY (application_id, stage_id)
+);
 CREATE TABLE IF NOT EXISTS decisions (
     id TEXT PRIMARY KEY,
     mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
@@ -250,6 +281,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, authorized, priority);
 CREATE INDEX IF NOT EXISTS idx_workstreams_status ON workstreams(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_task_workstreams_workstream ON task_workstreams(workstream_id);
+CREATE INDEX IF NOT EXISTS idx_policy_applications_policy ON policy_applications(policy_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_policy_application_tasks_task ON policy_application_tasks(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_seq ON events(seq);
 CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
 CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject, status);
@@ -479,6 +512,349 @@ def add_task(conn, title, description, kind, acceptance, depends_on, priority, a
     return task_id
 
 
+def validate_policy_manifest(manifest):
+    if not isinstance(manifest, dict):
+        raise SwarmError("Policy manifest must be a JSON object")
+    if manifest.get("schema_version") != 1:
+        raise SwarmError("Policy schema_version must be 1")
+    for key in ("id", "version", "name", "description", "when_to_use"):
+        if not isinstance(manifest.get(key), str) or not manifest[key].strip():
+            raise SwarmError("Policy %s must be a non-empty string" % key)
+    policy_id = manifest["id"]
+    if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in policy_id):
+        raise SwarmError("Policy id may contain only lowercase letters, digits, hyphens, and underscores")
+    variables = manifest.get("variables", {})
+    if not isinstance(variables, dict):
+        raise SwarmError("Policy variables must be an object")
+    for name, specification in variables.items():
+        if not isinstance(name, str) or not name or not isinstance(specification, dict):
+            raise SwarmError("Each policy variable must have a name and object specification")
+        if any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for character in name):
+            raise SwarmError("Policy variable names may contain only letters, digits, and underscores")
+        if "required" in specification and not isinstance(specification["required"], bool):
+            raise SwarmError("Policy variable %s required must be boolean" % name)
+    stages = manifest.get("stages")
+    if not isinstance(stages, list) or not stages:
+        raise SwarmError("Policy must define at least one stage")
+    seen = set()
+    for stage in stages:
+        if not isinstance(stage, dict):
+            raise SwarmError("Each policy stage must be an object")
+        for key in ("id", "title", "description", "kind", "acceptance"):
+            if key not in stage:
+                raise SwarmError("Policy stage is missing %s" % key)
+        stage_id = stage["id"]
+        if not isinstance(stage_id, str) or not stage_id or stage_id in seen:
+            raise SwarmError("Policy stage ids must be unique non-empty strings")
+        if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in stage_id):
+            raise SwarmError("Policy stage ids may contain only lowercase letters, digits, hyphens, and underscores")
+        for key in ("title", "description"):
+            if not isinstance(stage[key], str) or not stage[key].strip():
+                raise SwarmError("Policy stage %s %s must be a non-empty string" % (stage_id, key))
+        if stage["kind"] not in VALID_TASK_KINDS:
+            raise SwarmError("Policy stage %s has invalid task kind %s" % (stage_id, stage["kind"]))
+        if (
+            not isinstance(stage["acceptance"], list) or not stage["acceptance"] or
+            not all(isinstance(item, str) and item.strip() for item in stage["acceptance"])
+        ):
+            raise SwarmError("Policy stage %s needs acceptance criteria" % stage_id)
+        priority = stage.get("priority", 50)
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            raise SwarmError("Policy stage %s priority must be an integer" % stage_id)
+        dependencies = stage.get("depends_on", [])
+        if not isinstance(dependencies, list) or any(dep not in seen for dep in dependencies):
+            raise SwarmError("Policy stage %s dependencies must name earlier stages" % stage_id)
+        fresh_from = stage.get("fresh_session_from", [])
+        if isinstance(fresh_from, str):
+            fresh_from = [fresh_from]
+        if not isinstance(fresh_from, list) or any(item not in seen for item in fresh_from):
+            raise SwarmError("Policy stage %s fresh_session_from must name earlier stages" % stage_id)
+        completion = stage.get("completion", {})
+        if not isinstance(completion, dict):
+            raise SwarmError("Policy stage %s completion must be an object" % stage_id)
+        minimum_artifacts = completion.get("minimum_artifacts", 0)
+        if not isinstance(minimum_artifacts, int) or isinstance(minimum_artifacts, bool) or minimum_artifacts < 0:
+            raise SwarmError("Policy stage %s minimum_artifacts must be a non-negative integer" % stage_id)
+        terms = completion.get("verification_terms", [])
+        if not isinstance(terms, list) or any(not isinstance(term, str) or not term for term in terms):
+            raise SwarmError("Policy stage %s verification_terms must be non-empty strings" % stage_id)
+        if "artifact_files_required" in completion and not isinstance(completion["artifact_files_required"], bool):
+            raise SwarmError("Policy stage %s artifact_files_required must be boolean" % stage_id)
+        sample_values = {name: "value" for name in variables}
+        for location, template in [
+            ("title", stage["title"]), ("description", stage["description"]),
+        ] + [("acceptance", item) for item in stage["acceptance"]]:
+            if not isinstance(template, str) or not template.strip():
+                raise SwarmError("Policy stage %s %s must contain non-empty strings" % (stage_id, location))
+            try:
+                template.format_map(sample_values)
+            except (KeyError, ValueError) as exc:
+                raise SwarmError("Policy stage %s %s has invalid variables: %s" % (stage_id, location, exc))
+        seen.add(stage_id)
+    return manifest
+
+
+def read_policy_source(source):
+    source_path = Path(source).expanduser().resolve()
+    manifest_path = source_path / "policy.json" if source_path.is_dir() else source_path
+    if not manifest_path.is_file():
+        raise SwarmError("Policy manifest not found: %s" % manifest_path)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SwarmError("Invalid policy JSON: %s" % exc)
+    validate_policy_manifest(manifest)
+    guidance_name = manifest.get("guidance", "GUIDANCE.md")
+    if not isinstance(guidance_name, str) or not guidance_name:
+        raise SwarmError("Policy guidance must be a relative file path")
+    guidance_path_value = (manifest_path.parent / guidance_name).resolve()
+    try:
+        guidance_path_value.relative_to(manifest_path.parent.resolve())
+    except ValueError:
+        raise SwarmError("Policy guidance must stay inside the policy directory")
+    if not guidance_path_value.is_file():
+        raise SwarmError("Policy guidance not found: %s" % guidance_path_value)
+    guidance = guidance_path_value.read_text(encoding="utf-8")
+    if not guidance.strip():
+        raise SwarmError("Policy guidance may not be empty")
+    return manifest, guidance, manifest_path
+
+
+def install_policy(conn, source, actor, force=False):
+    manifest, guidance, manifest_path = read_policy_source(source)
+    existing = conn.execute("SELECT * FROM policy_packs WHERE id=?", (manifest["id"],)).fetchone()
+    if existing and not force:
+        raise SwarmError(
+            "Policy %s is already installed at version %s; use --force to replace it" %
+            (manifest["id"], existing["version"])
+        )
+    now = utcnow()
+    conn.execute(
+        """INSERT INTO policy_packs(id, version, name, description, when_to_use,
+           manifest_json, guidance_text, source_path, installed_by, installed_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET version=excluded.version, name=excluded.name,
+             description=excluded.description, when_to_use=excluded.when_to_use,
+             manifest_json=excluded.manifest_json, guidance_text=excluded.guidance_text,
+             source_path=excluded.source_path, installed_by=excluded.installed_by,
+             installed_at=excluded.installed_at""",
+        (
+            manifest["id"], manifest["version"], manifest["name"], manifest["description"],
+            manifest["when_to_use"], json_dump(manifest), guidance, str(manifest_path), actor, now,
+        ),
+    )
+    current_mission = mission(conn)
+    add_event(conn, current_mission["id"], "policy", manifest["id"], "POLICY_INSTALLED", actor, {
+        "version": manifest["version"], "source_path": str(manifest_path), "replaced": bool(existing),
+    })
+    conn.commit()
+    return policy_pack_dict(conn, conn.execute("SELECT * FROM policy_packs WHERE id=?", (manifest["id"],)).fetchone())
+
+
+def policy_pack_dict(conn, row, include_guidance=True):
+    data = dict(row)
+    data["manifest"] = json_load(data.pop("manifest_json"), {})
+    if not include_guidance:
+        data.pop("guidance_text", None)
+    return data
+
+
+def policy_pack_summary(conn, row):
+    pack = policy_pack_dict(conn, row, include_guidance=False)
+    manifest = pack["manifest"]
+    return {
+        "id": pack["id"], "version": pack["version"], "name": pack["name"],
+        "description": pack["description"], "when_to_use": pack["when_to_use"],
+        "variables": manifest.get("variables", {}),
+        "stages": [
+            {"id": stage["id"], "kind": stage["kind"], "title": stage["title"]}
+            for stage in manifest.get("stages", [])
+        ],
+        "installed_at": pack["installed_at"],
+    }
+
+
+def parse_policy_variables(items):
+    values = {}
+    for item in items:
+        if "=" not in item:
+            raise SwarmError("Policy variables must use name=value: %s" % item)
+        name, value = item.split("=", 1)
+        if not name:
+            raise SwarmError("Policy variable name may not be empty")
+        if name in values:
+            raise SwarmError("Policy variable was provided more than once: %s" % name)
+        values[name] = value
+    return values
+
+
+def render_policy_text(value, variables, location):
+    try:
+        return value.format_map(variables)
+    except (KeyError, ValueError) as exc:
+        raise SwarmError("Could not render policy %s: %s" % (location, exc))
+
+
+def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
+    row = conn.execute("SELECT * FROM policy_packs WHERE id=?", (policy_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown installed policy: %s" % policy_id)
+    pack = policy_pack_dict(conn, row)
+    manifest = pack["manifest"]
+    values = parse_policy_variables(variable_items)
+    specifications = manifest.get("variables", {})
+    unknown = sorted(set(values) - set(specifications))
+    if unknown:
+        raise SwarmError("Unknown policy variables: %s" % ", ".join(unknown))
+    for name, specification in specifications.items():
+        if name not in values and "default" in specification:
+            values[name] = str(specification["default"])
+        if specification.get("required") and not values.get(name):
+            raise SwarmError("Missing required policy variable: %s" % name)
+    if workstream_id:
+        workstream_row(conn, workstream_id)
+
+    rendered = []
+    for stage in manifest["stages"]:
+        rendered.append({
+            "stage": stage,
+            "title": render_policy_text(stage["title"], values, "%s.title" % stage["id"]),
+            "description": render_policy_text(stage["description"], values, "%s.description" % stage["id"]),
+            "acceptance": [
+                render_policy_text(item, values, "%s.acceptance" % stage["id"])
+                for item in stage["acceptance"]
+            ],
+        })
+
+    current_mission = mission(conn)
+    application_id = make_id("P")
+    stage_tasks = {}
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """INSERT INTO policy_applications(id, mission_id, policy_id, policy_version,
+               manifest_json, guidance_text, variables_json, workstream_id, created_by, created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                application_id, current_mission["id"], policy_id, pack["version"],
+                json_dump(manifest), pack["guidance_text"], json_dump(values),
+                workstream_id, actor, utcnow(),
+            ),
+        )
+        for item in rendered:
+            stage = item["stage"]
+            dependencies = [stage_tasks[stage_id] for stage_id in stage.get("depends_on", [])]
+            task_id = make_id("T")
+            now = utcnow()
+            conn.execute(
+                """INSERT INTO tasks(id, mission_id, title, description, kind, priority,
+                   authorized, acceptance_json, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    task_id, current_mission["id"], item["title"], item["description"],
+                    stage["kind"], int(stage.get("priority", 50)), 1 if ready else 0,
+                    json_dump(item["acceptance"]), now, now,
+                ),
+            )
+            for dependency in dependencies:
+                conn.execute(
+                    "INSERT INTO task_dependencies(task_id, depends_on) VALUES(?,?)",
+                    (task_id, dependency),
+                )
+            if workstream_id:
+                conn.execute(
+                    "INSERT INTO task_workstreams(task_id, workstream_id) VALUES(?,?)",
+                    (task_id, workstream_id),
+                )
+            conn.execute(
+                """INSERT INTO policy_application_tasks(application_id, stage_id, task_id,
+                   fresh_session_from) VALUES(?,?,?,?)""",
+                (
+                    application_id, stage["id"], task_id,
+                    json_dump(
+                        [stage["fresh_session_from"]]
+                        if isinstance(stage.get("fresh_session_from"), str)
+                        else stage.get("fresh_session_from", [])
+                    ),
+                ),
+            )
+            add_event(conn, current_mission["id"], "task", task_id, "TASK_PROPOSED", actor, {
+                "title": item["title"], "kind": stage["kind"],
+                "acceptance": item["acceptance"], "depends_on": dependencies,
+                "authorized": bool(ready), "priority": int(stage.get("priority", 50)),
+                "workstream_id": workstream_id, "policy_id": policy_id,
+                "policy_application_id": application_id, "policy_stage_id": stage["id"],
+            })
+            stage_tasks[stage["id"]] = task_id
+        add_event(
+            conn, current_mission["id"], "policy_application", application_id,
+            "POLICY_APPLIED", actor, {
+                "policy_id": policy_id, "policy_version": pack["version"], "variables": values,
+                "workstream_id": workstream_id, "tasks": stage_tasks,
+            },
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    reconcile_conn(conn)
+    return policy_application_dict(conn, application_id)
+
+
+def policy_application_dict(conn, application_id, include_definition=False):
+    row = conn.execute("SELECT * FROM policy_applications WHERE id=?", (application_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown policy application: %s" % application_id)
+    data = dict(row)
+    data["variables"] = json_load(data.pop("variables_json"), {})
+    manifest = json_load(data.pop("manifest_json"), {})
+    guidance = data.pop("guidance_text", "")
+    if include_definition:
+        data["manifest"] = manifest
+        data["guidance_text"] = guidance
+    tasks = [dict(item) for item in conn.execute(
+        """SELECT pat.stage_id, pat.task_id, pat.fresh_session_from, t.title, t.kind,
+           t.status, t.owner, t.result FROM policy_application_tasks pat
+           JOIN tasks t ON t.id=pat.task_id WHERE pat.application_id=?
+           ORDER BY t.created_at""",
+        (application_id,),
+    )]
+    for task in tasks:
+        task["fresh_session_from"] = json_load(task["fresh_session_from"], [])
+    data["tasks"] = tasks
+    if tasks and all(item["status"] == "DONE" for item in tasks):
+        data["status"] = "DONE"
+    elif any(item["status"] == "BLOCKED" for item in tasks):
+        data["status"] = "BLOCKED"
+    elif all(item["status"] in TERMINAL_TASK_STATES for item in tasks):
+        data["status"] = "CANCELLED"
+    else:
+        data["status"] = "ACTIVE"
+    return data
+
+
+def policy_context_for_task(conn, task_id):
+    link = conn.execute(
+        """SELECT pat.application_id, pat.stage_id, pat.fresh_session_from,
+           pa.policy_id, pa.policy_version, pa.variables_json,
+           pa.guidance_text, pa.manifest_json FROM policy_application_tasks pat
+           JOIN policy_applications pa ON pa.id=pat.application_id
+           WHERE pat.task_id=?""",
+        (task_id,),
+    ).fetchone()
+    if not link:
+        return None
+    data = dict(link)
+    manifest = json_load(data.pop("manifest_json"), {})
+    data["name"] = manifest.get("name", data["policy_id"])
+    data["variables"] = json_load(data.pop("variables_json"), {})
+    data["fresh_session_from"] = json_load(data["fresh_session_from"], [])
+    data["stage"] = next(
+        (stage for stage in manifest.get("stages", []) if stage.get("id") == data["stage_id"]), None
+    )
+    return data
+
+
 def approve_task(conn, task_id, actor):
     row = task_row(conn, task_id)
     if row["status"] in TERMINAL_TASK_STATES:
@@ -571,6 +947,31 @@ def claim_task(conn, task_id, agent, lease_seconds):
         row = task_row(conn, task_id)
         if row["status"] != "READY":
             raise SwarmError("Task %s is %s, not READY" % (task_id, row["status"]))
+        policy_stage = conn.execute(
+            "SELECT application_id, fresh_session_from FROM policy_application_tasks WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if policy_stage and policy_stage["fresh_session_from"]:
+            for prior_stage in json_load(policy_stage["fresh_session_from"], []):
+                prior = conn.execute(
+                    """SELECT task_id FROM policy_application_tasks
+                       WHERE application_id=? AND stage_id=?""",
+                    (policy_stage["application_id"], prior_stage),
+                ).fetchone()
+                completion = conn.execute(
+                    """SELECT actor FROM events WHERE entity_id=? AND event_type='TASK_COMPLETED'
+                       ORDER BY seq DESC LIMIT 1""",
+                    (prior["task_id"],),
+                ).fetchone() if prior else None
+                if not completion:
+                    raise SwarmError(
+                        "Task %s requires completed policy stage %s" % (task_id, prior_stage)
+                    )
+                if completion["actor"] == agent:
+                    raise SwarmError(
+                        "Task %s requires a fresh agent identity distinct from policy stage %s" %
+                        (task_id, prior_stage)
+                    )
         now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
         lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
         generation = row["generation"] + 1
@@ -659,6 +1060,27 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
         raise SwarmError("Resolved decisions affecting %s must be acknowledged before completion" % task_id)
     if not verification:
         raise SwarmError("At least one verification statement is required")
+    policy = policy_context_for_task(conn, task_id)
+    completion = policy["stage"].get("completion", {}) if policy and policy.get("stage") else {}
+    minimum_artifacts = completion.get("minimum_artifacts", 0)
+    if len(artifacts) < minimum_artifacts:
+        raise SwarmError(
+            "Policy stage requires at least %d artifact(s); received %d" %
+            (minimum_artifacts, len(artifacts))
+        )
+    if completion.get("artifact_files_required"):
+        missing = [value for value in artifacts if not Path(value).expanduser().resolve().is_file()]
+        if missing:
+            raise SwarmError("Policy stage artifacts must be existing files: %s" % ", ".join(missing))
+    verification_text = "\n".join(verification).lower()
+    missing_terms = [
+        term for term in completion.get("verification_terms", [])
+        if term.lower() not in verification_text
+    ]
+    if missing_terms:
+        raise SwarmError(
+            "Policy stage verification must mention: %s" % ", ".join(missing_terms)
+        )
     now = utcnow()
     conn.execute(
         """UPDATE tasks SET status='DONE', result=?, verification_json=?, owner=NULL,
@@ -904,6 +1326,7 @@ def task_dict(conn, row):
     data["artifacts"] = [dict(r) for r in conn.execute(
         "SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at", (row["id"],)
     )]
+    data["policy"] = policy_context_for_task(conn, row["id"])
     return data
 
 
@@ -962,9 +1385,16 @@ def mission_snapshot(conn):
     facts = [dict(r) for r in conn.execute(
         "SELECT * FROM facts ORDER BY CASE status WHEN 'CURRENT' THEN 0 ELSE 1 END, subject, observed_at DESC"
     )]
+    policies = [policy_pack_summary(conn, r) for r in conn.execute(
+        "SELECT * FROM policy_packs ORDER BY id"
+    )]
+    policy_applications = [policy_application_dict(conn, r["id"]) for r in conn.execute(
+        "SELECT id FROM policy_applications ORDER BY created_at"
+    )]
     return {
         "mission": m, "workstreams": workstreams, "tasks": tasks,
         "decisions": decisions, "facts": facts, "artifacts": artifacts,
+        "policies": policies, "policy_applications": policy_applications,
     }
 
 
@@ -1025,6 +1455,21 @@ def render_board(root):
         ))
     if not snapshot["workstreams"]:
         lines.append("| — | — | No workstreams defined | — | — | — |")
+    lines.extend([
+        "", "## Policy workflows", "",
+        "| Application | Policy | Version | State | Stages |",
+        "|---|---|---|---|---|",
+    ])
+    for application in snapshot["policy_applications"]:
+        stage_summary = ", ".join(
+            "%s:%s" % (task["stage_id"], task["status"]) for task in application["tasks"]
+        )
+        lines.append("| `%s` | `%s` | %s | %s | %s |" % (
+            application["id"], application["policy_id"], application["policy_version"],
+            application["status"], md_escape(stage_summary),
+        ))
+    if not snapshot["policy_applications"]:
+        lines.append("| — | No policy workflow applied | — | — | — |")
     lines.extend([
         "", "## Tasks", "",
         "| ID | Workstream | State | Kind | Owner | Title | Next action |",
@@ -1165,6 +1610,9 @@ def build_prompt(root, role, agent, task_id=None):
         "linked_decisions": linked,
         "unseen_events": unseen,
     }
+    if role == "manager":
+        context["installed_policies"] = snapshot["policies"]
+        context["policy_applications"] = snapshot["policy_applications"]
     return "\n".join([
         guide_text.rstrip(),
         "",
@@ -1230,6 +1678,18 @@ def render_status_report(root):
             "- Task state: %s" % task_counts,
             "- Needs anything from you: %s" % human_ids, "",
         ])
+    lines.extend(["", "## Policy workflows", ""])
+    if not snapshot["policy_applications"]:
+        lines.append("No policy workflows have been applied.")
+    for application in snapshot["policy_applications"]:
+        stage_summary = ", ".join(
+            "%s=%s" % (task["stage_id"], task["status"])
+            for task in application["tasks"]
+        )
+        lines.append("- `%s` `%s@%s` — **%s**; %s" % (
+            application["id"], application["policy_id"], application["policy_version"],
+            application["status"], stage_summary,
+        ))
     lines.extend(["", "## Needs human input", ""])
     if not human:
         lines.append("Nothing currently needs human input.")
@@ -1531,6 +1991,16 @@ def setup_check(root):
         "All required role guidance is present" if not missing_guidance else
         "Missing role guidance: %s" % ", ".join(missing_guidance),
     )
+    example_policy = package_root / "examples" / "policy-packs" / "pr-adversarial-review"
+    try:
+        example_manifest, _, _ = read_policy_source(example_policy)
+        record(
+            "policy_pack_support", True,
+            "Bundled policy %s@%s is valid" %
+            (example_manifest["id"], example_manifest["version"]),
+        )
+    except (SwarmError, OSError) as exc:
+        record("policy_pack_support", False, "Bundled policy validation failed: %s" % exc)
 
     prerequisite_checks = {
         item["name"]: item["ok"] for item in checks
@@ -1538,7 +2008,7 @@ def setup_check(root):
     dry_run_ready = database_ready and all(prerequisite_checks.get(name, False) for name in (
         "runner_config", "command_argv", "prompt_delivery", "runner_executable",
         "no_shell_interpolation", "working_directory", "timeout", "max_parallel",
-        "model_mapping", "role_guidance",
+        "model_mapping", "role_guidance", "policy_pack_support",
     ))
     if dry_run_ready:
         try:
@@ -1659,6 +2129,22 @@ def doctor(conn):
             ).fetchone()["n"]
             if remaining:
                 problems.append({"severity": "error", "entity": row["id"], "problem": "done workstream has non-terminal tasks"})
+    for row in conn.execute("SELECT * FROM policy_packs"):
+        try:
+            validate_policy_manifest(json_load(row["manifest_json"], {}))
+        except SwarmError as exc:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid installed policy: %s" % exc})
+    for row in conn.execute("SELECT * FROM policy_applications"):
+        manifest = json_load(row["manifest_json"], {})
+        expected = {stage["id"] for stage in manifest.get("stages", [])}
+        actual = {item["stage_id"] for item in conn.execute(
+            "SELECT stage_id FROM policy_application_tasks WHERE application_id=?", (row["id"],)
+        )}
+        if expected != actual:
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "policy application stages do not match its manifest snapshot",
+            })
     duplicate_titles = conn.execute(
         "SELECT title, COUNT(*) AS n FROM tasks WHERE status NOT IN ('DONE','CANCELLED') GROUP BY title HAVING COUNT(*) > 1"
     ).fetchall()
@@ -1672,6 +2158,9 @@ def audit_summary(conn):
     counts = {}
     for task in snap["tasks"]:
         counts[task["status"]] = counts.get(task["status"], 0) + 1
+    policy_counts = {}
+    for application in snap["policy_applications"]:
+        policy_counts[application["status"]] = policy_counts.get(application["status"], 0) + 1
     workstream_counts = {}
     forecast_outcomes = []
     for workstream in snap["workstreams"]:
@@ -1721,6 +2210,7 @@ def audit_summary(conn):
 
     return {
         "task_counts": counts, "workstream_counts": workstream_counts,
+        "policy_application_counts": policy_counts,
         "completed_workstream_forecast_outcomes": forecast_outcomes,
         "event_count": events, "agent_run_count": runs,
         "failed_agent_runs": failed_runs, "unacknowledged_resolved_decisions": unacked,
@@ -1783,7 +2273,8 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
             Review for: stale facts, weak or unstable workstreams, forecast misses, speculative
             tasks, duplicated work, missing checkpoints,
             long human-decision propagation, expired leases, weak verification, manager churn,
-            excessive fan-out, and work that bypassed canonical state.
+            excessive fan-out, policy stages that were skipped or claimed by disallowed agent
+            identities, named skills without evidence, and work that bypassed canonical state.
 
             Secrets warning: prompts, stdout, stderr, and registered artifacts may contain
             sensitive material. Inspect this archive before sharing it outside your organization.
@@ -1845,6 +2336,27 @@ def parser():
     ask.add_argument("--workstream")
     ask.add_argument("--depends-on", action="append", default=[])
     ask.add_argument("--actor", default="human")
+
+    policy = sub.add_parser("policy", help="Install and apply reusable workflow policy packs")
+    policy_sub = policy.add_subparsers(dest="policy_command", required=True)
+    policy_install = policy_sub.add_parser("install")
+    policy_install.add_argument("source", help="Policy directory or policy.json path")
+    policy_install.add_argument("--actor", default="human")
+    policy_install.add_argument("--force", action="store_true")
+    policy_validate = policy_sub.add_parser("validate")
+    policy_validate.add_argument("source", help="Policy directory or policy.json path")
+    policy_sub.add_parser("list")
+    policy_show = policy_sub.add_parser("show")
+    policy_show.add_argument("policy_id")
+    policy_apply = policy_sub.add_parser("apply")
+    policy_apply.add_argument("policy_id")
+    policy_apply.add_argument("--var", action="append", default=[], help="Template value as name=value")
+    policy_apply.add_argument("--workstream")
+    policy_apply.add_argument("--actor", default="manager")
+    policy_apply.add_argument("--ready", action="store_true", help="Authorize all generated stages")
+    policy_sub.add_parser("applications")
+    policy_application = policy_sub.add_parser("application")
+    policy_application.add_argument("application_id")
 
     workstream = sub.add_parser("workstream", help="Manage executive-level workstreams")
     workstream_sub = workstream.add_subparsers(dest="workstream_command", required=True)
@@ -2055,6 +2567,45 @@ def main(argv=None):
             finally:
                 conn.close()
             render_board(root)
+            return 0
+
+        if args.command == "policy":
+            if args.policy_command == "validate":
+                manifest, guidance, manifest_path = read_policy_source(args.source)
+                print_json({
+                    "ok": True, "manifest_path": str(manifest_path),
+                    "id": manifest["id"], "version": manifest["version"],
+                    "stage_count": len(manifest["stages"]),
+                    "guidance_bytes": len(guidance.encode("utf-8")),
+                })
+                return 0
+            conn = connect(root)
+            try:
+                if args.policy_command == "install":
+                    print_json(install_policy(conn, args.source, args.actor, args.force))
+                elif args.policy_command == "list":
+                    print_json([policy_pack_summary(conn, row) for row in conn.execute(
+                        "SELECT * FROM policy_packs ORDER BY id"
+                    )])
+                elif args.policy_command == "show":
+                    row = conn.execute("SELECT * FROM policy_packs WHERE id=?", (args.policy_id,)).fetchone()
+                    if not row:
+                        raise SwarmError("Unknown installed policy: %s" % args.policy_id)
+                    print_json(policy_pack_dict(conn, row))
+                elif args.policy_command == "apply":
+                    print_json(apply_policy(
+                        conn, args.policy_id, args.var, args.workstream, args.actor, args.ready,
+                    ))
+                elif args.policy_command == "applications":
+                    print_json([policy_application_dict(conn, row["id"]) for row in conn.execute(
+                        "SELECT id FROM policy_applications ORDER BY created_at"
+                    )])
+                elif args.policy_command == "application":
+                    print_json(policy_application_dict(conn, args.application_id, include_definition=True))
+            finally:
+                conn.close()
+            if args.policy_command in {"install", "apply"}:
+                render_board(root)
             return 0
 
         if args.command == "workstream":

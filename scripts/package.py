@@ -3,19 +3,30 @@
 
 import argparse
 from pathlib import Path
+import re
 import zipfile
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = PACKAGE_ROOT / "dist" / "swarmkit-0.2.1.zip"
 EXCLUDED_PARTS = {"__pycache__", "dist", ".pytest_cache"}
+
+
+def package_version():
+    source = (PACKAGE_ROOT / "swarmctl.py").read_text(encoding="utf-8")
+    match = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
+    if not match:
+        raise RuntimeError("Could not read VERSION from swarmctl.py")
+    return match.group(1)
+
+
+DEFAULT_OUTPUT = PACKAGE_ROOT / "dist" / ("swarmkit-%s.zip" % package_version())
 
 
 def should_include(path):
     relative = path.relative_to(PACKAGE_ROOT)
     if any(part in EXCLUDED_PARTS for part in relative.parts):
         return False
-    return path.is_file() and path.suffix in {".py", ".md", ".json"} or relative == Path("bin/swarmctl")
+    return path.is_file() and path.suffix in {".py", ".md", ".json", ".yml", ".yaml"} or relative == Path("bin/swarmctl")
 
 
 def main():

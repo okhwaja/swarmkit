@@ -30,6 +30,19 @@ A pipeline incident might form three workstreams: diagnose the failure, restore 
 
 A worker owns one task at a time. The worker receives a lease so two agents do not accidentally own the same work. It reads all new events, performs its bounded work, checkpoints important progress, and completes only with verification evidence.
 
+### Policy packs
+
+Policy packs add organization- or project-specific workflows without embedding
+them in the Swarmkit core. A reviewed pack declares variables, ordered stages,
+dependencies, acceptance criteria, fresh-agent constraints, and additional
+guidance. Applying it atomically creates ordinary durable tasks, so the workflow
+inherits leases, decision propagation, artifacts, reporting, and audit history.
+
+For example, a pull-request policy can require implementation, an
+`adversarial-review` skill task, remediation, a second review from a fresh agent
+identity, and final green checks. Swarmkit enforces the ordering and identity
+separation. The harness provides the actual PR and skill capabilities.
+
 ### Decisions and liaison
 
 When the system needs human authority or a business tradeoff, it creates a decision record. The liaison or UI shows that record to you. Your answer is written back to the same record, producing a new version and an event.
@@ -93,6 +106,7 @@ Deterministic code handles:
 - dependency readiness;
 - event ordering and inbox cursors;
 - decision propagation and acknowledgment;
+- policy validation, task-graph creation, and fresh-agent constraints;
 - generated board state;
 - workstream/task relationships and executive report structure;
 - invariant checks;
@@ -105,6 +119,7 @@ Models handle:
 - proposing and implementing changes;
 - recognizing meaningful uncertainty;
 - independent verification and briefing.
+- invoking harness-provided skills named by trusted policy guidance.
 
 This division is deliberate. Models make judgments; code enforces bookkeeping.
 
