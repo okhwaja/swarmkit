@@ -1,18 +1,18 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.5.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.6.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
 ```text
 usage: swarmctl [-h] [--root ROOT] [--version]
-                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
+                {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
 Durable, harness-neutral orchestration for ambiguous multi-agent work.
 
 positional arguments:
-  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,fact,inbox,prompt,dispatch,run,mission,export}
+  {init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
     init                Create a mission workspace
     status              Show the current canonical snapshot
     board               Regenerate the Markdown board
@@ -30,6 +30,8 @@ positional arguments:
     workstream          Manage executive-level workstreams
     task                Manage tasks
     decision            Manage durable decisions
+    finding             Elevate and disposition mission-relevant findings
+    wait                Inspect and signal durable external waits
     fact                Record sourced, time-bounded operational facts
     inbox               Read all events since an agent cursor
     prompt              Generate a grounded role prompt
@@ -604,6 +606,83 @@ optional arguments:
   --ttl-seconds TTL_SECONDS
 ```
 
+## `swarmctl finding`
+
+```text
+usage: swarmctl finding [-h] {raise,list,show,disposition} ...
+
+positional arguments:
+  {raise,list,show,disposition}
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl finding disposition`
+
+```text
+usage: swarmctl finding disposition [-h] --status
+                                    {DEFERRED,DISMISSED,INCORPORATED}
+                                    --rationale RATIONALE [--task TASK]
+                                    [--workstream WORKSTREAM] [--actor ACTOR]
+                                    finding_id
+
+positional arguments:
+  finding_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --status {DEFERRED,DISMISSED,INCORPORATED}
+  --rationale RATIONALE
+  --task TASK
+  --workstream WORKSTREAM
+  --actor ACTOR
+```
+
+## `swarmctl finding list`
+
+```text
+usage: swarmctl finding list [-h]
+                             [--status {DEFERRED,DISMISSED,INCORPORATED,OPEN}]
+                             [--significance {MATERIAL,ROUTINE,URGENT}]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --status {DEFERRED,DISMISSED,INCORPORATED,OPEN}
+  --significance {MATERIAL,ROUTINE,URGENT}
+```
+
+## `swarmctl finding raise`
+
+```text
+usage: swarmctl finding raise [-h] --task TASK --agent AGENT --significance
+                              {MATERIAL,ROUTINE,URGENT} --summary SUMMARY
+                              --evidence EVIDENCE --impact IMPACT
+                              [--recommendation RECOMMENDATION]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --agent AGENT
+  --significance {MATERIAL,ROUTINE,URGENT}
+  --summary SUMMARY
+  --evidence EVIDENCE
+  --impact IMPACT
+  --recommendation RECOMMENDATION
+```
+
+## `swarmctl finding show`
+
+```text
+usage: swarmctl finding show [-h] finding_id
+
+positional arguments:
+  finding_id
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
 ## `swarmctl inbox`
 
 ```text
@@ -839,11 +918,11 @@ optional arguments:
 
 ```text
 usage: swarmctl task [-h]
-                     {add,approve,claim,checkpoint,complete,cancel,block,list,show}
+                     {add,approve,claim,checkpoint,complete,cancel,block,wait-external,list,show}
                      ...
 
 positional arguments:
-  {add,approve,claim,checkpoint,complete,cancel,block,list,show}
+  {add,approve,claim,checkpoint,complete,cancel,block,wait-external,list,show}
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -992,6 +1071,80 @@ positional arguments:
 
 optional arguments:
   -h, --help  show this help message and exit
+```
+
+## `swarmctl task wait-external`
+
+```text
+usage: swarmctl task wait-external [-h] --agent AGENT --condition CONDITION
+                                   --external-ref EXTERNAL_REF
+                                   [--next-check-at NEXT_CHECK_AT] --deadline
+                                   DEADLINE [--signal-expected]
+                                   task_id
+
+positional arguments:
+  task_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --agent AGENT
+  --condition CONDITION
+  --external-ref EXTERNAL_REF
+  --next-check-at NEXT_CHECK_AT
+  --deadline DEADLINE
+  --signal-expected
+```
+
+## `swarmctl wait`
+
+```text
+usage: swarmctl wait [-h] {list,show,signal} ...
+
+positional arguments:
+  {list,show,signal}
+
+optional arguments:
+  -h, --help          show this help message and exit
+```
+
+## `swarmctl wait list`
+
+```text
+usage: swarmctl wait list [-h] [--status {CANCELLED,WAITING,WOKEN}]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --status {CANCELLED,WAITING,WOKEN}
+```
+
+## `swarmctl wait show`
+
+```text
+usage: swarmctl wait show [-h] wait_id
+
+positional arguments:
+  wait_id
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl wait signal`
+
+```text
+usage: swarmctl wait signal [-h] --source SOURCE --external-id EXTERNAL_ID
+                            [--note NOTE] [--actor ACTOR]
+                            wait_id
+
+positional arguments:
+  wait_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --source SOURCE
+  --external-id EXTERNAL_ID
+  --note NOTE
+  --actor ACTOR
 ```
 
 ## `swarmctl workstream`

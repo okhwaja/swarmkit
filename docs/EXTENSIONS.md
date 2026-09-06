@@ -17,6 +17,11 @@ validates provider events and calls `case open` or `case signal`. Swarmkit then
 owns the idempotent case and workflow. See
 [Persistent services](PERSISTENT_SERVICES.md).
 
+Callbacks for an already-running external operation use the separate
+`wait signal` command. They wake an existing task idempotently for verification;
+they do not create a case, deliver content, or prove provider success. See
+[Responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
+
 ## Why delivery uses an outbox
 
 Generating a report and sending it are different operations. `swarmctl report` is deterministic and local. A provider call can time out, be retried, or succeed while the local process loses its response. Swarmkit therefore snapshots the content first and creates a durable delivery job:

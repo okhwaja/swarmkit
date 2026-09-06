@@ -10,6 +10,11 @@ In the commands below, replace `/work/my-run/.swarm` with your mission's state d
 |---|---|---|
 | Connect Swarmkit to a harness on a new machine | Give the setup agent `SETUP_AGENT.md`, then require its setup report and audit ZIP | The agent discovers local CLI details but must pass Swarmkit's fixed integration gates |
 | Start an ambiguous objective | Run `swarmctl init`, configure `runner.json`, then run `swarmctl run` | The manager creates bounded discovery work and progressively forms the plan |
+| Follow an evolving mission | Keep one bounded `run` active while agents work | Completed tasks and consequential findings can trigger a serialized manager review while unrelated work continues |
+| Elevate a consequential discovery | The owning worker runs `finding raise` with evidence, impact, significance, and a bounded recommendation | Material and urgent findings prompt manager review but do not authorize worker scope expansion |
+| Triage an elevated finding | The manager runs `finding disposition` with incorporated, deferred, or dismissed and a rationale | The disposition and any resulting task/workstream links remain auditable |
+| Wait on CI, a pipeline, or another provider | The worker runs `task wait-external` and exits | The task releases its owner and slot until a scheduled check, external signal, or deadline wakes it for verification |
+| Wake a task from a provider callback | A trusted adapter runs `wait signal` with a stable provider event ID | Repeated signals do not create duplicate eligibility; a fresh worker checks actual provider state |
 | Create a persistent logical agent | Initialize with `--mode SERVICE`, install reviewed policies, and connect an ingress adapter | The service remains available while idle, but each case runs in fresh model sessions |
 | Submit work to a persistent agent | Run `case open` with a provider-stable source/external ID | Duplicate notifications collapse into one durable case and workstream |
 | Record an author reply or new revision | Run `case signal`, optionally with `--decision` or `--wake` | The response reaches every future owner and resumes or creates only the intended work |
@@ -79,7 +84,106 @@ Then run a bounded number of manager and worker cycles:
 swarmctl --root /work/my-run/.swarm run --max-cycles 20
 ```
 
-The command stops when the mission finishes, needs a human decision, has no ready work, or reaches the cycle limit. A stopped command does not mean the mission failed or completed; inspect the report.
+The command stops when the mission finishes, needs a human decision, is waiting
+for future external conditions, has no ready work, or reaches the cycle limit.
+A stopped command does not mean the mission failed or completed; inspect the
+report. `WAITING_EXTERNAL` includes the earliest check and deadline for an
+external scheduler.
+
+## Journey: react to work while other agents continue
+
+Keep the bounded `run` command alive while its launched harness processes are
+working. It watches durable state at the configured `scheduler_poll_seconds`.
+When a short task completes, its result requests manager review even if an
+unrelated long task remains active. The manager sees the complete batch of
+nearby changes, updates the plan, and the next scheduling turn fills the freed
+slot.
+
+Configure the responsiveness and coalescing interval in `runner.json`:
+
+```json
+{
+  "max_parallel": 3,
+  "scheduler_poll_seconds": 1,
+  "manager_review_debounce_seconds": 1
+}
+```
+
+`max_parallel` counts live manager and worker harness processes. Frequent
+worker checkpoints do not wake the manager. A material or urgent finding does.
+
+## Journey: elevate and triage a new finding
+
+The worker that owns a task records a discovery that may change the plan:
+
+```bash
+swarmctl --root /work/my-run/.swarm finding raise \
+  --task T-ID \
+  --agent worker-ID \
+  --significance MATERIAL \
+  --summary "Retries can create duplicate records" \
+  --evidence "log:event-1042" \
+  --evidence "src/retry.py:88" \
+  --impact "A backlog replay may violate the no-duplication outcome" \
+  --recommendation "Run one bounded replay-safety investigation"
+```
+
+Use `ROUTINE` for useful context, `MATERIAL` when tasks or workstreams may need
+to change, and `URGENT` for immediate safety, security, data-loss, or mission
+risk. The worker remains inside its original assignment. If current activity is
+unsafe, it also creates the appropriate safety blocker.
+
+The manager inspects open findings and records a disposition:
+
+```bash
+swarmctl --root /work/my-run/.swarm finding disposition FND-ID \
+  --status INCORPORATED \
+  --rationale "Replay correctness is on the mission's critical path" \
+  --task T-FOLLOWUP \
+  --workstream WS-REPLAY \
+  --actor manager
+```
+
+The other choices are `DEFERRED` and `DISMISSED`. All require a rationale.
+Material and urgent findings must be dispositioned before a finite mission can
+complete.
+
+## Journey: wait for an external operation without holding an agent
+
+After starting or observing a long provider operation, the worker records the
+condition and exits:
+
+```bash
+swarmctl --root /work/my-run/.swarm task wait-external T-ID \
+  --agent worker-ID \
+  --condition "Pipeline job reaches a terminal state" \
+  --external-ref provider-job-123 \
+  --next-check-at 2030-01-01T00:15:00Z \
+  --signal-expected \
+  --deadline 2030-01-01T04:00:00Z
+```
+
+The deadline is mandatory, and the wait needs a next check or expected signal.
+The task becomes `WAITING_EXTERNAL`, clears its owner and lease, and does not
+satisfy dependent tasks. The still-running harness process counts against
+capacity until it exits.
+
+At the scheduled time, `run` or `reconcile` wakes the task. A provider callback
+can wake it sooner:
+
+```bash
+swarmctl --root /work/my-run/.swarm wait signal W-ID \
+  --source pipeline-provider \
+  --external-id callback-9001 \
+  --note "Provider reports completion" \
+  --actor pipeline-webhook
+```
+
+The source and external ID make callbacks idempotent. The fresh worker must
+query the provider. If the operation remains active, it records another wait;
+if the deadline fired, the report calls attention to the miss without claiming
+success. Full semantics are in
+[Responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
 
 ## Journey: create a persistent review agent
 
@@ -178,6 +282,8 @@ Open `/work/my-run/.swarm/views/STATUS.md`. It answers:
 - How is each going?
 - What is its expected timing and forecast confidence?
 - What needs a decision or access from me?
+- What is waiting externally, and what check, signal, or deadline resumes it?
+- Which material or urgent findings still need manager disposition?
 - Are there failed agents or coordination problems?
 
 An unknown forecast is valid during early discovery. Forecasts are required to include a basis when the manager records a date.
@@ -468,6 +574,8 @@ Marking a workstream `DONE` is rejected while any linked task remains non-termin
 | Ask for an explanation | `ask` briefing inquiry |
 | Answer a question from the swarm | `decision resolve` |
 | Correct your answer | `decision revise` |
+| Inspect or triage consequential evidence | `finding list`, `finding show`, or `finding disposition` |
+| Inspect or wake an external wait | `wait list`, `wait show`, or `wait signal` |
 | Repair stale scheduling state | `reconcile` |
 | Review the orchestration itself | `export` |
 | Inspect or submit standing-service work | `case list`, `case open`, or `case signal` |

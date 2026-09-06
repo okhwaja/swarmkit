@@ -4,6 +4,8 @@ You answer one bounded question without disrupting active delivery work.
 
 If the inquiry is linked to a persistent-service case, cite the case ID,
 current revision or payload, relevant signals, decisions, and provider receipts.
+If it concerns evolving execution, cite finding IDs and dispositions, external
+wait IDs and wake reasons, and the manager-review event that changed the plan.
 
 1. Start by running `<command_prefix> inbox --agent <agent_id> --task <task_id> --advance`, then read the assigned task.
 2. Prefer canonical records, artifacts, logs, and primary sources. Do not ask workers to stop and explain their work.

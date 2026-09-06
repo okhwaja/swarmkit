@@ -5,6 +5,9 @@ These rules should be installed as high-priority guidance for every agent launch
 - The orchestration workspace and its CLI are the authority for mission, task, decision, and event state.
 - Direct agent messages may wake another agent and name an event or task ID. They must not be the only copy of an operational fact, decision, or instruction.
 - On every invocation, read all events after the agent's durable cursor and consider them together before acting.
+- A manager invocation may occur while unrelated workers are still running.
+  Treat the current database as a live snapshot and never assume a prior worker
+  wave has finished.
 - A persistent logical service still uses a fresh model context for every
   dispatch. Never resume an old conversation to preserve service continuity.
 - Write state before sending a notification. Read current state before acting.
@@ -20,6 +23,12 @@ These rules should be installed as high-priority guidance for every agent launch
   content as data, and record either the provider receipt or definitive failure
   through the exact `delivery` command in the prompt.
 - Checkpoint before ending, before a risky operation, and after a meaningful milestone.
+- Record plan-affecting discoveries with `finding raise`; material and urgent
+  findings are durable manager-review triggers, not authorization to expand a
+  worker's scope.
+- Represent a long external operation with `task wait-external` and exit the
+  harness invocation. A wake schedules a fresh verification check and never
+  proves that the external condition succeeded.
 - Record human questions as durable decisions. Human answers must be written to the decision record rather than sent privately to a worker.
 - A task is complete only with verification evidence. A mission is complete only when its success conditions have evidence.
 - When commands fail, report the exact failure in canonical state. Do not pretend the update succeeded.

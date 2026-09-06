@@ -1,11 +1,15 @@
 import json
 import concurrent.futures
 import contextlib
+import datetime as dt
 import io
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -330,12 +334,24 @@ class SwarmLifecycleTest(unittest.TestCase):
             case_table = upgraded.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='cases'"
             ).fetchone()
+            finding_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='findings'"
+            ).fetchone()
+            wait_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='external_waits'"
+            ).fetchone()
+            review_table = upgraded.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='manager_reviews'"
+            ).fetchone()
             self.assertEqual(version, swarmctl.SCHEMA_VERSION)
             self.assertIsNotNone(table)
             self.assertIsNotNone(policy_table)
             self.assertIsNotNone(extension_table)
             self.assertIsNotNone(delivery_table)
             self.assertIsNotNone(case_table)
+            self.assertIsNotNone(finding_table)
+            self.assertIsNotNone(wait_table)
+            self.assertIsNotNone(review_table)
             self.assertEqual(swarmctl.mission_mode(upgraded), "FINITE")
         finally:
             upgraded.close()
@@ -779,6 +795,419 @@ class SwarmLifecycleTest(unittest.TestCase):
         self.assertEqual(
             len(list((self.root / "prompts").glob("*-manager-setup-check-manager.md"))), 1
         )
+
+    def configure_responsive_runner(self, max_parallel=2):
+        config_path = self.root / "runner.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["command"] = [sys.executable, "-c", "pass", "{prompt_file}"]
+        config["max_parallel"] = max_parallel
+        config["scheduler_poll_seconds"] = 0.01
+        config["manager_review_debounce_seconds"] = 0
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    @staticmethod
+    def future_time(hours):
+        value = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) + dt.timedelta(hours=hours)
+        return value.isoformat().replace("+00:00", "Z")
+
+    def test_acceptance_1_mixed_duration_work_replans_before_slow_task_ends(self):
+        self.configure_responsive_runner(max_parallel=2)
+        follow_started = threading.Event()
+        slow_finished = threading.Event()
+        manager_calls = []
+
+        def fake_dispatch(root, role, agent, task_id=None, dry_run=False):
+            conn = swarmctl.connect(root)
+            try:
+                if role == "manager":
+                    manager_calls.append(time.monotonic())
+                    tasks = conn.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()
+                    titles = {row["title"] for row in tasks}
+                    if not tasks:
+                        swarmctl.add_task(conn, "Fast evidence", "Return quickly", "discovery",
+                                          ["Evidence recorded"], [], 80, "manager", True)
+                        swarmctl.add_task(conn, "Slow evidence", "Remain active", "discovery",
+                                          ["Evidence recorded"], [], 70, "manager", True)
+                    elif "Follow fast evidence" not in titles and any(
+                        row["title"] == "Fast evidence" and row["status"] == "DONE" for row in tasks
+                    ):
+                        swarmctl.add_task(conn, "Follow fast evidence", "Act on the quick result",
+                                          "discovery", ["Follow-up recorded"], [], 75,
+                                          "manager", True)
+                    elif tasks and all(row["status"] in swarmctl.TERMINAL_TASK_STATES for row in tasks):
+                        swarmctl.complete_mission(conn, "All responsive work verified", "manager")
+                else:
+                    task = swarmctl.task_row(conn, task_id)
+                    if task["title"] == "Fast evidence":
+                        swarmctl.complete_task(conn, task_id, agent, "Fast result",
+                                               ["Fast evidence verified"], [])
+                    elif task["title"] == "Slow evidence":
+                        self.assertTrue(follow_started.wait(3), "follow-up did not start responsively")
+                        slow_finished.set()
+                        swarmctl.complete_task(conn, task_id, agent, "Slow result",
+                                               ["Slow evidence verified"], [])
+                    else:
+                        self.assertFalse(slow_finished.is_set())
+                        follow_started.set()
+                        swarmctl.complete_task(conn, task_id, agent, "Follow-up result",
+                                               ["Follow-up verified"], [])
+            finally:
+                conn.close()
+            return {"run_id": "fake-%s" % agent, "exit_code": 0}
+
+        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+            result = swarmctl.run_loop(self.root, 10)
+        self.assertEqual(result["state"], "DONE")
+        self.assertTrue(follow_started.is_set())
+        self.assertGreaterEqual(len(manager_calls), 3)
+
+    def test_acceptance_2_material_finding_is_triaged_while_worker_remains_active(self):
+        self.configure_responsive_runner(max_parallel=2)
+        triaged = threading.Event()
+        worker_finished = threading.Event()
+        observed_active_at_triage = []
+
+        def fake_dispatch(root, role, agent, task_id=None, dry_run=False):
+            conn = swarmctl.connect(root)
+            try:
+                if role == "manager":
+                    task = conn.execute("SELECT * FROM tasks LIMIT 1").fetchone()
+                    finding = conn.execute("SELECT * FROM findings LIMIT 1").fetchone()
+                    if not task:
+                        swarmctl.add_task(conn, "Inspect retries", "Inspect replay behavior", "discovery",
+                                          ["Behavior explained"], [], 80, "manager", True)
+                    elif finding and finding["status"] == "OPEN":
+                        observed_active_at_triage.append(
+                            swarmctl.task_row(conn, task["id"])["status"] in swarmctl.ACTIVE_TASK_STATES
+                        )
+                        swarmctl.dispose_finding(
+                            conn, finding["id"], "DEFERRED", "Bounded task should finish first",
+                            "manager",
+                        )
+                        triaged.set()
+                    elif task["status"] == "DONE":
+                        swarmctl.complete_mission(conn, "Finding triaged and task verified", "manager")
+                else:
+                    swarmctl.raise_finding(
+                        conn, task_id, agent, "MATERIAL", "Retries may duplicate records",
+                        ["log:event-42", "src/retry.py:18"],
+                        "May require a replay-safety workstream", "Inspect idempotency boundaries",
+                    )
+                    self.assertTrue(triaged.wait(3), "manager did not triage in-flight finding")
+                    swarmctl.complete_task(conn, task_id, agent, "Retry behavior explained",
+                                           ["Relevant retry path inspected"], [])
+                    worker_finished.set()
+            finally:
+                conn.close()
+            return {"run_id": "fake-%s" % agent, "exit_code": 0}
+
+        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+            result = swarmctl.run_loop(self.root, 8)
+        self.assertEqual(result["state"], "DONE")
+        self.assertEqual(observed_active_at_triage, [True])
+        self.assertTrue(worker_finished.is_set())
+
+    def test_acceptance_3_external_polling_uses_fresh_short_checks(self):
+        conn = self.connection()
+        try:
+            task = swarmctl.add_task(conn, "Watch pipeline", "Verify provider job", "verification",
+                                     ["Provider result verified"], [], 80, "manager", True)
+            deadline = self.future_time(8)
+            for attempt in range(1, 4):
+                agent = "poller-%d" % attempt
+                swarmctl.claim_task(conn, task, agent, 1800)
+                wait = swarmctl.start_external_wait(
+                    conn, task, agent, "Pipeline job is terminal", "job-123", deadline,
+                    self.future_time(attempt), signal_expected=True,
+                )
+                self.assertEqual(wait["status"], "WAITING")
+                self.assertIsNone(swarmctl.task_row(conn, task)["owner"])
+                swarmctl.reconcile_conn(conn, at=self.future_time(attempt))
+                self.assertEqual(swarmctl.task_row(conn, task)["status"], "READY")
+            swarmctl.claim_task(conn, task, "poller-4", 1800)
+            swarmctl.complete_task(conn, task, "poller-4", "Pipeline succeeded",
+                                   ["Queried provider job-123 and verified terminal output"], [])
+            waits = conn.execute("SELECT * FROM external_waits ORDER BY created_at").fetchall()
+            self.assertEqual(len(waits), 3)
+            self.assertTrue(all(row["status"] == "WOKEN" for row in waits))
+            self.assertTrue(all(row["wake_reason"] == "SCHEDULED_CHECK" for row in waits))
+            self.assertEqual(swarmctl.task_row(conn, task)["generation"], 4)
+        finally:
+            conn.close()
+
+    def test_acceptance_4_repeated_concurrent_signals_wake_once_and_require_verification(self):
+        conn = self.connection()
+        try:
+            task = swarmctl.add_task(conn, "Watch import", "Verify import completion", "verification",
+                                     ["Import verified"], [], 80, "manager", True)
+            swarmctl.claim_task(conn, task, "watcher", 1800)
+            wait = swarmctl.start_external_wait(
+                conn, task, "watcher", "Import is terminal", "import-99",
+                self.future_time(4), signal_expected=True,
+            )
+        finally:
+            conn.close()
+
+        def send(index):
+            local = self.connection()
+            try:
+                return swarmctl.signal_external_wait(
+                    local, wait["id"], "provider", "callback-%d" % index,
+                    "webhook", "provider reports completion",
+                )
+            finally:
+                local.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            signals = list(pool.map(send, [1, 2]))
+        self.assertEqual(sum(1 for item in signals if item["woke"]), 1)
+        replay = send(1)
+        self.assertFalse(replay["signal_created"])
+        self.assertFalse(replay["woke"])
+        conn = self.connection()
+        try:
+            task_row = swarmctl.task_row(conn, task)
+            self.assertEqual(task_row["status"], "READY")
+            self.assertIn("Verify external condition", task_row["next_action"])
+            self.assertIsNone(task_row["result"])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) AS n FROM external_waits WHERE id=? AND status='WOKEN'",
+                (wait["id"],),
+            ).fetchone()["n"], 1)
+            swarmctl.claim_task(conn, task, "verifier-after-signal", 1800)
+            swarmctl.complete_task(
+                conn, task, "verifier-after-signal", "Import completed",
+                ["Queried import-99 after the callback and verified provider output"], [],
+            )
+            self.assertEqual(swarmctl.task_row(conn, task)["status"], "DONE")
+        finally:
+            conn.close()
+
+    def test_acceptance_5_deadline_wakes_for_attention_without_success(self):
+        conn = self.connection()
+        try:
+            task = swarmctl.add_task(conn, "Watch deployment", "Verify deployment", "verification",
+                                     ["Deployment verified"], [], 80, "manager", True)
+            swarmctl.claim_task(conn, task, "watcher", 1800)
+            deadline = self.future_time(2)
+            wait = swarmctl.start_external_wait(
+                conn, task, "watcher", "Deployment is terminal", "deploy-77",
+                deadline, signal_expected=True,
+            )
+            swarmctl.reconcile_conn(conn, at=self.future_time(3))
+            current_wait = swarmctl.external_wait_dict(conn, swarmctl.external_wait_row(conn, wait["id"]))
+            self.assertEqual(current_wait["wake_reason"], "DEADLINE")
+            self.assertTrue(current_wait["requires_attention"])
+            self.assertEqual(swarmctl.task_row(conn, task)["status"], "READY")
+            self.assertIsNone(swarmctl.task_row(conn, task)["result"])
+        finally:
+            conn.close()
+        report = swarmctl.render_status_report(self.root).read_text(encoding="utf-8")
+        self.assertIn("reached its deadline", report)
+        self.assertIn("not assumed successful", report)
+
+    def test_acceptance_6_restart_preserves_wait_finding_and_history(self):
+        conn = self.connection()
+        task = swarmctl.add_task(conn, "Observe job", "Inspect an external job", "discovery",
+                                 ["Job state recorded"], [], 70, "manager", True)
+        swarmctl.claim_task(conn, task, "observer", 1800)
+        finding = swarmctl.raise_finding(
+            conn, task, "observer", "MATERIAL", "Job metadata is inconsistent",
+            ["provider:job-5", "event:E-5"], "May invalidate the planned recovery",
+            "Compare provider and destination state",
+        )
+        wait = swarmctl.start_external_wait(
+            conn, task, "observer", "Job reaches a terminal state", "job-5",
+            self.future_time(5), self.future_time(2), True,
+        )
+        conn.close()
+
+        restarted = self.connection()
+        try:
+            self.assertEqual(swarmctl.task_row(restarted, task)["status"], "WAITING_EXTERNAL")
+            self.assertEqual(swarmctl.external_wait_row(restarted, wait["id"])["condition"],
+                             "Job reaches a terminal state")
+            self.assertEqual(swarmctl.finding_row(restarted, finding)["status"], "OPEN")
+            events = [row["event_type"] for row in restarted.execute("SELECT * FROM events ORDER BY seq")]
+            self.assertIn("FINDING_RAISED", events)
+            self.assertIn("EXTERNAL_WAIT_STARTED", events)
+            self.assertTrue(swarmctl.doctor(restarted)["ok"])
+        finally:
+            restarted.close()
+
+    def test_acceptance_7_findings_receive_all_dispositions_and_audit_links(self):
+        conn = self.connection()
+        try:
+            stream = swarmctl.add_workstream(conn, "Replay safety", "Prove replay is safe",
+                                             "manager", "ACTIVE")
+            source_tasks = []
+            finding_ids = []
+            for index in range(3):
+                task = swarmctl.add_task(
+                    conn, "Source %d" % index, "Gather evidence", "discovery",
+                    ["Evidence recorded"], [], 60 - index, "manager", True, stream,
+                )
+                source_tasks.append(task)
+                agent = "finder-%d" % index
+                swarmctl.claim_task(conn, task, agent, 1800)
+                finding_ids.append(swarmctl.raise_finding(
+                    conn, task, agent, "MATERIAL", "Finding %d" % index,
+                    ["artifact:%d" % index], "Could change replay planning", "Bounded follow-up",
+                ))
+                swarmctl.complete_task(conn, task, agent, "Evidence gathered",
+                                       ["Evidence %d verified" % index], [])
+            with self.assertRaises(swarmctl.SwarmError):
+                swarmctl.complete_mission(conn, "Too early", "manager")
+            follow = swarmctl.add_task(conn, "Investigate first finding", "Bounded follow-up",
+                                       "discovery", ["Finding resolved"], [], 55,
+                                       "manager", False, stream)
+            swarmctl.dispose_finding(conn, finding_ids[0], "INCORPORATED", "Creates bounded work",
+                                     "manager", [follow], [stream])
+            swarmctl.dispose_finding(conn, finding_ids[1], "DEFERRED", "Useful but not on critical path",
+                                     "manager")
+            swarmctl.dispose_finding(conn, finding_ids[2], "DISMISSED", "Evidence duplicates known behavior",
+                                     "manager")
+            states = [swarmctl.finding_row(conn, value)["status"] for value in finding_ids]
+            self.assertEqual(states, ["INCORPORATED", "DEFERRED", "DISMISSED"])
+        finally:
+            conn.close()
+        audit = self.base / "finding-audit.zip"
+        swarmctl.export_audit(self.root, audit)
+        with zipfile.ZipFile(str(audit)) as archive:
+            snapshot = json.loads(archive.read("swarm-audit/snapshot.json"))
+            incorporated = next(item for item in snapshot["findings"] if item["id"] == finding_ids[0])
+            self.assertEqual(incorporated["resulting_tasks"], [follow])
+            events = [json.loads(line) for line in archive.read("swarm-audit/events.jsonl").decode().splitlines()]
+            dispositions = [item for item in events if item["event_type"] == "FINDING_DISPOSITIONED"]
+            self.assertEqual(len(dispositions), 3)
+
+    def test_acceptance_8_routine_checkpoints_do_not_churn_manager(self):
+        self.configure_responsive_runner(max_parallel=2)
+        manager_calls = []
+
+        def fake_dispatch(root, role, agent, task_id=None, dry_run=False):
+            conn = swarmctl.connect(root)
+            try:
+                if role == "manager":
+                    manager_calls.append(time.monotonic())
+                    task = conn.execute("SELECT * FROM tasks LIMIT 1").fetchone()
+                    if not task:
+                        swarmctl.add_task(conn, "Routine work", "Checkpoint normally", "discovery",
+                                          ["Work verified"], [], 50, "manager", True)
+                    elif task["status"] == "DONE":
+                        swarmctl.complete_mission(conn, "Routine work verified", "manager")
+                else:
+                    for index in range(5):
+                        swarmctl.checkpoint_task(
+                            conn, task_id, agent, "Routine checkpoint %d" % index,
+                            "Continue bounded work", 1800,
+                        )
+                        time.sleep(0.02)
+                    self.assertEqual(conn.execute(
+                        "SELECT COUNT(*) AS n FROM manager_reviews WHERE status='PENDING'"
+                    ).fetchone()["n"], 0)
+                    swarmctl.complete_task(conn, task_id, agent, "Routine work done",
+                                           ["Final state verified"], [])
+            finally:
+                conn.close()
+            return {"run_id": "fake-%s" % agent, "exit_code": 0}
+
+        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+            result = swarmctl.run_loop(self.root, 6)
+        self.assertEqual(result["state"], "DONE")
+        self.assertEqual(len(manager_calls), 2)
+
+    def test_responsive_cli_round_trip_for_finding_and_external_wait(self):
+        conn = self.connection()
+        try:
+            task = swarmctl.add_task(
+                conn, "Inspect provider", "Inspect provider state", "discovery",
+                ["Provider state verified"], [], 70, "manager", True,
+            )
+            swarmctl.claim_task(conn, task, "worker-cli", 1800)
+        finally:
+            conn.close()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(swarmctl.main([
+                "--root", str(self.root), "finding", "raise",
+                "--task", task, "--agent", "worker-cli", "--significance", "material",
+                "--summary", "Provider state contradicts the plan",
+                "--evidence", "provider:job-17", "--impact", "Recovery may need another step",
+                "--recommendation", "Inspect the provider result",
+            ]), 0)
+        finding = json.loads(output.getvalue())
+        self.assertEqual(finding["status"], "OPEN")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(swarmctl.main([
+                "--root", str(self.root), "task", "wait-external", task,
+                "--agent", "worker-cli", "--condition", "Provider job is terminal",
+                "--external-ref", "job-17", "--deadline", self.future_time(4),
+                "--signal-expected",
+            ]), 0)
+        wait = json.loads(output.getvalue())
+        self.assertEqual(wait["status"], "WAITING")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(swarmctl.main([
+                "--root", str(self.root), "wait", "signal", wait["id"],
+                "--source", "provider", "--external-id", "callback-17",
+                "--note", "Terminal notification",
+            ]), 0)
+        signal = json.loads(output.getvalue())
+        self.assertTrue(signal["woke"])
+        self.assertEqual(signal["wake_reason"], "EXTERNAL_SIGNAL")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(swarmctl.main([
+                "--root", str(self.root), "finding", "disposition", finding["id"],
+                "--status", "deferred", "--rationale", "Verify the wake first",
+            ]), 0)
+        disposition = json.loads(output.getvalue())
+        self.assertEqual(disposition["status"], "DEFERRED")
+
+    def test_external_wait_survives_the_dispatch_process_exit(self):
+        self.configure_responsive_runner(max_parallel=2)
+        task_ids = []
+
+        def fake_dispatch(root, role, agent, task_id=None, dry_run=False):
+            conn = swarmctl.connect(root)
+            try:
+                if role == "manager":
+                    if not task_ids:
+                        task_ids.append(swarmctl.add_task(
+                            conn, "Wait for provider", "Verify provider completion", "verification",
+                            ["Provider completion verified"], [], 70, "manager", True,
+                        ))
+                else:
+                    swarmctl.start_external_wait(
+                        conn, task_id, agent, "Provider job is terminal", "job-process-exit",
+                        self.future_time(4), signal_expected=True,
+                    )
+            finally:
+                conn.close()
+            return {"run_id": "fake-%s" % agent, "exit_code": 0}
+
+        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+            result = swarmctl.run_loop(self.root, 4)
+        self.assertEqual(result["state"], "WAITING_EXTERNAL")
+        conn = self.connection()
+        try:
+            row = swarmctl.task_row(conn, task_ids[0])
+            self.assertEqual(row["status"], "WAITING_EXTERNAL")
+            self.assertIsNone(row["owner"])
+            self.assertIsNone(row["lease_until"])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) AS n FROM external_waits WHERE task_id=? AND status='WAITING'",
+                (task_ids[0],),
+            ).fetchone()["n"], 1)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

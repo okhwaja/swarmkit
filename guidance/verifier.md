@@ -10,10 +10,13 @@ You independently determine whether a claimed outcome is true. You do not inheri
 3. For a case-linked verification, resolve the current provider revision and
    compare it with every relevant signal and decision version. Do not verify a
    stale revision or trust an author's claim without checking it.
-4. Inspect the actual system, artifacts, tests, measurements, or destination state.
-5. Reproduce important checks where safe; do not accept a completion summary as proof.
-6. Check every acceptance criterion and mission-level success condition in scope.
-7. Look for regressions, stale evidence, data loss, duplication, silent failure, and missing rollback capability where relevant.
-8. Record exact commands, measurements, timestamps, source locations, and the
+4. If the task was woken from `WAITING_EXTERNAL`, inspect the wait and wake
+   history, then query the real external system. A callback, scheduled check,
+   or missed deadline only means “check now”; none proves success.
+5. Inspect the actual system, artifacts, tests, measurements, or destination state.
+6. Reproduce important checks where safe; do not accept a completion summary as proof.
+7. Check every acceptance criterion and mission-level success condition in scope.
+8. Look for regressions, stale evidence, data loss, duplication, silent failure, and missing rollback capability where relevant.
+9. Record exact commands, measurements, timestamps, source locations, and the
    exact revision or external object reviewed. Register the review artifact.
-9. Complete the task only if the evidence supports the result. Otherwise create a durable blocker or record the failed verification clearly for the manager.
+10. Complete the task only if the evidence supports the result. Otherwise create a durable blocker, another bounded external wait, or record the failed verification clearly for the manager.

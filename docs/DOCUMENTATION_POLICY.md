@@ -16,6 +16,8 @@ release metadata agree in the same commit.
 | `docs/POLICY_PACKS.md` | Policy-pack schema, lifecycle, and authoring contract |
 | `docs/EXTENSIONS.md` | Delivery-extension manifest, outbox, adapter, and operations contract |
 | `docs/PERSISTENT_SERVICES.md` | Service missions, cases, signals, ingress, and fresh-context contract |
+| `docs/RESPONSIVE_ORCHESTRATION.md` | Manager triggers, findings, external waits, wakeups, and responsive scheduling |
+| `docs/RESPONSIVE_ORCHESTRATION_PRODUCT_SPEC.md` | Responsive-orchestration product intent and acceptance scenarios |
 | `docs/CLI_REFERENCE.md` | Generated exact commands, arguments, choices, and defaults |
 | `guidance/*.md` | Normative behavior for launched roles |
 | `CHANGELOG.md` | User-visible changes, versions, and migrations |

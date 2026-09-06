@@ -16,13 +16,18 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import zipfile
 
 
-VERSION = "0.5.0"
-SCHEMA_VERSION = "5"
+VERSION = "0.6.0"
+SCHEMA_VERSION = "6"
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
 TERMINAL_TASK_STATES = {"DONE", "CANCELLED"}
+VALID_TASK_STATES = {
+    "PROPOSED", "READY", "CLAIMED", "RUNNING", "VERIFYING", "BLOCKED",
+    "WAITING_EXTERNAL", "DONE", "CANCELLED",
+}
 VALID_TASK_KINDS = {"discovery", "implementation", "verification", "briefing"}
 VALID_WORKSTREAM_STATES = {"PLANNED", "ACTIVE", "BLOCKED", "VERIFYING", "DONE", "CANCELLED"}
 VALID_FORECAST_CONFIDENCE = {"low", "medium", "high"}
@@ -37,6 +42,11 @@ VALID_BLOCKER_KINDS = {
 VALID_DELIVERY_STATES = {"PENDING", "CLAIMED", "SENT", "FAILED", "CANCELLED"}
 VALID_CASE_STATES = {"OPEN", "ACTIVE", "WAITING_HUMAN", "WAITING_EXTERNAL", "VERIFYING", "DONE", "CANCELLED"}
 VALID_MISSION_MODES = {"FINITE", "SERVICE"}
+VALID_FINDING_SIGNIFICANCE = {"ROUTINE", "MATERIAL", "URGENT"}
+VALID_FINDING_STATES = {"OPEN", "INCORPORATED", "DEFERRED", "DISMISSED"}
+VALID_WAIT_STATES = {"WAITING", "WOKEN", "CANCELLED"}
+VALID_WAKE_REASONS = {"SCHEDULED_CHECK", "EXTERNAL_SIGNAL", "DEADLINE"}
+VALID_MANAGER_REVIEW_STATES = {"PENDING", "RUNNING", "DONE"}
 
 
 class SwarmError(Exception):
@@ -244,6 +254,77 @@ CREATE TABLE IF NOT EXISTS case_signals (
     created_at TEXT NOT NULL,
     UNIQUE (mission_id, source, external_id)
 );
+CREATE TABLE IF NOT EXISTS findings (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    significance TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    mission_impact TEXT NOT NULL,
+    recommendation TEXT,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    disposition_rationale TEXT,
+    disposed_by TEXT,
+    disposed_at TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS finding_tasks (
+    finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+    PRIMARY KEY (finding_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS finding_workstreams (
+    finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+    workstream_id TEXT NOT NULL REFERENCES workstreams(id) ON DELETE RESTRICT,
+    PRIMARY KEY (finding_id, workstream_id)
+);
+CREATE TABLE IF NOT EXISTS external_waits (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    condition TEXT NOT NULL,
+    external_ref TEXT NOT NULL,
+    next_check_at TEXT,
+    deadline_at TEXT NOT NULL,
+    signal_expected INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'WAITING',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    woke_at TEXT,
+    wake_reason TEXT,
+    wake_source TEXT,
+    wake_external_id TEXT,
+    wake_note TEXT
+);
+CREATE TABLE IF NOT EXISTS wait_signals (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    wait_id TEXT NOT NULL REFERENCES external_waits(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    note TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (mission_id, source, external_id)
+);
+CREATE TABLE IF NOT EXISTS manager_reviews (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    urgency TEXT NOT NULL DEFAULT 'NORMAL',
+    triggers_json TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    owner TEXT,
+    lease_until TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS extensions (
     id TEXT PRIMARY KEY,
     version TEXT NOT NULL,
@@ -394,6 +475,16 @@ CREATE INDEX IF NOT EXISTS idx_policy_application_tasks_task ON policy_applicati
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_case_tasks_case ON case_tasks(case_id);
 CREATE INDEX IF NOT EXISTS idx_case_signals_case ON case_signals(case_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, significance, created_at);
+CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(source_task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_external_waits_task ON external_waits(task_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_external_waits_active_task
+    ON external_waits(task_id) WHERE status='WAITING';
+CREATE INDEX IF NOT EXISTS idx_external_waits_due
+    ON external_waits(status, next_check_at, deadline_at);
+CREATE INDEX IF NOT EXISTS idx_wait_signals_wait ON wait_signals(wait_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_manager_reviews_status
+    ON manager_reviews(status, urgency, requested_at);
 CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_runs_delivery ON delivery_runs(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_events_seq ON events(seq);
@@ -454,6 +545,8 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
         "working_directory": str(root.parent),
         "max_parallel": 3,
         "timeout_seconds": 3600,
+        "scheduler_poll_seconds": 1,
+        "manager_review_debounce_seconds": 1,
         "models": {
             "manager": "",
             "worker": "",
@@ -1592,21 +1685,448 @@ def unresolved_ack_count(conn, task_id):
     ).fetchone()["n"]
 
 
-def reconcile_conn(conn, actor="reconciler"):
+def request_manager_review(conn, reason, entity_type, entity_id, urgency="NORMAL"):
+    """Coalesce meaningful changes into one durable, serialized manager review."""
+    urgency = urgency.upper()
+    if urgency not in {"NORMAL", "URGENT"}:
+        raise SwarmError("Manager review urgency must be NORMAL or URGENT")
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    current_mission = mission(conn)
     now = utcnow()
+    trigger = {
+        "reason": reason, "entity_type": entity_type, "entity_id": entity_id,
+        "requested_at": now,
+    }
+    pending = conn.execute(
+        "SELECT * FROM manager_reviews WHERE mission_id=? AND status='PENDING' ORDER BY requested_at LIMIT 1",
+        (current_mission["id"],),
+    ).fetchone()
+    if pending:
+        triggers = json_load(pending["triggers_json"], [])
+        identity = (reason, entity_type, entity_id)
+        if any((item["reason"], item["entity_type"], item["entity_id"]) == identity for item in triggers):
+            if owns_transaction:
+                conn.commit()
+            return pending["id"], False
+        triggers.append(trigger)
+        review_id = pending["id"]
+        next_urgency = "URGENT" if urgency == "URGENT" or pending["urgency"] == "URGENT" else "NORMAL"
+        conn.execute(
+            "UPDATE manager_reviews SET urgency=?, triggers_json=?, updated_at=? WHERE id=?",
+            (next_urgency, json_dump(triggers), now, review_id),
+        )
+    else:
+        review_id = make_id("MR")
+        conn.execute(
+            """INSERT INTO manager_reviews(id, mission_id, urgency, triggers_json,
+               requested_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?)""",
+            (review_id, current_mission["id"], urgency, json_dump([trigger]), now, now, now),
+        )
+    add_event(conn, current_mission["id"], "manager_review", review_id,
+              "MANAGER_REVIEW_REQUESTED", "system", trigger | {"urgency": urgency})
+    if owns_transaction:
+        conn.commit()
+    return review_id, True
+
+
+def manager_review_dict(row):
+    data = dict(row)
+    data["triggers"] = json_load(data.pop("triggers_json"), [])
+    end = parse_time(data["completed_at"]) if data["completed_at"] else parse_time(utcnow())
+    data["age_seconds"] = max(
+        0, int((end - parse_time(data["requested_at"])).total_seconds())
+    )
+    return data
+
+
+def reconcile_manager_reviews(conn, actor="reconciler", at=None):
+    now = canonical_time(at) if at else utcnow()
+    expired = conn.execute(
+        """SELECT * FROM manager_reviews WHERE status='RUNNING'
+           AND lease_until IS NOT NULL AND lease_until < ?""", (now,),
+    ).fetchall()
+    changed = []
+    for row in expired:
+        updated = conn.execute(
+            """UPDATE manager_reviews SET status='PENDING', owner=NULL, lease_until=NULL,
+               started_at=NULL, updated_at=?
+               WHERE id=? AND status='RUNNING' AND lease_until=?""",
+            (now, row["id"], row["lease_until"]),
+        )
+        if updated.rowcount != 1:
+            continue
+        add_event(conn, row["mission_id"], "manager_review", row["id"],
+                  "MANAGER_REVIEW_LEASE_EXPIRED", actor, {"previous_owner": row["owner"]})
+        changed.append((row["id"], "PENDING"))
+    return changed
+
+
+def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
+    now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    due_before = (now_dt - dt.timedelta(seconds=debounce_seconds)).isoformat().replace("+00:00", "Z")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        reconcile_manager_reviews(conn)
+        row = conn.execute(
+            """SELECT * FROM manager_reviews WHERE status='PENDING'
+               AND (urgency='URGENT' OR requested_at<=?)
+               ORDER BY CASE urgency WHEN 'URGENT' THEN 0 ELSE 1 END, requested_at LIMIT 1""",
+            (due_before,),
+        ).fetchone()
+        if not row:
+            conn.commit()
+            return None
+        lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
+        changed = conn.execute(
+            """UPDATE manager_reviews SET status='RUNNING', owner=?, started_at=?,
+               lease_until=?, updated_at=? WHERE id=? AND status='PENDING'""",
+            (agent, utcnow(), lease, utcnow(), row["id"]),
+        )
+        if changed.rowcount != 1:
+            raise SwarmError("Manager review was claimed concurrently")
+        add_event(conn, row["mission_id"], "manager_review", row["id"],
+                  "MANAGER_REVIEW_STARTED", agent, {"lease_until": lease})
+        conn.commit()
+        return manager_review_dict(conn.execute(
+            "SELECT * FROM manager_reviews WHERE id=?", (row["id"],)
+        ).fetchone())
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def finish_manager_review(conn, review_id, agent, succeeded):
+    row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown manager review: %s" % review_id)
+    if row["status"] != "RUNNING" or row["owner"] != agent:
+        raise SwarmError("Manager review %s is not owned by %s" % (review_id, agent))
+    now = utcnow()
+    status = "DONE" if succeeded else "PENDING"
+    conn.execute(
+        """UPDATE manager_reviews SET status=?, owner=NULL, lease_until=NULL,
+           completed_at=?, updated_at=? WHERE id=?""",
+        (status, now if succeeded else None, now, review_id),
+    )
+    add_event(conn, row["mission_id"], "manager_review", review_id,
+              "MANAGER_REVIEW_COMPLETED" if succeeded else "MANAGER_REVIEW_FAILED",
+              agent, {"status": status})
+    if succeeded:
+        open_consequential = conn.execute(
+            """SELECT significance FROM findings
+               WHERE status='OPEN' AND significance IN ('MATERIAL','URGENT')"""
+        ).fetchall()
+        if open_consequential:
+            urgency = (
+                "URGENT" if any(item["significance"] == "URGENT" for item in open_consequential)
+                else "NORMAL"
+            )
+            request_manager_review(
+                conn, "consequential finding still needs disposition", "mission",
+                row["mission_id"], urgency,
+            )
+    conn.commit()
+
+
+def finding_row(conn, finding_id):
+    row = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown finding: %s" % finding_id)
+    return row
+
+
+def finding_dict(conn, row):
+    data = dict(row)
+    data["evidence"] = json_load(data.pop("evidence_json"), [])
+    age_end = parse_time(data["disposed_at"]) if data["disposed_at"] else parse_time(utcnow())
+    data["age_seconds"] = max(
+        0, int((age_end - parse_time(data["created_at"])).total_seconds())
+    )
+    data["resulting_tasks"] = [item["task_id"] for item in conn.execute(
+        "SELECT task_id FROM finding_tasks WHERE finding_id=? ORDER BY task_id", (row["id"],)
+    )]
+    data["resulting_workstreams"] = [item["workstream_id"] for item in conn.execute(
+        "SELECT workstream_id FROM finding_workstreams WHERE finding_id=? ORDER BY workstream_id",
+        (row["id"],),
+    )]
+    return data
+
+
+def raise_finding(conn, task_id, agent, significance, summary, evidence,
+                  mission_impact, recommendation=None):
+    task = task_row(conn, task_id)
+    require_owner(task, agent)
+    significance = significance.upper()
+    if significance not in VALID_FINDING_SIGNIFICANCE:
+        raise SwarmError("Invalid finding significance: %s" % significance)
+    evidence = [item.strip() for item in evidence if item.strip()]
+    if not summary.strip() or not evidence or not mission_impact.strip():
+        raise SwarmError("A finding requires summary, source-backed evidence, and mission impact")
+    finding_id = make_id("FND")
+    now = utcnow()
+    conn.execute(
+        """INSERT INTO findings(id, mission_id, source_task_id, significance, summary,
+           evidence_json, mission_impact, recommendation, created_by, created_at, updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (finding_id, task["mission_id"], task_id, significance, summary.strip(),
+         json_dump(evidence), mission_impact.strip(),
+         recommendation.strip() if recommendation else None, agent, now, now),
+    )
+    add_event(conn, task["mission_id"], "finding", finding_id, "FINDING_RAISED", agent, {
+        "source_task_id": task_id, "significance": significance, "summary": summary.strip(),
+        "evidence": evidence, "mission_impact": mission_impact.strip(),
+        "recommendation": recommendation,
+    })
+    if significance in {"MATERIAL", "URGENT"}:
+        request_manager_review(
+            conn, "consequential finding raised", "finding", finding_id,
+            "URGENT" if significance == "URGENT" else "NORMAL",
+        )
+    conn.commit()
+    return finding_id
+
+
+def dispose_finding(conn, finding_id, disposition, rationale, actor,
+                    task_ids=None, workstream_ids=None):
+    row = finding_row(conn, finding_id)
+    disposition = disposition.upper()
+    if disposition not in VALID_FINDING_STATES - {"OPEN"}:
+        raise SwarmError("Finding disposition must be INCORPORATED, DEFERRED, or DISMISSED")
+    if row["status"] != "OPEN":
+        raise SwarmError("Finding %s is already %s" % (finding_id, row["status"]))
+    if not rationale.strip():
+        raise SwarmError("Finding disposition requires a rationale")
+    task_ids = task_ids or []
+    workstream_ids = workstream_ids or []
+    for task_id in task_ids:
+        task = task_row(conn, task_id)
+        if task["mission_id"] != row["mission_id"]:
+            raise SwarmError("Resulting task belongs to a different mission")
+    for workstream_id in workstream_ids:
+        workstream = workstream_row(conn, workstream_id)
+        if workstream["mission_id"] != row["mission_id"]:
+            raise SwarmError("Resulting workstream belongs to a different mission")
+    now = utcnow()
+    conn.execute(
+        """UPDATE findings SET status=?, disposition_rationale=?, disposed_by=?,
+           disposed_at=?, updated_at=? WHERE id=?""",
+        (disposition, rationale.strip(), actor, now, now, finding_id),
+    )
+    for task_id in task_ids:
+        conn.execute("INSERT OR IGNORE INTO finding_tasks(finding_id, task_id) VALUES(?,?)",
+                     (finding_id, task_id))
+    for workstream_id in workstream_ids:
+        conn.execute(
+            "INSERT OR IGNORE INTO finding_workstreams(finding_id, workstream_id) VALUES(?,?)",
+            (finding_id, workstream_id),
+        )
+    add_event(conn, row["mission_id"], "finding", finding_id, "FINDING_DISPOSITIONED", actor, {
+        "disposition": disposition, "rationale": rationale.strip(),
+        "resulting_tasks": task_ids, "resulting_workstreams": workstream_ids,
+    })
+    conn.commit()
+    return finding_dict(conn, finding_row(conn, finding_id))
+
+
+def external_wait_row(conn, wait_id):
+    row = conn.execute("SELECT * FROM external_waits WHERE id=?", (wait_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown external wait: %s" % wait_id)
+    return row
+
+
+def external_wait_dict(conn, row, at=None):
+    data = dict(row)
+    data["signal_expected"] = bool(data["signal_expected"])
+    now = parse_time(canonical_time(at) if at else utcnow())
+    end = parse_time(data["woke_at"]) if data["woke_at"] else now
+    data["waiting_seconds"] = max(0, int((end - parse_time(data["created_at"])).total_seconds()))
+    data["overdue"] = data["status"] == "WAITING" and parse_time(data["deadline_at"]) <= now
+    task = task_row(conn, data["task_id"])
+    data["task_status"] = task["status"]
+    data["requires_attention"] = (
+        data["wake_reason"] == "DEADLINE" and task["status"] not in TERMINAL_TASK_STATES
+    )
+    data["signals"] = [dict(item) for item in conn.execute(
+        "SELECT * FROM wait_signals WHERE wait_id=? ORDER BY created_at", (row["id"],)
+    )]
+    return data
+
+
+def start_external_wait(conn, task_id, agent, condition, external_ref, deadline_at,
+                        next_check_at=None, signal_expected=False):
+    task = task_row(conn, task_id)
+    require_owner(task, agent)
+    if unresolved_ack_count(conn, task_id):
+        raise SwarmError("A resolved decision affecting %s has not been acknowledged" % task_id)
+    if not condition.strip() or not external_ref.strip():
+        raise SwarmError("External wait requires a condition and external reference")
+    if not next_check_at and not signal_expected:
+        raise SwarmError("External wait requires --next-check-at or --signal-expected")
+    deadline = canonical_time(deadline_at)
+    next_check = canonical_time(next_check_at) if next_check_at else None
+    now = parse_time(utcnow())
+    if parse_time(deadline) <= now:
+        raise SwarmError("External wait deadline must be in the future")
+    if next_check and parse_time(next_check) <= now:
+        raise SwarmError("External wait next check must be in the future")
+    if next_check and parse_time(next_check) > parse_time(deadline):
+        raise SwarmError("External wait next check may not be after its deadline")
+    if conn.execute(
+        "SELECT 1 FROM external_waits WHERE task_id=? AND status='WAITING'", (task_id,)
+    ).fetchone():
+        raise SwarmError("Task %s already has an active external wait" % task_id)
+    wait_id = make_id("W")
+    recorded_at = utcnow()
+    conn.execute(
+        """INSERT INTO external_waits(id, mission_id, task_id, condition, external_ref,
+           next_check_at, deadline_at, signal_expected, created_by, created_at, updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (wait_id, task["mission_id"], task_id, condition.strip(), external_ref.strip(),
+         next_check, deadline, 1 if signal_expected else 0, agent, recorded_at, recorded_at),
+    )
+    conn.execute(
+        """UPDATE tasks SET status='WAITING_EXTERNAL', owner=NULL, lease_until=NULL,
+           next_action=?, updated_at=? WHERE id=?""",
+        ("Wait for external condition: %s" % condition.strip(), recorded_at, task_id),
+    )
+    add_event(conn, task["mission_id"], "external_wait", wait_id, "EXTERNAL_WAIT_STARTED", agent, {
+        "task_id": task_id, "condition": condition.strip(), "external_ref": external_ref.strip(),
+        "next_check_at": next_check, "deadline_at": deadline,
+        "signal_expected": bool(signal_expected), "generation": task["generation"],
+    })
+    request_manager_review(conn, "task released capacity for external wait", "external_wait", wait_id)
+    conn.commit()
+    return external_wait_dict(conn, external_wait_row(conn, wait_id))
+
+
+def _wake_external_wait(conn, row, reason, source, external_id, actor, note, at=None):
+    if reason not in VALID_WAKE_REASONS:
+        raise SwarmError("Invalid external wait wake reason: %s" % reason)
+    now = canonical_time(at) if at else utcnow()
+    changed = conn.execute(
+        """UPDATE external_waits SET status='WOKEN', woke_at=?, wake_reason=?,
+           wake_source=?, wake_external_id=?, wake_note=?, updated_at=?
+           WHERE id=? AND status='WAITING'""",
+        (now, reason, source, external_id, note, now, row["id"]),
+    )
+    if changed.rowcount != 1:
+        return None
+    task = task_row(conn, row["task_id"])
+    if task["status"] == "WAITING_EXTERNAL":
+        if not task["authorized"]:
+            next_status = "PROPOSED"
+        elif open_decision_count(conn, task["id"]):
+            next_status = "BLOCKED"
+        elif not all_dependencies_done(conn, task["id"]):
+            next_status = "PROPOSED"
+        else:
+            next_status = "READY"
+        conn.execute(
+            """UPDATE tasks SET status=?, owner=NULL, lease_until=NULL, next_action=?,
+               updated_at=? WHERE id=? AND status='WAITING_EXTERNAL'""",
+            (next_status, "Verify external condition after %s" % reason.lower().replace("_", " "),
+             now, task["id"]),
+        )
+        add_event(conn, task["mission_id"], "task", task["id"], "TASK_WOKEN", actor, {
+            "wait_id": row["id"], "wake_reason": reason, "external_ref": row["external_ref"],
+            "next_status": next_status, "verification_required": True,
+        })
+    add_event(conn, row["mission_id"], "external_wait", row["id"],
+              "EXTERNAL_WAIT_WOKEN", actor, {
+                  "reason": reason, "source": source, "external_id": external_id,
+                  "note": note, "verification_required": True,
+              })
+    if reason == "DEADLINE":
+        request_manager_review(
+            conn, "external wait deadline reached", "external_wait", row["id"], "URGENT"
+        )
+    return next_status if task["status"] == "WAITING_EXTERNAL" else task["status"]
+
+
+def signal_external_wait(conn, wait_id, source, external_id, actor, note=None):
+    source = source.strip()
+    external_id = external_id.strip()
+    if not source or not external_id:
+        raise SwarmError("Wait signal requires source and external-id")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = external_wait_row(conn, wait_id)
+        existing = conn.execute(
+            "SELECT * FROM wait_signals WHERE mission_id=? AND source=? AND external_id=?",
+            (row["mission_id"], source, external_id),
+        ).fetchone()
+        created = False
+        if existing:
+            if existing["wait_id"] != wait_id or (existing["note"] or "") != (note or ""):
+                raise SwarmError("Wait signal source/external-id belongs to different input")
+        else:
+            signal_id = make_id("WSG")
+            now = utcnow()
+            conn.execute(
+                """INSERT INTO wait_signals(id, mission_id, wait_id, source, external_id,
+                   note, created_by, created_at) VALUES(?,?,?,?,?,?,?,?)""",
+                (signal_id, row["mission_id"], wait_id, source, external_id, note, actor, now),
+            )
+            add_event(conn, row["mission_id"], "wait_signal", signal_id,
+                      "EXTERNAL_WAIT_SIGNAL_RECORDED", actor, {
+                          "wait_id": wait_id, "source": source, "external_id": external_id,
+                          "note": note,
+                      })
+            created = True
+        wake_status = _wake_external_wait(
+            conn, row, "EXTERNAL_SIGNAL", source, external_id, actor, note,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    result = external_wait_dict(conn, external_wait_row(conn, wait_id))
+    result["signal_created"] = created
+    result["woke"] = bool(wake_status)
+    return result
+
+
+def reconcile_external_waits(conn, actor="reconciler", at=None):
+    now = canonical_time(at) if at else utcnow()
+    rows = conn.execute(
+        """SELECT * FROM external_waits WHERE status='WAITING'
+           AND ((next_check_at IS NOT NULL AND next_check_at<=?) OR deadline_at<=?)
+           ORDER BY deadline_at, next_check_at""", (now, now),
+    ).fetchall()
+    changed = []
+    for row in rows:
+        reason = "DEADLINE" if row["deadline_at"] <= now else "SCHEDULED_CHECK"
+        next_status = _wake_external_wait(
+            conn, row, reason, "scheduler", None, actor, None, at=now,
+        )
+        if next_status:
+            changed.append((row["task_id"], next_status))
+    return changed
+
+
+def reconcile_conn(conn, actor="reconciler", at=None):
+    now = canonical_time(at) if at else utcnow()
     changed = reconcile_deliveries(conn, actor)
+    changed.extend(reconcile_manager_reviews(conn, actor, at=now))
     expired = conn.execute(
         "SELECT * FROM tasks WHERE status IN ('CLAIMED','RUNNING','VERIFYING') AND lease_until IS NOT NULL AND lease_until < ?",
         (now,),
     ).fetchall()
     for row in expired:
-        conn.execute(
-            "UPDATE tasks SET status='READY', owner=NULL, lease_until=NULL, updated_at=? WHERE id=?",
-            (now, row["id"]),
+        updated = conn.execute(
+            """UPDATE tasks SET status='READY', owner=NULL, lease_until=NULL, updated_at=?
+               WHERE id=? AND status=? AND lease_until=?""",
+            (now, row["id"], row["status"], row["lease_until"]),
         )
+        if updated.rowcount != 1:
+            continue
         add_event(conn, row["mission_id"], "task", row["id"], "TASK_LEASE_EXPIRED", actor, {
             "previous_owner": row["owner"], "generation": row["generation"]
         })
+        request_manager_review(conn, "task lease expired", "task", row["id"])
         changed.append((row["id"], "READY"))
 
     expired_facts = conn.execute(
@@ -1620,17 +2140,29 @@ def reconcile_conn(conn, actor="reconciler"):
         })
         changed.append((row["id"], "EXPIRED"))
 
+    changed.extend(reconcile_external_waits(conn, actor, at=now))
+
     candidates = conn.execute("SELECT * FROM tasks WHERE authorized=1 AND status IN ('PROPOSED','BLOCKED')").fetchall()
     for row in candidates:
         no_open_decisions = open_decision_count(conn, row["id"]) == 0
         dependencies_done = all_dependencies_done(conn, row["id"])
         if no_open_decisions and dependencies_done:
-            conn.execute("UPDATE tasks SET status='READY', updated_at=? WHERE id=?", (now, row["id"]))
+            updated = conn.execute(
+                "UPDATE tasks SET status='READY', updated_at=? WHERE id=? AND status=?",
+                (now, row["id"], row["status"]),
+            )
+            if updated.rowcount != 1:
+                continue
             event_type = "TASK_UNBLOCKED" if row["status"] == "BLOCKED" else "TASK_READY"
             add_event(conn, row["mission_id"], "task", row["id"], event_type, actor)
             changed.append((row["id"], "READY"))
         elif no_open_decisions and row["status"] == "BLOCKED":
-            conn.execute("UPDATE tasks SET status='PROPOSED', updated_at=? WHERE id=?", (now, row["id"]))
+            updated = conn.execute(
+                "UPDATE tasks SET status='PROPOSED', updated_at=? WHERE id=? AND status='BLOCKED'",
+                (now, row["id"]),
+            )
+            if updated.rowcount != 1:
+                continue
             add_event(conn, row["mission_id"], "task", row["id"], "TASK_DECISION_CLEARED", actor)
             changed.append((row["id"], "PROPOSED"))
     changed.extend(reconcile_cases(conn, actor))
@@ -1645,6 +2177,14 @@ def claim_task(conn, task_id, agent, lease_seconds):
         row = task_row(conn, task_id)
         if row["status"] != "READY":
             raise SwarmError("Task %s is %s, not READY" % (task_id, row["status"]))
+        unfinished_run = conn.execute(
+            "SELECT id FROM agent_runs WHERE task_id=? AND ended_at IS NULL ORDER BY started_at LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if unfinished_run:
+            raise SwarmError(
+                "Task %s still has active harness run %s" % (task_id, unfinished_run["id"])
+            )
         policy_stage = conn.execute(
             "SELECT application_id, fresh_session_from FROM policy_application_tasks WHERE task_id=?",
             (task_id,),
@@ -2162,11 +2702,23 @@ def cancel_case(conn, case_id, actor, reason):
         (case_id,),
     ).fetchall()
     for task in linked_tasks:
+        task_waits = conn.execute(
+            "SELECT * FROM external_waits WHERE task_id=? AND status='WAITING'", (task["id"],)
+        ).fetchall()
         conn.execute(
             """UPDATE tasks SET status='CANCELLED', owner=NULL, lease_until=NULL,
                result=?, updated_at=? WHERE id=?""",
             (reason, now, task["id"]),
         )
+        conn.execute(
+            """UPDATE external_waits SET status='CANCELLED', updated_at=?
+               WHERE task_id=? AND status='WAITING'""", (now, task["id"]),
+        )
+        for wait in task_waits:
+            add_event(conn, case["mission_id"], "external_wait", wait["id"],
+                      "EXTERNAL_WAIT_CANCELLED", actor, {
+                          "task_id": task["id"], "case_id": case_id, "reason": reason,
+                      })
         add_event(conn, case["mission_id"], "task", task["id"], "TASK_CANCELLED", actor, {
             "reason": reason, "case_id": case_id,
         })
@@ -2205,6 +2757,8 @@ def reconcile_cases(conn, actor="reconciler"):
         kinds = {row["kind"] for row in decisions}
         if kinds & {"human_decision", "missing_access", "safety_stop"}:
             status = "WAITING_HUMAN"
+        elif any(row["status"] == "WAITING_EXTERNAL" for row in tasks):
+            status = "WAITING_EXTERNAL"
         elif kinds:
             status = "WAITING_EXTERNAL"
         elif not tasks:
@@ -2303,6 +2857,7 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
         "result": result, "verification": verification, "artifacts": artifact_ids,
         "generation": row["generation"],
     })
+    request_manager_review(conn, "task completed", "task", task_id)
     conn.commit()
     reconcile_conn(conn)
 
@@ -2315,6 +2870,16 @@ def cancel_task(conn, task_id, actor, reason):
         "UPDATE tasks SET status='CANCELLED', owner=NULL, lease_until=NULL, result=?, updated_at=? WHERE id=?",
         (reason, utcnow(), task_id),
     )
+    active_waits = conn.execute(
+        "SELECT * FROM external_waits WHERE task_id=? AND status='WAITING'", (task_id,)
+    ).fetchall()
+    for wait in active_waits:
+        conn.execute(
+            "UPDATE external_waits SET status='CANCELLED', updated_at=? WHERE id=?",
+            (utcnow(), wait["id"]),
+        )
+        add_event(conn, row["mission_id"], "external_wait", wait["id"],
+                  "EXTERNAL_WAIT_CANCELLED", actor, {"task_id": task_id, "reason": reason})
     add_event(conn, row["mission_id"], "task", task_id, "TASK_CANCELLED", actor, {"reason": reason})
     conn.commit()
 
@@ -2554,6 +3119,15 @@ def complete_mission(conn, evidence, actor, shutdown_service=False):
     ).fetchone()["n"]
     if active:
         raise SwarmError("Cannot complete mission while %d tasks are non-terminal" % active)
+    consequential = conn.execute(
+        """SELECT COUNT(*) AS n FROM findings
+           WHERE significance IN ('MATERIAL','URGENT') AND status='OPEN'"""
+    ).fetchone()["n"]
+    if consequential:
+        raise SwarmError(
+            "Cannot complete mission while %d material or urgent findings lack disposition" %
+            consequential
+        )
     active_workstreams = conn.execute(
         "SELECT COUNT(*) AS n FROM workstreams WHERE status NOT IN ('DONE','CANCELLED')"
     ).fetchone()["n"]
@@ -2569,7 +3143,7 @@ def complete_mission(conn, evidence, actor, shutdown_service=False):
     conn.commit()
 
 
-def task_dict(conn, row):
+def task_dict(conn, row, include_responsive_history=True):
     data = dict(row)
     data["authorized"] = bool(data["authorized"])
     data["acceptance"] = json_load(data.pop("acceptance_json"), [])
@@ -2583,6 +3157,18 @@ def task_dict(conn, row):
     data["case_ids"] = [r["case_id"] for r in conn.execute(
         "SELECT case_id FROM case_tasks WHERE task_id=? ORDER BY case_id", (row["id"],)
     )]
+    wait_rows = conn.execute(
+        "SELECT * FROM external_waits WHERE task_id=? ORDER BY created_at", (row["id"],)
+    ).fetchall()
+    finding_rows = conn.execute(
+        "SELECT * FROM findings WHERE source_task_id=? ORDER BY created_at", (row["id"],)
+    ).fetchall()
+    if include_responsive_history:
+        data["external_waits"] = [external_wait_dict(conn, item) for item in wait_rows]
+        data["findings"] = [finding_dict(conn, item) for item in finding_rows]
+    else:
+        data["external_wait_ids"] = [item["id"] for item in wait_rows]
+        data["finding_ids"] = [item["id"] for item in finding_rows]
     workstream = conn.execute(
         "SELECT workstream_id FROM task_workstreams WHERE task_id=?", (row["id"],)
     ).fetchone()
@@ -2645,7 +3231,9 @@ def mission_snapshot(conn):
     m["mode"] = mission_mode(conn)
     m["success"] = json_load(m.pop("success_json"), [])
     m["constraints"] = json_load(m.pop("constraints_json"), [])
-    tasks = [task_dict(conn, r) for r in conn.execute("SELECT * FROM tasks ORDER BY priority DESC, created_at")]
+    tasks = [task_dict(conn, r, include_responsive_history=False) for r in conn.execute(
+        "SELECT * FROM tasks ORDER BY priority DESC, created_at"
+    )]
     workstreams = [workstream_dict(conn, r) for r in conn.execute(
         "SELECT * FROM workstreams ORDER BY created_at"
     )]
@@ -2663,6 +3251,15 @@ def mission_snapshot(conn):
     cases = [case_summary(conn, r) for r in conn.execute(
         "SELECT * FROM cases ORDER BY priority DESC, created_at"
     )]
+    findings = [finding_dict(conn, r) for r in conn.execute(
+        "SELECT * FROM findings ORDER BY CASE significance WHEN 'URGENT' THEN 0 WHEN 'MATERIAL' THEN 1 ELSE 2 END, created_at"
+    )]
+    external_waits = [external_wait_dict(conn, r) for r in conn.execute(
+        "SELECT * FROM external_waits ORDER BY created_at"
+    )]
+    manager_reviews = [manager_review_dict(r) for r in conn.execute(
+        "SELECT * FROM manager_reviews ORDER BY requested_at"
+    )]
     extensions = [extension_summary(r) for r in conn.execute(
         "SELECT * FROM extensions ORDER BY id"
     )]
@@ -2673,7 +3270,9 @@ def mission_snapshot(conn):
         "mission": m, "workstreams": workstreams, "tasks": tasks,
         "decisions": decisions, "facts": facts, "artifacts": artifacts,
         "policies": policies, "policy_applications": policy_applications,
-        "cases": cases, "extensions": extensions, "deliveries": deliveries,
+        "cases": cases, "findings": findings, "external_waits": external_waits,
+        "manager_reviews": manager_reviews,
+        "extensions": extensions, "deliveries": deliveries,
     }
 
 
@@ -2722,6 +3321,58 @@ def render_board(root):
     lines.extend(["- %s" % item for item in m["success"]] or ["- None recorded"])
     lines.extend(["", "## Constraints", ""])
     lines.extend(["- %s" % item for item in m["constraints"]] or ["- None recorded"])
+    open_findings = [item for item in snapshot["findings"] if item["status"] == "OPEN"]
+    active_waits = [item for item in snapshot["external_waits"] if item["status"] == "WAITING"]
+    deadline_wakes = [item for item in snapshot["external_waits"] if item["requires_attention"]]
+    lines.extend(["", "## Needs attention", ""])
+    attention = []
+    for finding in open_findings:
+        if finding["significance"] == "URGENT":
+            attention.append("- Urgent finding `%s` from `%s`: %s" % (
+                finding["id"], finding["source_task_id"], md_escape(finding["summary"]),
+            ))
+    for wait in deadline_wakes:
+        attention.append("- Deadline reached for wait `%s` on task `%s`; verify `%s` now." % (
+            wait["id"], wait["task_id"], md_escape(wait["condition"]),
+        ))
+    lines.extend(attention or ["No urgent findings or missed external-wait deadlines."])
+    lines.extend([
+        "", "## External waits", "",
+        "| Wait | Task | State | Condition | External ref | Age | Next check | Deadline | Wake reason |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ])
+    recent_wakes = sorted(
+        [item for item in snapshot["external_waits"] if item["status"] != "WAITING"],
+        key=lambda item: item["updated_at"], reverse=True,
+    )[:20]
+    for wait in active_waits + recent_wakes:
+        lines.append("| `%s` | `%s` | %s | %s | %s | %ss | %s | %s | %s |" % (
+            wait["id"], wait["task_id"], wait["status"], md_escape(wait["condition"]),
+            md_escape(wait["external_ref"]), wait["waiting_seconds"],
+            wait["next_check_at"] or "signal only",
+            wait["deadline_at"], wait["wake_reason"] or "—",
+        ))
+    if not active_waits and not recent_wakes:
+        lines.append("| — | — | — | No external waits | — | — | — | — | — |")
+    lines.extend([
+        "", "## Findings", "",
+        "| Finding | Significance | State | Source task | Summary | Evidence | Age | Recommendation | Disposition |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ])
+    recent_findings = sorted(
+        [item for item in snapshot["findings"] if item["status"] != "OPEN"],
+        key=lambda item: item["updated_at"], reverse=True,
+    )[:20]
+    for finding in open_findings + recent_findings:
+        lines.append("| `%s` | %s | %s | `%s` | %s | %s | %ss | %s | %s |" % (
+            finding["id"], finding["significance"], finding["status"],
+            finding["source_task_id"], md_escape(finding["summary"]),
+            md_escape(", ".join(finding["evidence"])), finding["age_seconds"],
+            md_escape(finding["recommendation"] or "—"),
+            md_escape(finding["disposition_rationale"] or "awaiting manager"),
+        ))
+    if not open_findings and not recent_findings:
+        lines.append("| — | — | — | — | No findings recorded | — | — | — | — |")
     lines.extend([
         "", "## Cases", "",
         "| ID | State | Source | External ID | Case | Open decisions |",
@@ -2864,6 +3515,21 @@ def inbox(conn, agent, after=None, advance=False, task_id=None):
         run_ids = [r["id"] for r in conn.execute(
             "SELECT id FROM agent_runs WHERE task_id IN (%s)" % placeholders, task_ids
         )]
+        finding_ids = [r["id"] for r in conn.execute(
+            """SELECT DISTINCT f.id FROM findings f LEFT JOIN finding_tasks ft ON ft.finding_id=f.id
+               WHERE f.source_task_id IN (%s) OR ft.task_id IN (%s)""" %
+            (placeholders, placeholders), task_ids + task_ids,
+        )]
+        wait_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM external_waits WHERE task_id IN (%s)" % placeholders, task_ids
+        )]
+        wait_signal_ids = []
+        if wait_ids:
+            wait_placeholders = ",".join("?" for _ in wait_ids)
+            wait_signal_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM wait_signals WHERE wait_id IN (%s)" % wait_placeholders,
+                wait_ids,
+            )]
         case_ids = [r["case_id"] for r in conn.execute(
             "SELECT case_id FROM case_tasks WHERE task_id IN (%s)" % placeholders, task_ids
         )]
@@ -2873,7 +3539,10 @@ def inbox(conn, agent, after=None, advance=False, task_id=None):
             signal_ids = [r["id"] for r in conn.execute(
                 "SELECT id FROM case_signals WHERE case_id IN (%s)" % case_placeholders, case_ids
             )]
-        entity_ids = task_ids + decision_ids + artifact_ids + fact_ids + run_ids + case_ids + signal_ids
+        entity_ids = (
+            task_ids + decision_ids + artifact_ids + fact_ids + run_ids + case_ids + signal_ids +
+            finding_ids + wait_ids + wait_signal_ids
+        )
         entity_placeholders = ",".join("?" for _ in entity_ids)
         m = mission(conn)
         rows = conn.execute(
@@ -2949,6 +3618,19 @@ def build_prompt(root, role, agent, task_id=None):
         "unseen_events": unseen,
     }
     if role == "manager":
+        context["pending_manager_reviews"] = [
+            item for item in snapshot["manager_reviews"] if item["status"] in {"PENDING", "RUNNING"}
+        ]
+        context["open_findings"] = [
+            item for item in snapshot["findings"] if item["status"] == "OPEN"
+        ]
+        context["active_external_waits"] = [
+            item for item in snapshot["external_waits"] if item["status"] == "WAITING"
+        ]
+        context["recent_wakeups"] = sorted(
+            [item for item in snapshot["external_waits"] if item["status"] == "WOKEN"],
+            key=lambda item: item["woke_at"] or "", reverse=True,
+        )[:10]
         context["installed_policies"] = snapshot["policies"]
         context["active_policy_applications"] = [
             item for item in snapshot["policy_applications"]
@@ -3014,6 +3696,12 @@ def render_status_report(root):
     human = [d for d in open_decisions if d["kind"] in {"human_decision", "missing_access", "safety_stop"}]
     other = [d for d in open_decisions if d not in human]
     active = [t for t in snapshot["tasks"] if t["status"] in ACTIVE_TASK_STATES or t["status"] == "BLOCKED"]
+    ready_tasks = [t for t in snapshot["tasks"] if t["status"] == "READY"]
+    active_waits = [item for item in snapshot["external_waits"] if item["status"] == "WAITING"]
+    open_findings = [item for item in snapshot["findings"] if item["status"] == "OPEN"]
+    active_reviews = [
+        item for item in snapshot["manager_reviews"] if item["status"] in {"PENDING", "RUNNING"}
+    ]
     counts = {}
     for task in snapshot["tasks"]:
         counts[task["status"]] = counts.get(task["status"], 0) + 1
@@ -3028,8 +3716,35 @@ def render_status_report(root):
         "- Status: **%s**" % m["status"],
         "- Phase: **%s**" % m["phase"], "- Objective: %s" % m["objective"],
         "- Tasks: %s" % (", ".join("%s %s" % (count, state) for state, count in sorted(counts.items())) or "none"),
-        "", "## Persistent-service cases", "",
+        "", "## Coordination", "",
     ]
+    if not active_reviews:
+        lines.append("No manager review is pending or running.")
+    for review in active_reviews:
+        reasons = "; ".join(item["reason"] for item in review["triggers"])
+        lines.append("- `%s` **%s/%s**; age %ss; triggers: %s" % (
+            review["id"], review["status"], review["urgency"], review["age_seconds"], reasons,
+        ))
+    lines.extend(["", "## External waits", ""])
+    if not active_waits:
+        lines.append("No tasks are currently waiting on external conditions.")
+    for wait in active_waits:
+        resume = wait["next_check_at"] or "external signal"
+        lines.append("- `%s` task `%s` — %s; ref `%s`; resumes at %s or signal; deadline %s; waiting %ss" % (
+            wait["id"], wait["task_id"], wait["condition"], wait["external_ref"],
+            resume, wait["deadline_at"], wait["waiting_seconds"],
+        ))
+    lines.extend(["", "## Findings awaiting manager disposition", ""])
+    if not open_findings:
+        lines.append("No findings await manager disposition.")
+    for finding in open_findings:
+        lines.append("- `%s` **%s** from task `%s` — %s; evidence: %s; age: %ss; impact: %s; recommendation: %s" % (
+            finding["id"], finding["significance"], finding["source_task_id"],
+            finding["summary"], ", ".join(finding["evidence"]), finding["age_seconds"],
+            finding["mission_impact"],
+            finding["recommendation"] or "none",
+        ))
+    lines.extend(["", "## Persistent-service cases", ""])
     if not open_cases and not recent_terminal_cases:
         lines.append("No cases have been submitted.")
     for case in open_cases + recent_terminal_cases:
@@ -3091,6 +3806,16 @@ def render_status_report(root):
             urgent_lines.append("- Case `%s` is waiting for human input: %s" % (
                 case["id"], ", ".join(item["id"] for item in case["open_decisions"]),
             ))
+    for finding in open_findings:
+        if finding["significance"] == "URGENT":
+            urgent_lines.append("- Urgent finding `%s` from task `%s`: %s" % (
+                finding["id"], finding["source_task_id"], finding["summary"],
+            ))
+    for wait in snapshot["external_waits"]:
+        if wait["requires_attention"]:
+            urgent_lines.append("- External wait `%s` reached its deadline; task `%s` is ready for verification, not assumed successful." % (
+                wait["id"], wait["task_id"],
+            ))
     for delivery in snapshot["deliveries"]:
         if delivery["status"] == "FAILED":
             urgent_lines.append("- Delivery `%s` failed after %s attempt(s): %s" % (
@@ -3103,6 +3828,11 @@ def render_status_report(root):
                 delivery["last_error"] or "previous attempt was not acknowledged",
             ))
     lines.extend(urgent_lines or ["No urgent system matters detected."])
+    lines.extend(["", "## Ready work", ""])
+    if not ready_tasks:
+        lines.append("No tasks are ready to run.")
+    for task in ready_tasks:
+        lines.append("- `%s` — %s" % (task["id"], task["title"]))
     lines.extend(["", "## Active work", ""])
     if not active:
         lines.append("No active or blocked work.")
@@ -3112,6 +3842,26 @@ def render_status_report(root):
             task["id"], task["status"], workstream, task["title"], task["owner"] or "none",
             task["last_checkpoint_at"] or "never",
         ))
+    lines.extend(["", "## Next expected action", ""])
+    if active_reviews:
+        lines.append("Run or finish the serialized manager review, then schedule from current state.")
+    elif ready_tasks:
+        lines.append("A bounded run can assign the ready work when capacity is available.")
+    elif human:
+        lines.append("The mission resumes after the listed human decision is recorded.")
+    elif active_waits:
+        checks = [wait["next_check_at"] for wait in active_waits if wait["next_check_at"]]
+        next_check = min(checks) if checks else None
+        if next_check:
+            lines.append("Resume at %s or sooner if a trusted external signal arrives." % next_check)
+        else:
+            lines.append("Resume when a trusted external signal arrives; monitor the listed deadlines.")
+    elif active:
+        lines.append("Wait for active work to checkpoint, finish, or raise a consequential finding.")
+    elif m["mode"] == "SERVICE":
+        lines.append("The service is idle until trusted ingress records a case or signal.")
+    else:
+        lines.append("No next action is recorded; inspect mission completion conditions and current state.")
     path = root / "views" / "STATUS.md"
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return path
@@ -3137,6 +3887,12 @@ def runner_config(root):
         value = config.get(key, 3600 if key == "timeout_seconds" else 3)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise SwarmError("Runner %s must be a positive integer in %s" % (key, path))
+    for key, default in (("scheduler_poll_seconds", 1), ("manager_review_debounce_seconds", 1)):
+        value = config.get(key, default)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            raise SwarmError("Runner %s must be a non-negative number in %s" % (key, path))
+    if config.get("scheduler_poll_seconds", 1) == 0:
+        raise SwarmError("Runner scheduler_poll_seconds must be greater than zero")
     return config
 
 
@@ -3357,8 +4113,29 @@ def setup_check(root):
     )
     record(
         "max_parallel", max_parallel_ok,
-        "Runner permits up to %s concurrent workers" % max_parallel if max_parallel_ok else
+        "Runner permits up to %s concurrent agent processes" % max_parallel if max_parallel_ok else
         "max_parallel must be a positive integer",
+    )
+
+    scheduler_poll = config.get("scheduler_poll_seconds", 1) if config else None
+    scheduler_poll_ok = (
+        isinstance(scheduler_poll, (int, float)) and not isinstance(scheduler_poll, bool) and
+        scheduler_poll > 0
+    )
+    record(
+        "scheduler_poll_seconds", scheduler_poll_ok,
+        "Responsive scheduler polls durable events every %s second(s)" % scheduler_poll
+        if scheduler_poll_ok else "scheduler_poll_seconds must be a positive number",
+    )
+    manager_debounce = config.get("manager_review_debounce_seconds", 1) if config else None
+    manager_debounce_ok = (
+        isinstance(manager_debounce, (int, float)) and not isinstance(manager_debounce, bool) and
+        manager_debounce >= 0
+    )
+    record(
+        "manager_review_debounce_seconds", manager_debounce_ok,
+        "Nearby normal manager triggers coalesce for %s second(s)" % manager_debounce
+        if manager_debounce_ok else "manager_review_debounce_seconds must be a non-negative number",
     )
 
     models = config.get("models", {}) if config else None
@@ -3418,6 +4195,7 @@ def setup_check(root):
     dry_run_ready = database_ready and all(prerequisite_checks.get(name, False) for name in (
         "runner_config", "command_argv", "prompt_delivery", "runner_executable",
         "no_shell_interpolation", "working_directory", "timeout", "max_parallel",
+        "scheduler_poll_seconds", "manager_review_debounce_seconds",
         "model_mapping", "role_guidance", "policy_pack_support", "delivery_extension_support",
     ))
     if dry_run_ready:
@@ -3445,55 +4223,181 @@ def setup_check(root):
     return {"ok": not errors, "checks": checks, "errors": errors, "warnings": warnings}
 
 
+def external_wait_summary(conn):
+    active = [external_wait_dict(conn, row) for row in conn.execute(
+        "SELECT * FROM external_waits WHERE status='WAITING' ORDER BY deadline_at"
+    )]
+    deadline_attention = conn.execute(
+        """SELECT COUNT(*) AS n FROM external_waits w JOIN tasks t ON t.id=w.task_id
+           WHERE w.wake_reason='DEADLINE' AND t.status NOT IN ('DONE','CANCELLED')"""
+    ).fetchone()["n"]
+    checks = [item["next_check_at"] for item in active if item["next_check_at"]]
+    deadlines = [item["deadline_at"] for item in active]
+    return {
+        "count": len(active),
+        "earliest_scheduled_check": min(checks) if checks else None,
+        "earliest_deadline": min(deadlines) if deadlines else None,
+        "signal_expected_count": sum(1 for item in active if item["signal_expected"]),
+        "deadline_attention_count": deadline_attention,
+        "waits": active,
+    }
+
+
 def run_loop(root, max_cycles, dry_run=False):
+    """Run a bounded, event-responsive scheduling loop.
+
+    A cycle is a scheduling turn that launches either one serialized manager
+    review or a batch of workers. Existing harness processes count against the
+    configured capacity until they exit, even if their task entered a wait.
+    """
     config = runner_config(root)
     max_parallel = int(config.get("max_parallel", 3))
+    lease_seconds = int(config.get("timeout_seconds", 3600)) + 300
+    poll_seconds = float(config.get("scheduler_poll_seconds", 1))
+    debounce_seconds = float(config.get("manager_review_debounce_seconds", 1))
     results = []
-    for cycle in range(1, max_cycles + 1):
-        conn = connect(root)
-        try:
-            reconcile_conn(conn)
-            m = mission(conn)
-            if m["status"] == "DONE":
-                return {"state": "DONE", "cycles": cycle - 1, "runs": results}
-        finally:
-            conn.close()
+    cycles = 0
 
-        manager_result = dispatch(root, "manager", "manager", dry_run=dry_run)
-        results.append(manager_result)
-        if dry_run:
-            return {"state": "DRY_RUN", "cycles": 1, "runs": results}
+    conn = connect(root)
+    try:
+        reconcile_conn(conn)
+        current_mission = mission(conn)
+        if current_mission["status"] == "DONE":
+            return {"state": "DONE", "cycles": 0, "runs": results}
+        manager_runs = conn.execute(
+            "SELECT COUNT(*) AS n FROM agent_runs WHERE role='manager'"
+        ).fetchone()["n"]
+        queued_review = conn.execute(
+            "SELECT 1 FROM manager_reviews WHERE status IN ('PENDING','RUNNING') LIMIT 1"
+        ).fetchone()
+        if not manager_runs and not queued_review:
+            request_manager_review(conn, "initial mission planning", "mission", current_mission["id"])
+            conn.commit()
+    finally:
+        conn.close()
 
-        conn = connect(root)
-        try:
-            reconcile_conn(conn)
-            m = mission(conn)
-            if m["status"] == "DONE":
-                return {"state": "DONE", "cycles": cycle, "runs": results}
-            ready = conn.execute(
-                "SELECT * FROM tasks WHERE status='READY' ORDER BY priority DESC, created_at LIMIT ?",
-                (max_parallel,),
-            ).fetchall()
-            open_decisions = conn.execute("SELECT COUNT(*) AS n FROM decisions WHERE status='OPEN'").fetchone()["n"]
-            assignments = []
-            for index, row in enumerate(ready):
-                agent = "worker-%d-%d" % (cycle, index + 1)
-                claim_task(conn, row["id"], agent, int(config.get("timeout_seconds", 3600)) + 300)
-                assignments.append((role_for_task(row), agent, row["id"]))
-        finally:
-            conn.close()
+    if dry_run:
+        return {
+            "state": "DRY_RUN", "cycles": 1,
+            "runs": [dispatch(root, "manager", "manager", dry_run=True)],
+        }
 
-        if assignments:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as pool:
-                futures = [pool.submit(dispatch, root, role, agent, task_id, False)
-                           for role, agent, task_id in assignments]
-                for future in concurrent.futures.as_completed(futures):
-                    results.append(future.result())
-        elif open_decisions:
-            return {"state": "WAITING_FOR_DECISION", "cycles": cycle, "runs": results}
-        else:
-            return {"state": "NO_READY_WORK", "cycles": cycle, "runs": results}
-    return {"state": "MAX_CYCLES", "cycles": max_cycles, "runs": results}
+    active = {}
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel)
+    try:
+        while True:
+            completed = [future for future in active if future.done()]
+            for future in completed:
+                metadata = active.pop(future)
+                result = future.result()
+                results.append(result)
+                if metadata["kind"] == "manager":
+                    conn = connect(root)
+                    try:
+                        finish_manager_review(
+                            conn, metadata["review_id"], metadata["agent"],
+                            result.get("exit_code") == 0,
+                        )
+                    finally:
+                        conn.close()
+
+            conn = connect(root)
+            try:
+                reconcile_conn(conn)
+                current_mission = mission(conn)
+                if current_mission["status"] == "DONE" and not active:
+                    return {"state": "DONE", "cycles": cycles, "runs": results}
+
+                if cycles >= max_cycles:
+                    if not active:
+                        return {"state": "MAX_CYCLES", "cycles": cycles, "runs": results}
+                    should_launch = False
+                else:
+                    # Manager reviews are serialized planning transactions. Existing
+                    # workers may continue, but do not dispatch from a partially
+                    # written plan before the manager process exits.
+                    manager_active = any(
+                        metadata["kind"] == "manager" for metadata in active.values()
+                    )
+                    should_launch = len(active) < max_parallel and not manager_active
+
+                launched = False
+                review_pending = False
+                if should_launch:
+                    review = claim_manager_review(
+                        conn, "manager", lease_seconds, debounce_seconds,
+                    )
+                    if review:
+                        future = pool.submit(dispatch, root, "manager", "manager", None, False)
+                        active[future] = {
+                            "kind": "manager", "agent": "manager", "review_id": review["id"],
+                        }
+                        cycles += 1
+                        launched = True
+                    else:
+                        review_pending = bool(conn.execute(
+                            "SELECT 1 FROM manager_reviews WHERE status='PENDING' LIMIT 1"
+                        ).fetchone())
+
+                if should_launch and not launched and not review_pending:
+                    slots = max_parallel - len(active)
+                    ready = conn.execute(
+                        """SELECT * FROM tasks WHERE status='READY'
+                           ORDER BY priority DESC, created_at LIMIT ?""", (slots,),
+                    ).fetchall()
+                    assignments = []
+                    for row in ready:
+                        agent = "worker-%s" % make_id("A")
+                        try:
+                            claim_task(conn, row["id"], agent, lease_seconds)
+                        except SwarmError as exc:
+                            if "active harness run" not in str(exc) and "claimed concurrently" not in str(exc):
+                                raise
+                            continue
+                        assignments.append((role_for_task(row), agent, row["id"]))
+                    if assignments:
+                        for role, agent, task_id in assignments:
+                            future = pool.submit(dispatch, root, role, agent, task_id, False)
+                            active[future] = {
+                                "kind": "worker", "agent": agent, "task_id": task_id,
+                            }
+                        cycles += 1
+                        launched = True
+
+                open_decisions = conn.execute(
+                    "SELECT COUNT(*) AS n FROM decisions WHERE status='OPEN'"
+                ).fetchone()["n"]
+                waiting = external_wait_summary(conn)
+                pending_reviews = conn.execute(
+                    "SELECT COUNT(*) AS n FROM manager_reviews WHERE status='PENDING'"
+                ).fetchone()["n"]
+            finally:
+                conn.close()
+
+            if launched:
+                continue
+            if active:
+                concurrent.futures.wait(
+                    list(active), timeout=poll_seconds,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                continue
+            if pending_reviews and cycles < max_cycles:
+                time.sleep(poll_seconds)
+                continue
+            if open_decisions:
+                return {
+                    "state": "WAITING_FOR_DECISION", "cycles": cycles,
+                    "runs": results, "external_waits": waiting,
+                }
+            if waiting["count"]:
+                return {
+                    "state": "WAITING_EXTERNAL", "cycles": cycles,
+                    "runs": results, "external_waits": waiting,
+                }
+            return {"state": "NO_READY_WORK", "cycles": cycles, "runs": results}
+    finally:
+        pool.shutdown(wait=True)
 
 
 def doctor(conn):
@@ -3503,6 +4407,8 @@ def doctor(conn):
     if mission_mode(conn) not in VALID_MISSION_MODES:
         problems.append({"severity": "error", "entity": current_mission["id"], "problem": "invalid mission mode"})
     for row in conn.execute("SELECT * FROM tasks"):
+        if row["status"] not in VALID_TASK_STATES:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid task state"})
         if row["status"] in ACTIVE_TASK_STATES and not row["owner"]:
             problems.append({"severity": "error", "entity": row["id"], "problem": "active task has no owner"})
         if row["status"] in ACTIVE_TASK_STATES and not row["lease_until"]:
@@ -3513,6 +4419,25 @@ def doctor(conn):
             problems.append({"severity": "error", "entity": row["id"], "problem": "done task lacks verification"})
         if row["status"] == "BLOCKED" and open_decision_count(conn, row["id"]) == 0:
             problems.append({"severity": "warning", "entity": row["id"], "problem": "blocked task has no open decision"})
+        active_waits = conn.execute(
+            "SELECT COUNT(*) AS n FROM external_waits WHERE task_id=? AND status='WAITING'",
+            (row["id"],),
+        ).fetchone()["n"]
+        if row["status"] == "WAITING_EXTERNAL" and active_waits != 1:
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "externally waiting task must have exactly one active wait",
+            })
+        if row["status"] != "WAITING_EXTERNAL" and active_waits:
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "active external wait belongs to a task not in WAITING_EXTERNAL",
+            })
+        if row["status"] == "WAITING_EXTERNAL" and (row["owner"] or row["lease_until"]):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "externally waiting task retains owner or lease",
+            })
         if current_mission["phase"] != "DISCOVERY":
             linked = conn.execute("SELECT 1 FROM task_workstreams WHERE task_id=?", (row["id"],)).fetchone()
             if not linked:
@@ -3582,6 +4507,73 @@ def doctor(conn):
                 "severity": "error", "entity": row["id"],
                 "problem": "case signal payload is missing or does not match its immutable hash",
             })
+    for row in conn.execute("SELECT * FROM external_waits"):
+        if row["status"] not in VALID_WAIT_STATES:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid external wait state"})
+        try:
+            deadline = parse_time(row["deadline_at"])
+            next_check = parse_time(row["next_check_at"]) if row["next_check_at"] else None
+            if next_check and next_check > deadline:
+                problems.append({
+                    "severity": "error", "entity": row["id"],
+                    "problem": "external wait next check is after its deadline",
+                })
+        except (SwarmError, ValueError):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "external wait has an invalid check or deadline timestamp",
+            })
+        if not row["next_check_at"] and not row["signal_expected"]:
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "external wait has no scheduled check or expected signal",
+            })
+        if row["status"] == "WOKEN" and (not row["woke_at"] or row["wake_reason"] not in VALID_WAKE_REASONS):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "woken external wait lacks a valid wake record",
+            })
+        if row["status"] == "WAITING":
+            try:
+                deadline_passed = parse_time(row["deadline_at"]) <= now
+            except (SwarmError, ValueError):
+                deadline_passed = False
+            if deadline_passed:
+                problems.append({
+                    "severity": "warning", "entity": row["id"],
+                    "problem": "external wait deadline has passed and needs reconciliation",
+                })
+    for row in conn.execute("SELECT * FROM findings"):
+        evidence = json_load(row["evidence_json"], [])
+        if row["significance"] not in VALID_FINDING_SIGNIFICANCE:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid finding significance"})
+        if row["status"] not in VALID_FINDING_STATES:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid finding state"})
+        if not evidence:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "finding lacks source-backed evidence"})
+        if row["status"] == "OPEN" and row["significance"] in {"MATERIAL", "URGENT"}:
+            problems.append({
+                "severity": "warning", "entity": row["id"],
+                "problem": "%s finding awaits manager disposition" % row["significance"].lower(),
+            })
+        if row["status"] != "OPEN" and (not row["disposition_rationale"] or not row["disposed_by"] or not row["disposed_at"]):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "dispositioned finding lacks rationale, actor, or timestamp",
+            })
+    for row in conn.execute("SELECT * FROM manager_reviews"):
+        if row["status"] not in VALID_MANAGER_REVIEW_STATES:
+            problems.append({"severity": "error", "entity": row["id"], "problem": "invalid manager review state"})
+        if row["status"] == "RUNNING" and (not row["owner"] or not row["lease_until"]):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "running manager review lacks owner or lease",
+            })
+        if row["status"] != "RUNNING" and (row["owner"] or row["lease_until"]):
+            problems.append({
+                "severity": "error", "entity": row["id"],
+                "problem": "inactive manager review retains owner or lease",
+            })
     for row in conn.execute(
         """SELECT d.id, d.options_json, o.selected_option FROM decision_outcomes o
            JOIN decisions d ON d.id=o.decision_id"""
@@ -3646,6 +4638,21 @@ def audit_summary(conn):
     case_counts = {}
     for case in snap["cases"]:
         case_counts[case["status"]] = case_counts.get(case["status"], 0) + 1
+    finding_counts = {}
+    for finding in snap["findings"]:
+        key = "%s:%s" % (finding["significance"], finding["status"])
+        finding_counts[key] = finding_counts.get(key, 0) + 1
+    wait_counts = {}
+    wake_reason_counts = {}
+    wait_durations = []
+    for wait in snap["external_waits"]:
+        wait_counts[wait["status"]] = wait_counts.get(wait["status"], 0) + 1
+        if wait["wake_reason"]:
+            wake_reason_counts[wait["wake_reason"]] = wake_reason_counts.get(wait["wake_reason"], 0) + 1
+        if wait["woke_at"]:
+            wait_durations.append(
+                (parse_time(wait["woke_at"]) - parse_time(wait["created_at"])).total_seconds()
+            )
     workstream_counts = {}
     forecast_outcomes = []
     for workstream in snap["workstreams"]:
@@ -3683,6 +4690,13 @@ def audit_summary(conn):
     task_cycle_seconds = []
     for row in conn.execute("SELECT created_at, updated_at FROM tasks WHERE status IN ('DONE','CANCELLED')"):
         task_cycle_seconds.append((parse_time(row["updated_at"]) - parse_time(row["created_at"])).total_seconds())
+    manager_review_latency_seconds = []
+    for row in conn.execute(
+        "SELECT requested_at, started_at FROM manager_reviews WHERE started_at IS NOT NULL"
+    ):
+        manager_review_latency_seconds.append(
+            (parse_time(row["started_at"]) - parse_time(row["requested_at"])).total_seconds()
+        )
 
     def duration_stats(values):
         if not values:
@@ -3697,6 +4711,9 @@ def audit_summary(conn):
         "task_counts": counts, "workstream_counts": workstream_counts,
         "policy_application_counts": policy_counts,
         "case_counts": case_counts,
+        "finding_counts": finding_counts,
+        "external_wait_counts": wait_counts,
+        "external_wait_wake_reasons": wake_reason_counts,
         "delivery_counts": delivery_counts,
         "completed_workstream_forecast_outcomes": forecast_outcomes,
         "event_count": events, "agent_run_count": runs,
@@ -3704,6 +4721,8 @@ def audit_summary(conn):
         "event_type_counts": event_type_counts,
         "decision_resolution_latency": duration_stats(decision_resolution_seconds),
         "decision_ack_latency": duration_stats(decision_ack_seconds),
+        "manager_review_latency": duration_stats(manager_review_latency_seconds),
+        "external_wait_duration": duration_stats(wait_durations),
         "terminal_task_cycle_time": duration_stats(task_cycle_seconds),
         "doctor": doctor(conn),
     }
@@ -3771,8 +4790,10 @@ def export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
             long human-decision propagation, expired leases, weak verification, manager churn,
             excessive fan-out, policy stages that were skipped or claimed by disallowed agent
             identities, named skills without evidence, duplicate inbound cases or signals,
-            missed follow-ups, failed or duplicated external deliveries, missing provider
-            receipts, and work that bypassed canonical state.
+            missed follow-ups, untriaged material findings, finding-to-work linkage, overdue or
+            repeatedly rescheduled external waits, duplicate wake signals, manager-review latency,
+            failed or duplicated external deliveries, missing provider receipts, and work that
+            bypassed canonical state.
 
             Secrets warning: prompts, stdout, stderr, and registered artifacts may contain
             sensitive material. Inspect this archive before sharing it outside your organization.
@@ -4029,6 +5050,14 @@ def parser():
     block.add_argument("--question", required=True)
     block.add_argument("--recommendation")
     block.add_argument("--option", action="append", default=[])
+    wait_external = task_sub.add_parser("wait-external")
+    wait_external.add_argument("task_id")
+    wait_external.add_argument("--agent", required=True)
+    wait_external.add_argument("--condition", required=True)
+    wait_external.add_argument("--external-ref", required=True)
+    wait_external.add_argument("--next-check-at")
+    wait_external.add_argument("--deadline", required=True)
+    wait_external.add_argument("--signal-expected", action="store_true")
     task_sub.add_parser("list")
     show = task_sub.add_parser("show")
     show.add_argument("task_id")
@@ -4057,6 +5086,45 @@ def parser():
     ack.add_argument("decision_id")
     ack.add_argument("--task", required=True)
     ack.add_argument("--agent", required=True)
+
+    finding = sub.add_parser("finding", help="Elevate and disposition mission-relevant findings")
+    finding_sub = finding.add_subparsers(dest="finding_command", required=True)
+    finding_raise = finding_sub.add_parser("raise")
+    finding_raise.add_argument("--task", required=True)
+    finding_raise.add_argument("--agent", required=True)
+    finding_raise.add_argument("--significance", type=str.upper,
+                               choices=sorted(VALID_FINDING_SIGNIFICANCE), required=True)
+    finding_raise.add_argument("--summary", required=True)
+    finding_raise.add_argument("--evidence", action="append", default=[], required=True)
+    finding_raise.add_argument("--impact", required=True)
+    finding_raise.add_argument("--recommendation")
+    finding_list = finding_sub.add_parser("list")
+    finding_list.add_argument("--status", type=str.upper, choices=sorted(VALID_FINDING_STATES))
+    finding_list.add_argument("--significance", type=str.upper,
+                              choices=sorted(VALID_FINDING_SIGNIFICANCE))
+    finding_show = finding_sub.add_parser("show")
+    finding_show.add_argument("finding_id")
+    finding_dispose = finding_sub.add_parser("disposition")
+    finding_dispose.add_argument("finding_id")
+    finding_dispose.add_argument("--status", type=str.upper,
+                                 choices=sorted(VALID_FINDING_STATES - {"OPEN"}), required=True)
+    finding_dispose.add_argument("--rationale", required=True)
+    finding_dispose.add_argument("--task", action="append", default=[])
+    finding_dispose.add_argument("--workstream", action="append", default=[])
+    finding_dispose.add_argument("--actor", default="manager")
+
+    wait = sub.add_parser("wait", help="Inspect and signal durable external waits")
+    wait_sub = wait.add_subparsers(dest="wait_command", required=True)
+    wait_list = wait_sub.add_parser("list")
+    wait_list.add_argument("--status", type=str.upper, choices=sorted(VALID_WAIT_STATES))
+    wait_show = wait_sub.add_parser("show")
+    wait_show.add_argument("wait_id")
+    wait_signal = wait_sub.add_parser("signal")
+    wait_signal.add_argument("wait_id")
+    wait_signal.add_argument("--source", required=True)
+    wait_signal.add_argument("--external-id", required=True)
+    wait_signal.add_argument("--note")
+    wait_signal.add_argument("--actor", default="ingress")
 
     fact = sub.add_parser("fact", help="Record sourced, time-bounded operational facts")
     fact_sub = fact.add_subparsers(dest="fact_command", required=True)
@@ -4427,6 +5495,11 @@ def main(argv=None):
                     decision_id = block_task(conn, args.task_id, args.agent, args.kind, args.question,
                                              args.recommendation, args.option)
                     print_json({"task_id": args.task_id, "status": "BLOCKED", "decision_id": decision_id})
+                elif args.task_command == "wait-external":
+                    print_json(start_external_wait(
+                        conn, args.task_id, args.agent, args.condition, args.external_ref,
+                        args.deadline, args.next_check_at, args.signal_expected,
+                    ))
                 elif args.task_command == "list":
                     reconcile_conn(conn)
                     print_json([task_dict(conn, r) for r in conn.execute(
@@ -4437,6 +5510,70 @@ def main(argv=None):
             finally:
                 conn.close()
             render_board(root)
+            return 0
+
+        if args.command == "finding":
+            conn = connect(root)
+            try:
+                if args.finding_command == "raise":
+                    finding_id = raise_finding(
+                        conn, args.task, args.agent, args.significance, args.summary,
+                        args.evidence, args.impact, args.recommendation,
+                    )
+                    print_json(finding_dict(conn, finding_row(conn, finding_id)))
+                elif args.finding_command == "list":
+                    clauses = []
+                    values = []
+                    if args.status:
+                        clauses.append("status=?")
+                        values.append(args.status)
+                    if args.significance:
+                        clauses.append("significance=?")
+                        values.append(args.significance)
+                    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                    rows = conn.execute(
+                        "SELECT * FROM findings%s ORDER BY created_at" % where, values,
+                    )
+                    print_json([finding_dict(conn, row) for row in rows])
+                elif args.finding_command == "show":
+                    print_json(finding_dict(conn, finding_row(conn, args.finding_id)))
+                elif args.finding_command == "disposition":
+                    print_json(dispose_finding(
+                        conn, args.finding_id, args.status, args.rationale, args.actor,
+                        args.task, args.workstream,
+                    ))
+            finally:
+                conn.close()
+            render_board(root)
+            render_status_report(root)
+            return 0
+
+        if args.command == "wait":
+            conn = connect(root)
+            try:
+                reconcile_conn(conn)
+                if args.wait_command == "list":
+                    clauses = []
+                    values = []
+                    if args.status:
+                        clauses.append("status=?")
+                        values.append(args.status)
+                    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                    rows = conn.execute(
+                        "SELECT * FROM external_waits%s ORDER BY created_at" % where, values,
+                    )
+                    print_json([external_wait_dict(conn, row) for row in rows])
+                elif args.wait_command == "show":
+                    print_json(external_wait_dict(conn, external_wait_row(conn, args.wait_id)))
+                elif args.wait_command == "signal":
+                    print_json(signal_external_wait(
+                        conn, args.wait_id, args.source, args.external_id,
+                        args.actor, args.note,
+                    ))
+            finally:
+                conn.close()
+            render_board(root)
+            render_status_report(root)
             return 0
 
         if args.command == "decision":

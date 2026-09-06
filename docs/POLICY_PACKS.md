@@ -178,6 +178,13 @@ Policy-generated tasks obey ordinary Swarmkit leases, decisions, checkpoints,
 artifacts, cancellation, and audit export rules. A policy does not bypass mission
 constraints or grant authority for external side effects.
 
+A policy stage may also raise a durable finding or enter `WAITING_EXTERNAL`.
+The stage remains the same task: a wake starts a fresh attempt that must verify
+the external condition before completion, and downstream stages remain blocked.
+A finding does not let the stage create or skip policy work; the manager alone
+dispositions it and changes the plan. See
+[Responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
+
 ## Policies for persistent-service cases
 
 `case open --policy ...` applies a reviewed pack to one idempotent inbound case

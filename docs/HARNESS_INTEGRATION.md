@@ -24,6 +24,17 @@ The `.swarm/runner.json` `command` field is an argv array. Swarmkit substitutes 
 
 Swarmkit calls the process without a shell and captures stdout, stderr, exit code, start time, and end time. The child inherits the environment, so use your harness's secret store or environment injection rather than putting credentials in command arguments.
 
+The responsive scheduler uses two numeric runner controls:
+
+- `scheduler_poll_seconds` (default `1`) controls how quickly a bounded run
+  notices durable manager triggers while harness processes are alive.
+- `manager_review_debounce_seconds` (default `1`) combines nearby normal
+  triggers. Urgent findings and missed deadlines bypass the debounce.
+
+`max_parallel` counts all manager and worker harness processes launched by the
+run. The harness must permit one process to remain active while another fresh
+manager or worker invocation starts.
+
 ## Example CLI shapes
 
 If the harness accepts a prompt file directly:
@@ -48,6 +59,8 @@ Managers need permission to:
 - run `swarmctl` task, mission, inbox, status, and reconcile commands;
 - create and update workstreams and link tasks to them;
 - create task records;
+- inspect and disposition findings and link incorporated findings to work;
+- inspect external waits and wake reasons;
 - inspect installed policy packs and run `policy apply`;
 - usually avoid product modifications.
 
@@ -55,6 +68,7 @@ Workers need permission to:
 
 - work in the target repository or system scope;
 - run task, decision acknowledgment, inbox, and artifact commands;
+- raise findings and place their owned task into external wait;
 - perform only the operations allowed by the mission constraints.
 
 Briefers and verifiers should default to read-only product access while retaining write access to the orchestration database and their report output directory.
@@ -109,6 +123,35 @@ The adapter must:
 The adapter must not interpret an author's statement as human approval. It only
 records evidence. See [Persistent services](PERSISTENT_SERVICES.md) for the
 service loop and change-review example.
+
+## Responsive execution and external-wait signals
+
+The outer `swarmctl run` process owns responsive scheduling. Do not configure
+the harness to wait for an entire child-agent wave, reuse a model conversation,
+or launch nested workers. Swarmkit starts each task as a separate process and
+polls the durable database while other children remain active.
+
+An integration that receives completion callbacks should map each provider
+event to a stable source/external-ID pair and call:
+
+```bash
+swarmctl --root /work/run/.swarm wait signal W-ID \
+  --source provider-name \
+  --external-id provider-event-123 \
+  --note "Provider reports a terminal state" \
+  --actor provider-webhook
+```
+
+After recording the signal, start a new bounded run if one is not already
+active. The adapter must tolerate an idempotent replay and must never turn the
+callback into completion evidence. The resumed worker queries the actual
+provider.
+
+For scheduled waits, an external supervisor should read `WAITING_EXTERNAL`
+output or `wait list`, schedule the next bounded `run` at the earliest check,
+and still enforce the deadline. Swarmkit intentionally does not sleep for hours
+or host a webhook endpoint. See
+[Responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
 
 For high-risk provider actions, expose a narrow adapter instead of a raw skill.
 The adapter should call `decision require-choice` immediately before the action
@@ -195,6 +238,15 @@ agent when no direct adapter exists.
 - Confirm a worker can execute `inbox`, `task show`, and `task checkpoint`.
 - Confirm manager and worker permissions differ where your harness supports it.
 - Simulate a killed worker and confirm lease recovery.
+- Run two differently timed tasks and confirm a manager review plus newly
+  justified work starts before the longer task exits.
+- Confirm routine checkpoints do not invoke the manager, while a material
+  finding does and receives a durable disposition.
+- Put a task into external wait, confirm its owner and lease clear, restart the
+  process, and wake it once each by a scheduled check, repeated signals, and a
+  deadline in separate disposable runs.
+- Confirm every wake launches fresh verification and never marks the external
+  condition successful by itself.
 - Simulate a human decision and confirm acknowledgment is enforced.
 - Set a finite `max-cycles` for unattended runs.
 - Inspect exports for secrets before external sharing.

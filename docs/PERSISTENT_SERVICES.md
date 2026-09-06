@@ -189,6 +189,13 @@ the harness's scheduler, a system service, or a provider webhook adapter to:
 3. inspect its terminal state; and
 4. invoke another bounded run only when policy permits.
 
+Inside each bounded run, responsive orchestration can review completed work or
+material findings while unrelated harness processes remain active. Policy tasks
+waiting on long provider operations should use `task wait-external`; provider
+callbacks use `wait signal`. This releases ownership and capacity without
+misusing an `external_dependency` decision. The generic scheduling and wake
+contract is in [Responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
+
 Every dispatch must start a new harness session. A stable manager `agent_id`
 may retain an event cursor, but it must not resume a chat. Workers should use a
 new identity per task attempt. Durable checkpoints and case state make agent

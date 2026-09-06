@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+- Replaced worker-wave scheduling with a bounded event-responsive loop that
+  can review completed work and reuse freed capacity while unrelated tasks run.
+- Added durable, coalesced, serialized manager reviews with urgent wakeups and
+  audit latency metrics.
+- Added evidence-backed `ROUTINE`, `MATERIAL`, and `URGENT` findings with
+  required manager dispositions and links to resulting work.
+- Added ownerless `WAITING_EXTERNAL` tasks, scheduled checks, idempotent
+  external signals, mandatory deadlines, and fresh verification attempts.
+- Added responsive state to prompts, inboxes, boards, executive reports,
+  health checks, snapshots, and audit exports.
+- Added automatic schema-v6 migration for existing mission roots; existing
+  task, lease, dependency, decision, policy, extension, and case behavior is
+  preserved.
+- Added deterministic tests for every responsive-orchestration acceptance
+  scenario plus CLI round trips and harness-process exit behavior.
+
 ## 0.5.0
 
 - Added `SERVICE` missions for persistent logical agents whose model contexts

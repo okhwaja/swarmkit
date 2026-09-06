@@ -25,6 +25,7 @@ Read these files before changing configuration:
 5. `docs/POLICY_PACKS.md`
 6. `docs/EXTENSIONS.md`
 7. `docs/PERSISTENT_SERVICES.md`
+8. `docs/RESPONSIVE_ORCHESTRATION.md`
 
 Treat the SQLite database and append-only event log as canonical. Markdown
 status files are generated views, not an agent-to-agent message bus.
@@ -70,6 +71,12 @@ record:
   return a durable provider receipt to a non-interactive invocation.
 - for persistent services, which trusted webhook, polling, or scheduler adapter
   will invoke `case open`, `case signal`, and bounded `run` commands.
+- whether the harness can sustain `max_parallel` independent processes while
+  Swarmkit polls state, and whether an exited invocation releases its process
+  slot promptly;
+- which trusted adapters may invoke `wait signal`, how their stable source and
+  external IDs are derived, and how callback authenticity is checked outside
+  Swarmkit.
 
 Do not guess at any of these. If the harness cannot expose fresh-session
 semantics or reliable exit status, record that as a blocker.
@@ -114,7 +121,10 @@ Example shape only—replace it with the target harness's real syntax:
     "{prompt_file}"
   ],
   "working_directory": "/absolute/path/to/sandbox-mission",
+  "max_parallel": 3,
   "timeout_seconds": 3600,
+  "scheduler_poll_seconds": 1,
+  "manager_review_debounce_seconds": 1,
   "models": {
     "manager": "",
     "worker": "",
@@ -204,6 +214,26 @@ idempotent `case signal`, then prove a fresh task invocation can read it. Do not
 connect a live provider webhook until signature validation, source/external-ID
 mapping, and shell-free argv handling have been reviewed.
 
+Validate responsive scheduling with a disposable mission containing one slow
+task and one short task. Confirm the short task can complete, trigger a manager
+review, and launch justified follow-up work before the slow harness process
+exits. Raise a material finding from an active worker and confirm that a fresh,
+serialized manager invocation sees and dispositions it while the worker may
+continue. Routine checkpoints must not create manager reviews.
+
+Validate external waits without using a real long delay:
+
+1. claim a disposable task;
+2. run `task wait-external` with a future check, expected signal, and deadline;
+3. let the invoking process exit and confirm the task still has no owner or
+   lease and remains `WAITING_EXTERNAL`;
+4. call `wait signal` twice with the same source/external ID and confirm exactly
+   one durable signal and one wake;
+5. dispatch a fresh worker and confirm it verifies the condition rather than
+   treating the signal as success; and
+6. repeat with a simulated or short deadline and confirm the report demands
+   attention without reporting success.
+
 ### 2. Manager round trip
 
 Create a harmless objective asking the manager to create one workstream and one
@@ -286,6 +316,9 @@ Write `SETUP_REPORT.md` with:
   allowlists, and acknowledgement behavior;
 - service-mode support, ingress-adapter path, idempotency behavior, and
   fresh-context evidence for standing agents;
+- responsive scheduling evidence, effective parallelism and polling/debounce
+  settings, finding triage behavior, external-wait signal authentication, and
+  deadline behavior;
 - results for all six acceptance-test groups;
 - concurrency, timeout, and retry limitations;
 - exact commands an operator should use to initialize and start a real mission;

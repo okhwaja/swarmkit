@@ -10,7 +10,9 @@ To create a portable ZIP:
 python3 scripts/package.py
 ```
 
-This writes `dist/swarmkit-0.5.0.zip` with the CLI, guidance, documentation, examples, policy packs, persistent-service cases, delivery extensions, and tests.
+This writes `dist/swarmkit-0.6.0.zip` with the CLI, guidance, documentation,
+examples, policy packs, responsive scheduling, persistent-service cases,
+delivery extensions, and deterministic responsive acceptance tests.
 
 If another agent will connect Swarmkit to the harness on the destination
 machine, give that agent [SETUP_AGENT.md](SETUP_AGENT.md) as its assignment.
@@ -38,6 +40,10 @@ flowchart TD
     Q --> B[Briefer]
     W1 --> DB
     W2 --> DB
+    W1 --> F[Durable findings]
+    W2 --> EW[External waits]
+    F --> DB
+    EW --> DB
     B --> DB
     DB --> V[Generated board]
     DB --> O[Durable delivery outbox]
@@ -45,7 +51,10 @@ flowchart TD
     DB --> X[Audit ZIP]
 ```
 
-The manager does not need to know the full task plan at the beginning. It starts with a small discovery wave, combines the evidence, creates the next justified work, and repeats. This is called progressive fan-out.
+The manager does not need to know the full task plan at the beginning. It starts
+with a few bounded investigations and evolves the plan as meaningful evidence
+arrives. Manager reviews can run while unrelated workers remain active, and
+free capacity can start newly justified work without waiting for a whole wave.
 
 ## What is included
 
@@ -112,6 +121,8 @@ Edit `runner.json` so `command` invokes your harness. The command is an argument
   "working_directory": "/work/target-repository",
   "max_parallel": 3,
   "timeout_seconds": 3600,
+  "scheduler_poll_seconds": 1,
+  "manager_review_debounce_seconds": 1,
   "models": {
     "manager": "your-stronger-planning-model",
     "worker": "your-lower-cost-model",
@@ -143,7 +154,50 @@ Start bounded orchestration cycles:
 bin/swarmctl --root /work/my-run/.swarm run --max-cycles 20
 ```
 
-The loop launches the manager, reconciles state, claims up to `max_parallel` ready tasks, launches workers concurrently, and returns to the manager. It stops when the mission is complete, it needs a human decision, there is no ready work, or the cycle limit is reached.
+The bounded event loop serializes manager reviews, reacts to completed work and
+consequential findings while other workers remain active, and fills freed
+capacity from current `READY` work. `max_parallel` counts live manager and
+worker harness processes. A cycle is one manager launch or one worker batch.
+The loop stops when the mission completes, needs a human decision, is waiting
+externally, has no ready work, or reaches the cycle limit.
+
+## Responsive execution, findings, and waits
+
+Workers elevate plan-relevant evidence without expanding their own scope:
+
+```bash
+bin/swarmctl --root /work/my-run/.swarm finding raise \
+  --task T-ID --agent worker-ID --significance MATERIAL \
+  --summary "Retries may duplicate records" \
+  --evidence "log:event-1042" \
+  --impact "Replay correctness is at risk" \
+  --recommendation "Inspect replay idempotency"
+```
+
+Material and urgent findings request a durable manager review. The manager
+must record `INCORPORATED`, `DEFERRED`, or `DISMISSED` with a rationale; only
+the manager creates resulting tasks or workstreams.
+
+Waiting for an external provider releases task ownership and agent capacity:
+
+```bash
+bin/swarmctl --root /work/my-run/.swarm task wait-external T-ID \
+  --agent worker-ID \
+  --condition "Pipeline job is terminal" \
+  --external-ref provider-job-123 \
+  --next-check-at 2030-01-01T00:15:00Z \
+  --signal-expected \
+  --deadline 2030-01-01T04:00:00Z
+```
+
+A scheduled check, provider signal, or deadline wakes the task for fresh
+verification; it never records provider success. When only future waits remain,
+`run` exits as `WAITING_EXTERNAL` with the next check and deadline. See
+[Responsive orchestration](docs/RESPONSIVE_ORCHESTRATION.md) for the complete
+state, timing, and integration contract.
+
+Trusted callback adapters wake a wait idempotently with `wait signal`; the
+fresh worker still queries the provider before completing the task.
 
 ## Persistent agent services
 
@@ -285,7 +339,7 @@ bin/swarmctl --root /work/my-run/.swarm doctor
 bin/swarmctl --root /work/my-run/.swarm status
 ```
 
-Your existing UI or scheduler can invoke these commands. `report` writes `views/STATUS.md` with the mission, major workstreams, expected timing, human needs, invariant failures, failed runs, delivery failures, and active work. A status agent is optional; most status reporting should be deterministic formatting of the canonical state. Use a delivery extension when the report must be pushed externally.
+Your existing UI or scheduler can invoke these commands. `report` writes `views/STATUS.md` with external waits and wake conditions, untriaged findings, the mission, major workstreams, expected timing, human needs, invariant failures, failed runs, delivery failures, ready work, and active work. A status agent is optional; most status reporting should be deterministic formatting of the canonical state. Use a delivery extension when the report must be pushed externally.
 
 Record a mutable operational fact with a source and expiry:
 
@@ -314,7 +368,7 @@ The archive contains:
 - the SQLite database;
 - a complete chronological `events.jsonl`;
 - a compact `snapshot.json` plus complete persistent-service histories in `cases.json`;
-- mission, task, decision, acknowledgment, artifact, extension, and delivery records;
+- mission, task, decision, acknowledgment, finding, external-wait, manager-review, artifact, extension, and delivery records;
 - all generated agent prompts;
 - captured harness stdout and stderr;
 - the final board and invariant report;
@@ -340,7 +394,7 @@ Do not compensate for a weaker model with one enormous prompt. Give it a narrow 
 
 The system should spend parallelism on gathering independent evidence. It should converge before tightly coupled changes. One worker owns a coherent implementation; short-lived agents can investigate, brief, and verify around it.
 
-Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Persistent services](docs/PERSISTENT_SERVICES.md) for standing-agent intake, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [Extensions](docs/EXTENSIONS.md) for delivery adapters, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
+Start with the [User manual](docs/USER_MANUAL.md) for common journeys. See [System explainer](docs/SYSTEM_EXPLAINER.md) for the architecture, [Responsive orchestration](docs/RESPONSIVE_ORCHESTRATION.md) for evolving plans, findings, and external waits, [Harness integration](docs/HARNESS_INTEGRATION.md) for the adapter contract, [Persistent services](docs/PERSISTENT_SERVICES.md) for standing-agent intake, [Policy packs](docs/POLICY_PACKS.md) for workflow extensions, [Extensions](docs/EXTENSIONS.md) for delivery adapters, [CLI reference](docs/CLI_REFERENCE.md) for exact syntax, [Documentation policy](docs/DOCUMENTATION_POLICY.md) for change requirements, and [setup-agent playbook](SETUP_AGENT.md) when moving the package to a new harness machine.
 
 To exercise the state machine without an AI harness, run the synthetic demonstration against a new directory:
 

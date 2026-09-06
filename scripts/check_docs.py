@@ -27,24 +27,28 @@ REQUIRED_DOCUMENTS = [
     "docs/MODEL_GUIDANCE.md",
     "docs/POLICY_PACKS.md",
     "docs/PERSISTENT_SERVICES.md",
+    "docs/RESPONSIVE_ORCHESTRATION.md",
+    "docs/RESPONSIVE_ORCHESTRATION_PRODUCT_SPEC.md",
     "docs/SYSTEM_EXPLAINER.md",
     "docs/USER_MANUAL.md",
 ]
 
 REQUIRED_MENTIONS = {
-    "README.md": ["policy install", "policy apply", "delivery enqueue-report", "--mode SERVICE", "case open", "human-gated-change-review", "docs/PERSISTENT_SERVICES.md"],
-    "SETUP_AGENT.md": ["policy list", "extension validate", "delivery dispatch", "case open", "case signal", "fresh-context", "human-gated-change-review"],
-    "docs/EXTENSIONS.md": ["idempotency", "provider receipt", "recipient_policy", "case signal"],
-    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review", "delivery enqueue-report", "Persistent-service ingress", "case open", "case signal"],
-    "docs/MODEL_GUIDANCE.md": ["policy pack", "delivery sent", "persistent-service case", "context rot"],
+    "README.md": ["policy install", "policy apply", "delivery enqueue-report", "--mode SERVICE", "case open", "human-gated-change-review", "docs/PERSISTENT_SERVICES.md", "finding raise", "task wait-external", "wait signal"],
+    "SETUP_AGENT.md": ["policy list", "extension validate", "delivery dispatch", "case open", "case signal", "fresh-context", "human-gated-change-review", "task wait-external", "wait signal"],
+    "docs/EXTENSIONS.md": ["idempotency", "provider receipt", "recipient_policy", "case signal", "wait signal"],
+    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review", "delivery enqueue-report", "Persistent-service ingress", "case open", "case signal", "finding", "WAITING_EXTERNAL"],
+    "docs/MODEL_GUIDANCE.md": ["policy pack", "delivery sent", "persistent-service case", "context rot", "WAITING_EXTERNAL"],
     "docs/PERSISTENT_SERVICES.md": ["persistent logical", "case open", "case signal", "decision require-choice", "--decision", "--wake"],
     "docs/POLICY_PACKS.md": ["human-gated-change-review"],
-    "docs/SYSTEM_EXPLAINER.md": ["Policy packs", "Delivery extensions", "Cases and signals", "service mission"],
-    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review", "delivery enqueue-report", "persistent review agent", "case open", "case signal"],
-    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy", "delivery", "persistent logical", "case payloads"],
-    "guidance/manager.md": ["policy apply", "delivery extension", "SERVICE", "case signals"],
-    "guidance/worker.md": ["policy", "linked to a case"],
-    "guidance/verifier.md": ["policy", "case-linked verification"],
+    "docs/RESPONSIVE_ORCHESTRATION.md": ["manager review", "finding raise", "finding disposition", "task wait-external", "wait signal", "WAITING_EXTERNAL", "deadline"],
+    "docs/RESPONSIVE_ORCHESTRATION_PRODUCT_SPEC.md": ["Responsive coordination", "Acceptance scenarios", "External signal", "No churn"],
+    "docs/SYSTEM_EXPLAINER.md": ["Policy packs", "Delivery extensions", "Cases and signals", "service mission", "manager review", "WAITING_EXTERNAL"],
+    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review", "delivery enqueue-report", "persistent review agent", "case open", "case signal", "finding raise", "task wait-external", "wait signal"],
+    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy", "delivery", "persistent logical", "case payloads", "finding raise", "task wait-external"],
+    "guidance/manager.md": ["policy apply", "delivery extension", "SERVICE", "case signals", "finding", "external wait"],
+    "guidance/worker.md": ["policy", "linked to a case", "finding raise", "task wait-external"],
+    "guidance/verifier.md": ["policy", "case-linked verification", "wake"],
 }
 
 
@@ -101,7 +105,7 @@ def run_checks():
         errors.append("CLI reference is stale; run python3 scripts/generate_cli_docs.py")
 
     commands = root_commands()
-    for command in {"policy", "case", "extension", "delivery", "setup-check", "run", "report", "export"}:
+    for command in {"policy", "case", "extension", "delivery", "finding", "wait", "setup-check", "run", "report", "export"}:
         if command not in commands:
             errors.append("Missing documented root command: %s" % command)
 

@@ -11,6 +11,8 @@
   "working_directory": "/absolute/path/to/target/workspace",
   "max_parallel": 3,
   "timeout_seconds": 3600,
+  "scheduler_poll_seconds": 1,
+  "manager_review_debounce_seconds": 1,
   "models": {
     "manager": "planning-model",
     "worker": "cost-efficient-model",

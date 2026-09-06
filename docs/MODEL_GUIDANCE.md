@@ -37,6 +37,11 @@ If a behavior can be checked deterministically, enforce it outside the model.
 | Webhook retry creates duplicate review | Unique case and signal source/external IDs |
 | Long-lived reviewer develops context rot | Persistent case state with a fresh invocation per task or attempt |
 | Author reply reaches only the old reviewer | Case signal plus task-scoped inbox events |
+| Short work waits behind a long worker wave | Event-responsive scheduling fills each freed process slot |
+| Consequential evidence stays inside a worker chat | Durable finding plus a serialized manager-review trigger |
+| Provider polling consumes a model context for hours | `WAITING_EXTERNAL` releases ownership and wakes a fresh attempt |
+| Duplicate callbacks launch duplicate work | Unique wait-signal source/external IDs and atomic wakeup |
+| A deadline is mistaken for provider success | Deadline wake requires attention and explicit verification |
 
 Prompting alone is a weak enforcement mechanism. A repeated failure should usually lead to a state-machine or validation change.
 
@@ -62,6 +67,14 @@ the service objective, constraints, reviewed policies, cases, decisions, and
 sourced facts. Rotate the actual model context on every dispatch. A smaller
 model is more reliable when it receives one current case than when it must
 reconstruct authority from weeks of conversation.
+
+The responsive loop follows the same principle inside one bounded run. A
+manager review is a new, serialized invocation that receives all coalesced
+triggers. A worker that discovers mission-changing evidence raises a finding;
+it does not redesign the plan itself. A worker facing a long provider wait
+records the condition, stable external reference, next check or expected
+signal, and a mandatory deadline, then exits. The wake creates fresh work and
+never counts as proof that the condition succeeded.
 
 ## Make every invocation mechanical
 
@@ -114,6 +127,9 @@ Run the harness repeatedly against controlled scenarios:
 4. A worker dies after making a change but before reporting completion.
 5. A proposed root cause is contradicted by a later trace.
 6. A task reports success without checking the actual destination.
+7. A short task completes while an unrelated long worker remains active.
+8. Two callbacks race to wake the same external wait.
+9. A provider never responds and the mandatory deadline passes.
 
 Score whether the system restored the outcome, avoided unsafe actions, propagated decisions, canceled invalid work, and produced an audit trail that explains why each action happened.
 

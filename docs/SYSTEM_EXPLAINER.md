@@ -32,7 +32,7 @@ message.
 
 ### Manager
 
-The manager is a planner and reconciler. On each invocation it reads the complete current state and all events it has not seen. It creates a few bounded investigations, combines their findings, and then creates justified implementation or verification tasks.
+The manager is a planner and reconciler. On each invocation it reads the complete current state and all events it has not seen. It creates a few bounded investigations, combines their findings, and then creates justified implementation or verification tasks. Durable review triggers can invoke it while unrelated workers remain active; reviews are serialized and nearby normal triggers are coalesced.
 
 The manager should be restartable. It must not depend on remembering a previous conversation.
 
@@ -45,6 +45,31 @@ A pipeline incident might form three workstreams: diagnose the failure, restore 
 ### Workers
 
 A worker owns one task at a time. The worker receives a lease so two agents do not accidentally own the same work. It reads all new events, performs its bounded work, checkpoints important progress, and completes only with verification evidence.
+
+### Findings and manager reviews
+
+Workers can elevate a source-backed `ROUTINE`, `MATERIAL`, or `URGENT` finding
+without creating work. Material and urgent findings request a durable manager
+review. The manager incorporates, defers, or dismisses each consequential
+finding with a rationale and links any resulting work. Task completion, wait
+entry, expired leases, and wait deadlines also request review; ordinary
+checkpoints do not.
+
+Manager-review records serialize planning and make responsiveness measurable.
+The scheduler gives a due manager review priority over new worker claims while
+leaving sound in-flight ownership untouched.
+
+### External waits
+
+An external wait records a task's condition, provider correlation reference,
+next check or expected signal, and mandatory deadline. Entering
+`WAITING_EXTERNAL` clears the task owner and lease. The task remains
+non-terminal, does not satisfy dependencies, and consumes no agent slot after
+its harness process exits.
+
+Scheduled reconciliation, an idempotent external signal, or the deadline wakes
+the task once. Waking changes eligibility and records why; it never records
+success. A fresh owner verifies provider state and may schedule another wait.
 
 ### Policy packs
 
@@ -111,6 +136,8 @@ READY ──claim with lease──> CLAIMED
 CLAIMED ──checkpoint──> RUNNING
 RUNNING ──verified result──> DONE
 RUNNING ──durable question──> BLOCKED
+RUNNING ──external condition and deadline──> WAITING_EXTERNAL
+WAITING_EXTERNAL ──check, signal, or deadline──> READY
 BLOCKED ──decision resolved──> READY
 Any non-terminal task ──manager cancellation──> CANCELLED
 ```
@@ -132,8 +159,12 @@ When a worker claims a task, it receives an expiration time and an incremented g
 Deterministic code handles:
 
 - task ownership and leases;
+- external-wait schedules, idempotent signals, deadlines, and wake fencing;
 - dependency readiness;
 - event ordering and inbox cursors;
+- finding records, dispositions, links, and mission-completion gates;
+- coalesced, leased, serialized manager-review triggers;
+- responsive capacity-aware scheduling within bounded runs;
 - decision propagation and acknowledgment;
 - policy validation, task-graph creation, and fresh-agent constraints;
 - service/finite mission mode, idempotent cases, immutable intake payloads,
@@ -158,14 +189,25 @@ This division is deliberate. Models make judgments; code enforces bookkeeping.
 
 ## When the system stops
 
+The bounded run is an event loop rather than a worker-wave barrier. A scheduling
+turn launches one manager review or one worker batch. While child processes are
+alive it polls durable events, prioritizes due manager review, and fills newly
+free slots without waiting for unrelated workers.
+
 The run loop stops when:
 
 - the mission is complete;
 - an open human decision prevents further ready work;
+- all unfinished work is waiting for future external conditions;
 - no work is ready;
 - the configured cycle limit is reached.
 
 Stopping at the cycle limit is a safety boundary, not mission success. Inspect the board, health report, and latest agent output before resuming.
+
+When it stops as `WAITING_EXTERNAL`, it reports the earliest check, earliest
+deadline, signal expectations, and any deadline wake needing attention. An
+external scheduler resumes the next bounded run; Swarmkit does not remain alive
+for hours.
 
 For a service mission, `NO_READY_WORK` is the normal idle state. It does not
 complete the mission. An ingress adapter records a new case or signal before
@@ -185,5 +227,9 @@ Export an audit archive after every significant mission, including unsuccessful 
 - duplicate intake, missed case signals, or cases reopened without evidence;
 - completion claims with weak verification;
 - too many manager cycles that create no useful state change.
+- slow manager response to consequential findings or completed tasks;
+- findings without explicit dispositions or links to resulting work;
+- waits repeatedly rescheduled without evidence, duplicate wake signals, or
+  deadlines treated as success.
 
 Turn each recurring failure into a CLI invariant, a smaller task schema, a clearer role rule, or a harness-level guard. Prefer enforceable mechanisms over adding more prose to every prompt.

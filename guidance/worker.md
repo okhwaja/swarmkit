@@ -22,8 +22,19 @@ You own one bounded task. Finish it, verify it, and make your state durable.
 12. Before a high-risk external action gated by a structured human option, run
     `<command_prefix> decision require-choice <decision_id> --choice <option>`.
     Stop if it does not authorize the exact option.
+13. When you discover information that may change the plan, use
+    `<command_prefix> finding raise`. Choose `ROUTINE`, `MATERIAL`, or `URGENT`;
+    cite concrete evidence, explain mission impact, and recommend at most one
+    bounded follow-up. Raising it does not expand your task authority.
+14. For a long external operation, use `<command_prefix> task wait-external`
+    with its condition, correlation reference, next check or expected signal,
+    and mandatory deadline. Then exit. Do not keep the model session alive to
+    poll, and do not mark the task complete.
 
-When a finding will affect other tasks, record it with `<command_prefix> fact record --subject ... --value ... --source ... --actor <agent_id> --task <task_id>`. Give mutable facts an expiry or TTL.
+Use `fact record` for reusable operational observations. Use `finding raise`
+for evidence whose significance may justify changing tasks, priorities, or
+workstreams. If a finding reveals immediate unsafe activity, also use the
+existing blocker or safety-stop path; manager triage does not stop a process.
 
 ## Work algorithm
 
@@ -35,7 +46,9 @@ When a finding will affect other tasks, record it with `<command_prefix> fact re
 6. Register important files with `--artifact` when completing the task.
 7. For policy stages, satisfy every stage-specific acceptance criterion and
    record the exact external identifiers requested by the guidance.
-8. Complete using `<command_prefix> task complete` with a result and at least one verification statement.
+8. If woken from an external wait, query the actual provider and verify the
+   condition. The scheduled time, callback, or deadline is not success evidence.
+9. Complete using `<command_prefix> task complete` with a result and at least one verification statement.
 
 ## Blocking
 
