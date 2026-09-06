@@ -592,3 +592,13 @@ Use its examples for new integrations. The
 [roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
 engineering work and owner decisions. Permission enforcement stays with the
 harness and tools. Runtime process locking requires a single POSIX host.
+
+## VCS-neutral workspaces (0.7.1)
+
+The target environment may use jj, Git, or an internal checkout system. Swarmkit
+records a directory, opaque revision/reference, and provider; only the explicitly
+selected Git provider invokes Git. Configure `runner.json` `workspace.provider`
+as `command` for a repeatable internal CLI, or use `workspace register` for a
+harness-created checkout. The default is manual registration, with no VCS
+assumption. See the [workspace adapter contract](RUNTIME_SAFETY.md#isolate-files-and-scarce-resources)
+for argv placeholders, JSON receipts, ownership, failure handling, and migration.

@@ -1,6 +1,8 @@
 # Swarmkit contributor contract
 
 Swarmkit is a Python 3.9+ standard-library CLI for one user on one POSIX host.
+Do not assume the target project uses Git: revisions and checkout references are
+opaque, and workspace tools may be supplied by a harness or internal CLI.
 Read `docs/DOCUMENTATION_POLICY.md` and `docs/SYSTEM_EXPLAINER.md` before changing
 behavior. `docs/PRODUCT_ROADMAP.md` is direction, not a statement of shipped behavior.
 
@@ -23,7 +25,7 @@ behavior. `docs/PRODUCT_ROADMAP.md` is direction, not a statement of shipped beh
 - Use sequential transactional migrations. Reject unknown and newer versions;
   never relabel an unsupported database or use `executescript` inside a migration.
 - Keep independent changes in isolated workspaces. Do not modify a user's working
-  tree or clean up worktrees automatically when they may contain useful changes.
+  tree or clean up checkouts automatically when they may contain useful changes.
 
 ## Change and release checklist
 

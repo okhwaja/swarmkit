@@ -307,10 +307,10 @@ class RuntimeTest(unittest.TestCase):
         subprocess.run(['git','-C',str(repo),'add','.'], check=True, capture_output=True)
         subprocess.run(['git','-C',str(repo),'commit','-m','initial'], check=True, capture_output=True)
         task = self.task()
-        workspace = s.create_workspace(self.root, self.conn, task, repo, 'HEAD')
+        workspace = s.create_workspace(self.root, self.conn, task, repo, 'HEAD', provider='git')
         (Path(workspace['path']) / 'file').write_text('changed')
         self.assertEqual((repo / 'file').read_text(), 'original')
-        self.assertEqual(workspace, s.create_workspace(self.root, self.conn, task, repo, 'HEAD'))
+        self.assertEqual(workspace, s.create_workspace(self.root, self.conn, task, repo, 'HEAD', provider='git'))
 
     def test_controller_crash_preserves_child_lock_until_harness_exits(self):
         task = self.task(); self.claim(task)

@@ -1,6 +1,6 @@
 # Durable runtime and recovery
 
-This is the normative contract for the runtime added in 0.7.0. Swarmkit supports
+This is the normative contract for the runtime added in 0.7.0 and VCS-neutral workspace providers added in 0.7.1. Swarmkit supports
 one user on one POSIX host (macOS or Linux). The harness and its tools enforce
 permissions and credentials. These commands coordinate work; they do not grant
 authority or intercept arbitrary tool calls.
@@ -115,18 +115,100 @@ crash between reading and acting would lose important information.
 
 ## Isolate files and scarce resources
 
+Swarmkit does not assume a VCS. An isolated workspace is an existing directory,
+an exact provider-specific revision identifier, an optional checkout reference,
+and its task. There are three ways to supply one:
+
+- **Harness-managed (default):** the harness uses its known jj/internal checkout
+  tools, then registers the resulting directory and revision.
+- **Command adapter:** configure the local checkout CLI once in `runner.json`.
+  Swarmkit invokes it directly and registers its JSON receipt.
+- **Git:** opt into the built-in worktree provider with `--provider git` or
+  `"workspace": {"provider": "git"}`. Git is never autodetected or assumed.
+
+For a checkout already created by the harness or operator:
+
 ```bash
-python3 swarmctl.py workspace create --task TASK --repository /path/to/repo --base BASE_REF
+python3 swarmctl.py workspace register --task TASK --repository /path/to/source \
+  --path /path/to/isolated-checkout --base-revision EXACT_PROVIDER_REVISION \
+  --workspace-ref OPTIONAL_CHECKOUT_NAME
+```
+
+Register before dispatch so the harness launches in the correct directory. An
+already active task requires `--agent ATTEMPT_AGENT` and current ownership; its
+harness must switch its own tools to that directory. Registration cannot change
+an existing process's cwd. A task's registration is immutable; conflicting source,
+path, revision, reference, or provider is rejected. The source and checkout must
+be distinct existing directories, and a checkout cannot belong to two tasks.
+Adapters/harnesses remain responsible for actual isolation (for example avoiding
+shared writable files); directory registration cannot prove isolation by itself.
+
+A command adapter is usually the most efficient choice for a repeatable internal
+CLI: discovery happens once during setup instead of in every model invocation.
+Add this object to `runner.json` (the command below is illustrative, not a claim
+about your internal CLI's syntax):
+
+```json
+{
+  "workspace": {
+    "provider": "command",
+    "command": [
+      "/absolute/path/to/checkout-adapter",
+      "--source", "{repository}",
+      "--destination", "{path}",
+      "--revision", "{base}",
+      "--request-id", "{task_id}"
+    ],
+    "timeout_seconds": 300
+  }
+}
+```
+
+Then run `workspace create --task TASK --repository /path/to/source --base BASE`.
+Creation happens before claiming a task. The argv placeholders are `{repository}`
+(absolute source directory), `{path}` (suggested task-specific destination),
+`{base}` (opaque revision expression), `{task_id}` (stable request key), and `{root}`
+(absolute mission directory). Each expanded argument is passed without a shell,
+with the source as cwd. Literal braces in argv strings must be doubled.
+
+The adapter may directly be the internal CLI if it supports this output contract;
+otherwise use a small wrapper. It must print one JSON object on stdout and send
+progress messages to stderr:
+
+```json
+{"path":"/absolute/actual-checkout","base_revision":"exact-internal-revision","workspace_ref":"optional-name"}
+```
+
+`path` must be an existing absolute directory. `base_revision` must identify the
+actual immutable starting revision, even if `--base` was a moving expression.
+`workspace_ref` is optional: it can be a jj workspace name, an internal checkout
+ID, or a Git branch. Swarmkit never interprets these as Git syntax. The historical
+SQLite/API `branch` field remains an alias for the opaque `workspace_ref`.
+The actual path may differ from the suggested destination when the internal CLI
+allocates checkout locations itself. Providers should deduplicate requests using
+`task_id`; a registered identical create request returns its original receipt.
+
+Commands have a bounded timeout, at most 64 KB of JSON receipt text, and an owned
+process group. Nonzero exit, timeout, invalid receipts, missing directories, or
+a task becoming ineligible during creation prevent registration. The command may
+still have created a checkout: Swarmkit does not automatically retry or delete
+it. Inspect it, then use `workspace register` if appropriate. An unregistered
+suggested destination already on disk also requires inspection before retry.
+Do not create detached background processes in a checkout adapter.
+
+Dispatch uses the registered directory regardless of VCS, and refuses a missing
+checkout. Swarmkit retains checkouts for explicit inspection/integration and does
+not invoke Git to inspect or clean up manual/command workspaces. Existing Git
+registrations continue to dispatch after upgrade; future creation must select
+Git explicitly. Without a provider, `workspace create` explains how to configure
+an adapter or register a checkout instead of attempting Git.
+
+Resource operations remain VCS-independent:
+
+```bash
 python3 swarmctl.py resource acquire pipeline/staging --task TASK --agent ATTEMPT_AGENT
 python3 swarmctl.py resource release LEASE_TOKEN --agent ATTEMPT_AGENT
 ```
-
-Create a worktree before claiming an editing task. Its resolved base commit,
-branch, path, and task are durable, and dispatch uses it as the working directory.
-The original checkout is untouched. Worktrees are retained for explicit human or
-integration-owner inspection; automatic deletion is intentionally absent. If Git
-created a worktree but the process crashed before registration, inspect Git's
-worktree list and reconcile it manually before retrying creation.
 
 Resource leases are exclusive, task/attempt-bound, and no longer than the task
 lease. A new owner cannot take an expired resource from an unfinished harness or
@@ -239,9 +321,10 @@ and the database. It is deliberately less useful for detailed postmortems.
 
 ## Upgrade
 
-Known schema versions 1–6 upgrade transactionally to schema 7. Versions 2–6 were
+Known schema versions 1–7 upgrade transactionally to schema 8. Versions 2–6 were
 additive table releases; their compatible table definitions are replayed before
-the version 7 runtime tables. Each version step and final metadata update occur
+the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
+metadata; existing registrations retain provider `git`. Each version step and final metadata update occur
 inside one write transaction. A failed migration rolls back, and unknown/newer
 versions fail instead of being relabeled. Stop old controllers before upgrading;
 back up the mission directory before moving between releases. Old history is

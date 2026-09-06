@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.1
+
+- Removed the implicit Git assumption from workspace creation. Default to
+  harness-managed checkouts; Git worktrees are an explicit optional provider.
+- Added configurable shell-free checkout commands with bounded timeouts and JSON
+  receipts, plus registration of checkouts created by jj/internal harness tools.
+- Treat base revisions and checkout references as provider-specific opaque values;
+  dispatch uses the registered directory without requiring Git metadata.
+- Added ownership/isolation checks, immutable registration, missing-checkout
+  diagnostics, adapter failure handling, and provider setup validation.
+- Schema 8 preserves existing Git registrations while adding provider and
+  requested-base provenance. Existing workspaces still dispatch; select Git
+  explicitly for future creation. Added non-Git adapter and migration tests.
+
 ## 0.7.0
 
 - Added crash-safe attempt records, POSIX controller/process locks, recovery,

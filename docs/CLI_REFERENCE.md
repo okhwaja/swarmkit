@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.7.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.7.1`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
@@ -31,7 +31,8 @@ positional arguments:
                         environment
     review-commit       Record a semantic disposition for every manager
                         trigger
-    workspace           Create or inspect task-specific Git worktrees
+    workspace           Create, register, or inspect task-specific isolated
+                        checkouts
     serve               Poll durable service state with bounded restartable
                         scheduler runs
     audit-verify        Verify every manifest file in an audit ZIP
@@ -1550,26 +1551,30 @@ optional arguments:
 ## `swarmctl workspace`
 
 ```text
-usage: swarmctl workspace [-h] {create,list} ...
+usage: swarmctl workspace [-h] {create,register,list} ...
 
 positional arguments:
-  {create,list}
+  {create,register,list}
+    register            Register a checkout created by the harness or an
+                        external tool
 
 optional arguments:
-  -h, --help     show this help message and exit
+  -h, --help            show this help message and exit
 ```
 
 ## `swarmctl workspace create`
 
 ```text
 usage: swarmctl workspace create [-h] --task TASK --repository REPOSITORY
-                                 --base BASE
+                                 --base BASE [--provider {git,command,manual}]
 
 optional arguments:
   -h, --help            show this help message and exit
   --task TASK
   --repository REPOSITORY
-  --base BASE
+  --base BASE           Provider-specific base revision expression
+  --provider {git,command,manual}
+                        Override runner.json workspace provider
 ```
 
 ## `swarmctl workspace list`
@@ -1579,6 +1584,28 @@ usage: swarmctl workspace list [-h]
 
 optional arguments:
   -h, --help  show this help message and exit
+```
+
+## `swarmctl workspace register`
+
+```text
+usage: swarmctl workspace register [-h] --task TASK --repository REPOSITORY
+                                   --path PATH --base-revision BASE_REVISION
+                                   [--workspace-ref WORKSPACE_REF]
+                                   [--agent AGENT]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --repository REPOSITORY
+                        Source directory; no VCS metadata required
+  --path PATH           Existing isolated checkout directory
+  --base-revision BASE_REVISION
+                        Exact provider-specific revision identifier
+  --workspace-ref WORKSPACE_REF
+                        Optional jj workspace name, branch, or internal
+                        checkout reference
+  --agent AGENT         Required when registering for an active task attempt
 ```
 
 ## `swarmctl workstream`

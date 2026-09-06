@@ -37,5 +37,12 @@ publishing task writes and leave the work for recovery.
 
 For contracted/strict tasks, record successful `evidence record` output for every
 criterion on the exact revision and environment. A text assertion cannot replace
-missing evidence. Use task worktrees for edits and resource leases for scarce
+missing evidence. Use task-specific isolated checkouts for edits and resource leases for scarce
 shared systems; leave integration to the assigned reducer.
+
+Do not assume Git in the target environment. Use its configured workspace command
+provider or the harness's known jj/internal checkout tool. Register harness-created
+checkouts with `workspace register`, including the actual opaque base revision.
+Select `--provider git` only for a Git workflow. Do not substitute a Git SHA or
+branch name for a provider-specific revision/reference. Register before dispatch;
+an active harness that registers a checkout must use that directory itself.
