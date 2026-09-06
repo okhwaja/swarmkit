@@ -20,5 +20,8 @@
     "extension": "cost-efficient-model",
     "verifier": "review-model"
   },
-  "escalation_models": {}
+  "escalation_models": {},
+  "workspace": {
+    "provider": "manual"
+  }
 }

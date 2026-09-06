@@ -10,7 +10,7 @@ To create a portable ZIP:
 python3 scripts/package.py
 ```
 
-This writes `dist/swarmkit-0.7.0.zip` with the CLI, guidance, documentation,
+This writes `dist/swarmkit-0.7.1.zip` with the CLI, guidance, documentation,
 examples, policy packs, responsive scheduling, persistent-service cases,
 delivery extensions, and deterministic responsive acceptance tests.
 
@@ -414,3 +414,7 @@ Use its examples for new integrations. The
 [roadmap backlog](docs/ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
 engineering work and owner decisions. Permission enforcement stays with the
 harness and tools. Runtime process locking requires a single POSIX host.
+
+Workspace isolation is VCS-neutral: register a checkout created by your harness,
+configure an internal checkout CLI once, or explicitly select Git worktrees.
+See [workspace providers](docs/RUNTIME_SAFETY.md#isolate-files-and-scarce-resources).

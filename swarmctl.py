@@ -24,8 +24,8 @@ import time
 import zipfile
 
 
-VERSION = "0.7.0"
-SCHEMA_VERSION = "7"
+VERSION = "0.7.1"
+SCHEMA_VERSION = "8"
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
 TERMINAL_TASK_STATES = {"DONE", "CANCELLED"}
 VALID_TASK_STATES = {
@@ -586,6 +586,14 @@ def execute_schema(conn, source):
             conn.execute(statement)
 
 
+def migrate_workspace_schema(conn):
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(workspaces)')}
+    if 'provider' not in columns:
+        conn.execute("ALTER TABLE workspaces ADD COLUMN provider TEXT NOT NULL DEFAULT 'git'")
+    if 'requested_base' not in columns:
+        conn.execute('ALTER TABLE workspaces ADD COLUMN requested_base TEXT')
+
+
 def ensure_schema(conn):
     """Upgrade a known schema under one write transaction; never downgrade."""
     try:
@@ -596,7 +604,10 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            execute_schema(conn, SCHEMA if target <= 6 else RUNTIME_SCHEMA)
+            if target == 8:
+                migrate_workspace_schema(conn)
+            else:
+                execute_schema(conn, SCHEMA if target <= 6 else RUNTIME_SCHEMA)
             conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(target),))
         conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('mission_mode','FINITE')")
         conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('swarmctl_version',?)", (VERSION,))
@@ -619,6 +630,7 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
     try:
         conn.executescript(SCHEMA)
         execute_schema(conn, RUNTIME_SCHEMA)
+        migrate_workspace_schema(conn)
         now = utcnow()
         mission_id = make_id("M")
         conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
@@ -638,6 +650,7 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
     runner = {
         "command": [],
         "working_directory": str(root.parent),
+        "workspace": {"provider": "manual"},
         "max_parallel": 3,
         "timeout_seconds": 3600,
         "scheduler_poll_seconds": 1,
@@ -4112,6 +4125,8 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
             workspace = conn.execute('SELECT path FROM workspaces WHERE task_id=?', (task_id,)).fetchone()
             if workspace:
                 workdir = Path(workspace['path'])
+                if not workdir.is_dir():
+                    raise SwarmError('Registered workspace is missing; restore it before dispatch')
             attempt = attempt_for_task(conn, task_id)
             if attempt and attempt['generation'] > 1:
                 model = config.get('escalation_models', {}).get(role, model)
@@ -4314,6 +4329,12 @@ def setup_check(root):
         record("prompt_delivery", False, "Prompt delivery cannot be checked until command_argv is fixed")
         record("runner_executable", False, "Runner executable cannot be checked until command_argv is fixed")
         record("no_shell_interpolation", False, "Shell use cannot be checked until command_argv is fixed")
+
+    try:
+        workspace = workspace_config(root)
+        record('workspace_provider', True, 'Workspace provider: ' + workspace['provider'] + ' (creation is explicit; no checkout command was run)')
+    except (SwarmError, OSError, ValueError) as exc:
+        record('workspace_provider', False, str(exc))
 
     workdir_value = config.get("working_directory") if config else None
     if workdir_value is not None and not isinstance(workdir_value, str):
@@ -5550,32 +5571,160 @@ def explain_state(conn):
             'event_watermark': conn.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]}
 
 
-def create_workspace(root, conn, task_id, repository, base):
+def workspace_config(root, provider=None):
+    """Workspace setup is independent of the agent launch command."""
+    path = root / 'runner.json'
+    config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    if not isinstance(config, dict) or not isinstance(config.get('workspace', {}), dict):
+        raise SwarmError('runner.json workspace must be an object')
+    value = dict(config.get('workspace', {}))
+    selected = provider or value.get('provider', 'manual')
+    if selected not in {'manual', 'command', 'git'}:
+        raise SwarmError('Workspace provider must be manual, command, or git')
+    value['provider'] = selected
+    timeout = value.get('timeout_seconds', 300)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        raise SwarmError('Workspace timeout_seconds must be a positive integer')
+    value['timeout_seconds'] = timeout
+    if selected == 'command':
+        command = value.get('command')
+        if not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command):
+            raise SwarmError('Workspace command provider requires a nonempty argv array')
+    return value
+
+
+def workspace_task(conn, task_id, agent=None):
     task = task_row(conn, task_id)
-    if task['status'] in ACTIVE_TASK_STATES or task['status'] in TERMINAL_TASK_STATES:
-        raise SwarmError('Create workspace before claiming task')
+    if task['status'] in TERMINAL_TASK_STATES:
+        raise SwarmError('Cannot attach a workspace to a terminal task')
+    if task['status'] in ACTIVE_TASK_STATES:
+        if not agent:
+            raise SwarmError('Active task workspace registration requires its --agent')
+        require_owner(task, agent)
+    if runtime_state(conn)['desired_state'] not in {'ACTIVE', 'DRAINING'}:
+        raise SwarmError('Mission is not accepting workspace changes')
+    return task
+
+
+def workspace_dict(row):
+    result = dict(row)
+    # Keep the legacy branch column for old consumers; generic clients use workspace_ref.
+    result['workspace_ref'] = result['branch']
+    return result
+
+
+@atomic_write
+def register_workspace(conn, task_id, repository, path, base_revision, workspace_ref='',
+                       provider='manual', agent=None, requested_base=None):
+    task = workspace_task(conn, task_id, agent)
+    if provider not in {'manual', 'command', 'git'}:
+        raise SwarmError('Unknown workspace provider')
+    if not isinstance(base_revision, str) or not base_revision.strip():
+        raise SwarmError('Workspace requires an exact base revision identifier')
+    if not isinstance(workspace_ref, str):
+        raise SwarmError('Workspace reference must be a string')
     repository = Path(repository).expanduser().resolve()
+    path = Path(path).expanduser().resolve()
+    if not repository.is_dir() or not path.is_dir():
+        raise SwarmError('Workspace source and checkout must be existing directories')
+    if repository == path:
+        raise SwarmError('An isolated workspace cannot be the source directory itself')
+    existing = conn.execute('SELECT * FROM workspaces WHERE task_id=?', (task_id,)).fetchone()
+    if existing:
+        if (existing['repository'], existing['path'], existing['base_revision'], existing['branch'], existing['provider']) != (
+                str(repository), str(path), base_revision, workspace_ref, provider):
+            raise SwarmError('Task already has a different workspace; existing registration is immutable')
+        return workspace_dict(existing)
+    if conn.execute('SELECT 1 FROM workspaces WHERE path=?', (str(path),)).fetchone():
+        raise SwarmError('Checkout is already registered to another task')
+    conn.execute('INSERT INTO workspaces(task_id,path,repository,base_revision,branch,provider,requested_base) VALUES(?,?,?,?,?,?,?)',
+                 (task_id, str(path), str(repository), base_revision, workspace_ref, provider, requested_base))
+    add_event(conn, task['mission_id'], 'task', task_id, 'WORKSPACE_CREATED', agent or 'operator',
+              {'path': str(path), 'repository': str(repository), 'base_revision': base_revision,
+               'workspace_ref': workspace_ref, 'provider': provider, 'requested_base': requested_base})
+    return workspace_dict(conn.execute('SELECT * FROM workspaces WHERE task_id=?', (task_id,)).fetchone())
+
+
+def run_workspace_command(command, repository, timeout):
+    # A failed/timeout adapter may have created a checkout. Never retry automatically
+    # or delete its output: the operator can inspect and register it explicitly.
+    try:
+        with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output, tempfile.TemporaryFile(mode='w+', encoding='utf-8') as errors:
+            process = subprocess.Popen(command, cwd=str(repository), stdout=output, stderr=errors,
+                                       start_new_session=True)
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                raise SwarmError('Workspace command timed out; inspect for a created checkout before retrying')
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            errors.seek(0)
+            if process.returncode:
+                raise SwarmError('Workspace command failed; inspect before retrying: ' + errors.read(4000).strip())
+            output.seek(0)
+            result = output.read(65537)
+            if len(result) > 65536:
+                raise SwarmError('Workspace command output exceeds 64KB; print one small JSON receipt')
+            return result
+    except OSError as exc:
+        raise SwarmError('Could not run workspace command: %s' % exc)
+
+
+def create_workspace(root, conn, task_id, repository, base, provider=None):
+    task = workspace_task(conn, task_id)
+    config = workspace_config(root, provider)
+    repository = Path(repository).expanduser().resolve()
+    if not repository.is_dir() or not isinstance(base, str) or not base.strip():
+        raise SwarmError('Workspace creation requires an existing source directory and base revision')
     with process_lock(root / 'workspaces.lock'):
         existing = conn.execute('SELECT * FROM workspaces WHERE task_id=?', (task_id,)).fetchone()
         if existing:
-            return dict(existing)
-        resolved = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', base + '^{commit}'],
-                                  capture_output=True, text=True)
-        if resolved.returncode:
-            raise SwarmError('Cannot resolve workspace base revision: ' + resolved.stderr.strip())
-        revision = resolved.stdout.strip()
+            if existing['repository'] != str(repository) or existing['provider'] != config['provider']:
+                raise SwarmError('Task already has a workspace from a different source or provider')
+            if existing['requested_base'] is not None and existing['requested_base'] != base:
+                raise SwarmError('Task workspace was created with a different base request')
+            if not Path(existing['path']).is_dir():
+                raise SwarmError('Registered workspace is missing; restore it before dispatch')
+            return workspace_dict(existing)
+        if config['provider'] == 'manual':
+            raise SwarmError('No workspace creation provider configured. Register a harness-created checkout with workspace register, configure workspace.provider=command, or select --provider git')
         path = root / 'workspaces' / task_id
         path.parent.mkdir(parents=True, exist_ok=True)
-        branch = 'codex/swarm-' + task_id.lower()
-        created = subprocess.run(['git', '-C', str(repository), 'worktree', 'add', '-b', branch, str(path), revision],
-                                 capture_output=True, text=True)
-        if created.returncode:
-            raise SwarmError('Cannot create worktree: ' + created.stderr.strip())
-        conn.execute('INSERT INTO workspaces VALUES(?,?,?,?,?)', (task_id, str(path), str(repository), revision, branch))
-        add_event(conn, task['mission_id'], 'task', task_id, 'WORKSPACE_CREATED', 'operator',
-                  {'path': str(path), 'base_revision': revision, 'branch': branch})
-        conn.commit()
-        return dict(conn.execute('SELECT * FROM workspaces WHERE task_id=?', (task_id,)).fetchone())
+        if path.exists():
+            raise SwarmError('Unregistered workspace path already exists; inspect and register it before retrying')
+        if config['provider'] == 'git':
+            resolved = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', '--end-of-options', base + '^{commit}'],
+                                      capture_output=True, text=True, timeout=config['timeout_seconds'])
+            if resolved.returncode:
+                raise SwarmError('Cannot resolve workspace base revision: ' + resolved.stderr.strip())
+            revision = resolved.stdout.strip()
+            reference = 'codex/swarm-' + task_id.lower()
+            run_workspace_command(['git', '-C', str(repository), 'worktree', 'add', '-b', reference, str(path), revision],
+                                  repository, config['timeout_seconds'])
+        else:
+            values = {'root': str(root), 'repository': str(repository), 'base': base,
+                      'path': str(path), 'task_id': task_id}
+            try:
+                command = [part.format(**values) for part in config['command']]
+            except (KeyError, ValueError, IndexError) as exc:
+                raise SwarmError('Invalid workspace command placeholder: %s' % exc)
+            raw = run_workspace_command(command, repository, config['timeout_seconds'])
+            try:
+                receipt = json.loads(raw)
+            except ValueError:
+                raise SwarmError('Workspace command must print a JSON object with path and base_revision; inspect any created checkout before retrying')
+            if not isinstance(receipt, dict) or not isinstance(receipt.get('path'), str) or not Path(receipt['path']).is_absolute():
+                raise SwarmError('Workspace receipt requires an absolute path')
+            path = Path(receipt['path'])
+            revision = receipt.get('base_revision')
+            reference = receipt.get('workspace_ref', '')
+        # Recheck task state under a write lock after the external CLI returns.
+        return register_workspace(conn, task_id, repository, path, revision, reference,
+                                  config['provider'], requested_base=base)
 
 
 def verify_audit(path):
@@ -5729,12 +5878,20 @@ def add_runtime_cli(sub):
     review.add_argument('--agent', required=True)
     review.add_argument('--dispositions', required=True, help='JSON list in trigger order')
     review.add_argument('--summary', required=True)
-    workspace = sub.add_parser('workspace', help='Create or inspect task-specific Git worktrees')
+    workspace = sub.add_parser('workspace', help='Create, register, or inspect task-specific isolated checkouts')
     ws = workspace.add_subparsers(dest='workspace_command', required=True)
     wc = ws.add_parser('create')
     wc.add_argument('--task', required=True)
     wc.add_argument('--repository', required=True)
-    wc.add_argument('--base', required=True)
+    wc.add_argument('--base', required=True, help='Provider-specific base revision expression')
+    wc.add_argument('--provider', choices=['git', 'command', 'manual'], help='Override runner.json workspace provider')
+    wr = ws.add_parser('register', help='Register a checkout created by the harness or an external tool')
+    wr.add_argument('--task', required=True)
+    wr.add_argument('--repository', required=True, help='Source directory; no VCS metadata required')
+    wr.add_argument('--path', required=True, help='Existing isolated checkout directory')
+    wr.add_argument('--base-revision', required=True, help='Exact provider-specific revision identifier')
+    wr.add_argument('--workspace-ref', default='', help='Optional jj workspace name, branch, or internal checkout reference')
+    wr.add_argument('--agent', help='Required when registering for an active task attempt')
     ws.add_parser('list')
     service = sub.add_parser('serve', help='Poll durable service state with bounded restartable scheduler runs')
     service.add_argument('--max-polls', type=int, default=120)
@@ -5796,9 +5953,11 @@ def handle_runtime_cli(root, args):
             result = {'review_id': args.review_id, 'committed': True}
         elif args.command == 'workspace':
             if args.workspace_command == 'create':
-                result = create_workspace(root, conn, args.task, args.repository, args.base)
+                result = create_workspace(root, conn, args.task, args.repository, args.base, args.provider)
+            elif args.workspace_command == 'register':
+                result = register_workspace(conn, args.task, args.repository, args.path, args.base_revision, args.workspace_ref, agent=args.agent)
             else:
-                result = [dict(r) for r in conn.execute('SELECT * FROM workspaces ORDER BY task_id')]
+                result = [workspace_dict(r) for r in conn.execute('SELECT * FROM workspaces ORDER BY task_id')]
         else:
             result = verify_audit(args.archive)
         print_json(result)

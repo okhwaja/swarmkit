@@ -346,3 +346,10 @@ without performing a real external action. Enable strict evidence and confirm a
 missing or changed result file blocks completion. Verify an export with
 `audit-verify`. A successful process exit alone is not a semantic manager review
 commit in strict mode. Test reboot autostart separately if the owner configures it.
+
+For workspace setup, discover the target's actual VCS and checkout tools. Do not
+assume Git or install it just for Swarmkit. Prefer a one-time command adapter when
+an internal checkout CLI is repeatable; otherwise have the harness create and
+register a checkout. Verify an opaque base revision, distinct source/destination,
+and dispatch cwd with [the adapter protocol](docs/RUNTIME_SAFETY.md#isolate-files-and-scarce-resources).
+`setup-check` validates provider configuration without creating a checkout.
