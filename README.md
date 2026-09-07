@@ -7,7 +7,7 @@ bounded tasks, and a local database preserves the work and the decisions behind 
 Use it with an agent harness you already have. Swarmkit supplies coordination,
 not an AI model, provider credentials, or permission to take external actions.
 It runs on one POSIX machine with Python 3.9+ and the standard library. There is
-no Python package installation or server to configure.
+no third-party Python dependency or server to configure.
 
 ## Is this for me?
 
@@ -26,13 +26,53 @@ for work where durable coordination earns its extra setup. It does not run a
 distributed fleet or include ready-made GitHub, email, or pipeline integrations.
 Your harness or adapters provide those tools.
 
-## Try it without an agent
+## Install the CLI
 
-From the copied or extracted project directory:
+Keep the copied or extracted Swarmkit directory in a permanent location. From it:
 
 ```sh
-python3 swarmctl.py demo
-python3 swarmctl.py --root swarm-demo/.swarm status --brief
+./bin/swarmctl install
+export PATH="$HOME/.local/bin:$PATH"
+swarmctl --help
+```
+
+The installer creates `~/.local/bin/swarmctl`, pointing to this package and the
+Python interpreter used during installation. It needs no network or sudo and
+never replaces a different existing command. Use `--bin-dir /your/bin` to choose
+another directory. Add that directory to your shell or agent's PATH for future
+sessions; the installer does not edit shell profiles. Repeating installation at
+the same location is safe. To move the package or switch Python, inspect and remove
+the old launcher, then install again. To uninstall, remove that launcher.
+
+You can also run `./bin/swarmctl` directly without installing. Keep the whole
+package: its guides, role instructions, and examples are used at runtime.
+
+## Ask an agent to use Swarmkit
+
+Give your agent the mission directory and your request:
+
+> Use Swarmkit for this work. Read `swarmctl guide`, use mission state at
+> `/work/pipeline/.swarm`, and keep all changes local.
+
+The CLI includes offline workflow documentation and command-specific help:
+
+```sh
+swarmctl guide
+swarmctl help ask
+swarmctl decision resolve --help
+```
+
+Your agent process must have `swarmctl` on PATH. If its environment differs from
+your terminal, give it the absolute installed launcher path. Harness setup is
+still required before Swarmkit can launch additional agent sessions.
+
+## Try it without an agent
+
+From a directory where you want the demo files:
+
+```sh
+swarmctl demo
+swarmctl --root swarm-demo/.swarm status --brief
 ```
 
 The demo creates `swarm-demo/`, walks through a **synthetic** pipeline repair and
@@ -47,7 +87,7 @@ you explicitly pass `--root`.
 when convenient. It does not need to be a Git repository.
 
 ```sh
-python3 swarmctl.py --root /work/pipeline/.swarm init \
+swarmctl --root /work/pipeline/.swarm init \
   --objective "Restore reliable pipeline delivery" \
   --success "New records arrive and the backlog is accounted for" \
   --constraint "Ask before production changes"
@@ -75,15 +115,15 @@ verify the integration. `init` preserves an existing `runner.json`.
 Check the configuration without launching an agent:
 
 ```sh
-python3 swarmctl.py --root /work/pipeline/.swarm setup-check
+swarmctl --root /work/pipeline/.swarm setup-check
 ```
 
 **3. Run and follow progress.**
 
 ```sh
-python3 swarmctl.py --root /work/pipeline/.swarm run --max-cycles 20
-python3 swarmctl.py --root /work/pipeline/.swarm status --brief
-python3 swarmctl.py --root /work/pipeline/.swarm report
+swarmctl --root /work/pipeline/.swarm run --max-cycles 20
+swarmctl --root /work/pipeline/.swarm status --brief
+swarmctl --root /work/pipeline/.swarm report
 ```
 
 The bounded controller stops when it completes, reaches its cycle limit, or has
@@ -120,5 +160,5 @@ See [workspace configuration](docs/RUNTIME_SAFETY.md).
 - [Roadmap backlog](docs/ROADMAP_BACKLOG.md): remaining capabilities and integration decisions.
 
 To create a portable release, run `python3 scripts/package.py`. It writes
-`dist/swarmkit-0.11.2.zip`. Run `python3 -B scripts/release_check.py` to test both
+`dist/swarmkit-0.12.0.zip`. Run `python3 -B scripts/release_check.py` to test both
 the source tree and an extracted package. Local mission files are excluded.

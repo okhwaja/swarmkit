@@ -10,11 +10,11 @@ authority or intercept arbitrary tool calls.
 All examples assume `SWARM_ROOT` points at a mission initialized with `init`.
 
 ```bash
-python3 swarmctl.py pause --reason 'Investigate a change of plans'
-python3 swarmctl.py recover
-python3 swarmctl.py why
-python3 swarmctl.py resume --reason 'Continue the current plan'
-python3 swarmctl.py run --max-cycles 20
+swarmctl pause --reason 'Investigate a change of plans'
+swarmctl recover
+swarmctl why
+swarmctl resume --reason 'Continue the current plan'
+swarmctl run --max-cycles 20
 ```
 
 `pause` immediately stops new task, manager, delivery, and harness claims and
@@ -78,12 +78,12 @@ Leases still fence writes. Recovery does not make a stale process trustworthy.
 The effect ledger is an explicit integration protocol. For a claimed task:
 
 ```bash
-python3 swarmctl.py effect prepare --task TASK --agent ATTEMPT_AGENT \
+swarmctl effect prepare --task TASK --agent ATTEMPT_AGENT \
   --key 'provider:object:revision:action' --target 'provider/object' \
   --revision EXACT_REVISION --parameters '{"operation":"approve"}'
-python3 swarmctl.py effect start EFFECT --actor ATTEMPT_AGENT
+swarmctl effect start EFFECT --actor ATTEMPT_AGENT
 # Perform the action through the harness tool, using the same provider idempotency key.
-python3 swarmctl.py effect succeeded EFFECT --actor ATTEMPT_AGENT --receipt 'provider receipt'
+swarmctl effect succeeded EFFECT --actor ATTEMPT_AGENT --receipt 'provider receipt'
 ```
 
 `prepare` deduplicates the exact task, target, revision, and parameters. Reusing a
@@ -122,9 +122,9 @@ subscription does not claim the provider job stopped or succeeded. No approval i
 elapsed time or from a harness exit code.
 
 ```bash
-python3 swarmctl.py inbox --agent ATTEMPT_AGENT --task TASK --lease --limit 50
+swarmctl inbox --agent ATTEMPT_AGENT --task TASK --lease --limit 50
 # Apply the events using their stable event IDs and idempotent commands.
-python3 swarmctl.py inbox --agent ATTEMPT_AGENT --ack DELIVERY_TOKEN
+swarmctl inbox --agent ATTEMPT_AGENT --ack DELIVERY_TOKEN
 ```
 
 A batch is retained until acknowledged. Expiry redelivers the same events with a
@@ -158,7 +158,7 @@ and its task. There are three ways to supply one:
 For a checkout already created by the harness or operator:
 
 ```bash
-python3 swarmctl.py workspace register --task TASK --repository /path/to/source \
+swarmctl workspace register --task TASK --repository /path/to/source \
   --path /path/to/isolated-checkout --base-revision EXACT_PROVIDER_REVISION \
   --workspace-ref OPTIONAL_CHECKOUT_NAME
 ```
@@ -232,15 +232,15 @@ After checking the internal CLI/provider, record what actually happened:
 
 ```bash
 # A checkout exists. Record its exact path and starting revision.
-python3 swarmctl.py workspace reconcile WC_ID --outcome created \
+swarmctl workspace reconcile WC_ID --outcome created \
   --observation "Provider lookup returned checkout 42" \
   --path /absolute/actual-checkout --base-revision EXACT_REVISION \
   --workspace-ref OPTIONAL_CHECKOUT_NAME
 # Repeat the original create request to attach that recorded checkout.
-python3 swarmctl.py workspace create --task TASK --repository /path/to/source --base BASE
+swarmctl workspace create --task TASK --repository /path/to/source --base BASE
 
 # Or, only after proving no checkout was created, allow a fresh invocation.
-python3 swarmctl.py workspace reconcile WC_ID --outcome not-created \
+swarmctl workspace reconcile WC_ID --outcome not-created \
   --observation "Provider lookup found no checkout for this request"
 ```
 
@@ -278,8 +278,8 @@ an adapter or register a checkout instead of attempting Git.
 Resource operations remain VCS-independent:
 
 ```bash
-python3 swarmctl.py resource acquire pipeline/staging --task TASK --agent ATTEMPT_AGENT
-python3 swarmctl.py resource release LEASE_TOKEN --agent ATTEMPT_AGENT
+swarmctl resource acquire pipeline/staging --task TASK --agent ATTEMPT_AGENT
+swarmctl resource release LEASE_TOKEN --agent ATTEMPT_AGENT
 ```
 
 Resource leases are exclusive, task/attempt-bound, and no longer than the task
@@ -293,15 +293,15 @@ not implemented.
 ## Evidence and bounded context
 
 ```bash
-python3 swarmctl.py evidence contract --task TASK --revision EXACT_REVISION --environment ENV
-python3 swarmctl.py configure --strict-evidence on
+swarmctl evidence contract --task TASK --revision EXACT_REVISION --environment ENV
+swarmctl configure --strict-evidence on
 # After claiming and performing the check, capture its output in a result file.
-python3 swarmctl.py evidence record --task TASK --agent ATTEMPT_AGENT \
+swarmctl evidence record --task TASK --agent ATTEMPT_AGENT \
   --criterion 'Exact acceptance criterion' --revision EXACT_REVISION --environment ENV \
   --command 'actual test command' --exit-code 0 --path /path/to/result.log
-python3 swarmctl.py evidence gaps --task TASK
-python3 swarmctl.py evidence show --task TASK
-python3 swarmctl.py evidence list --task TASK --limit 20
+swarmctl evidence gaps --task TASK
+swarmctl evidence show --task TASK
+swarmctl evidence list --task TASK --limit 20
 ```
 
 `evidence show` explains each criterion using the record that actually governs
@@ -377,10 +377,10 @@ The full commit remains in the event history.
 Pause, drain/recover live harnesses, and reconcile uncertain effects before:
 
 ```bash
-python3 swarmctl.py amend --objective 'Revised objective' --success 'Revised criterion' \
+swarmctl amend --objective 'Revised objective' --success 'Revised criterion' \
   --constraint 'Current boundary' --reason 'Changed priorities'
-python3 swarmctl.py configure --limits '{"max_tasks":100,"max_runs":200,"max_attempts_per_task":3}'
-python3 swarmctl.py resume --reason 'Manager may review revised plan'
+swarmctl configure --limits '{"max_tasks":100,"max_runs":200,"max_attempts_per_task":3}'
+swarmctl resume --reason 'Manager may review revised plan'
 ```
 
 Amendment replaces the entire objective, success-criterion list, and constraint
@@ -414,10 +414,10 @@ This simple routing is attempt-based; it does not classify ambiguity, costs, or 
 ## Inspect and share a consistent run
 
 ```bash
-python3 swarmctl.py why
-python3 swarmctl.py export --output private-audit.zip --include-artifacts
-python3 swarmctl.py export --output shareable-telemetry.zip --share-safe
-python3 swarmctl.py audit-verify private-audit.zip
+swarmctl why
+swarmctl export --output private-audit.zip --include-artifacts
+swarmctl export --output shareable-telemetry.zip --share-safe
+swarmctl audit-verify private-audit.zip
 ```
 
 Private exports freeze SQLite once without reconciling that historical copy, and derive snapshot, board, events, health, and

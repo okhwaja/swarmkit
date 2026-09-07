@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.0
+
+- Install the bundled `swarmctl` command with `./bin/swarmctl install`. The launcher
+  works outside the package directory, pins its package and Python interpreter,
+  and preserves existing different commands. No downloads or shell-profile edits.
+- Added offline `swarmctl guide [topic]` for agents and humans, plus
+  `swarmctl help [command ...]`. Bare invocation shows help without mission access.
+- Command help now describes common workflows, side effects, and next actions.
+  Product documentation uses the installed CLI and explains PATH setup for agents.
+- Python entry points and pinned role invocations remain compatible. No schema
+  change from 12.
+
 ## 0.11.2
 
 - Private audits omit runtime symlinks and special files rather than following

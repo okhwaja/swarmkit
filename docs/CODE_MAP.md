@@ -6,7 +6,8 @@ Python dependencies. Start with the module that owns the behavior you want to ch
 | Area | Files | Responsibility |
 |---|---|---|
 | Entry points | `swarmctl.py`, `bin/swarmctl`, `swarmkit/__main__.py` | Launch the same CLI. The root Python file retains imports for older adapters. |
-| Command interface | `swarmkit/cli.py` | Parse arguments and route them to domain functions. |
+| Command interface | `swarmkit/cli.py`, `swarmkit/cli_help.py` | Parse commands, expose offline guides and workflow help, and route to domain functions. |
+| CLI installation | `swarmkit/installation.py` | Publish a user-local launcher without replacing existing commands or editing shell profiles. |
 | Persistence | `swarmkit/schema.py`, `swarmkit/storage.py`, `swarmkit/core.py` | Schema history, connections, state guards, transactions, IDs, and time. |
 | Work | `swarmkit/tasks.py`, `swarmkit/policies.py` | Missions, workstreams, task attempts, planning limits, and reusable workflows. |
 | Coordination | `swarmkit/coordination.py`, `swarmkit/decisions.py`, `swarmkit/cases.py` | Reconciliation, manager reviews, findings, external waits, decisions, service intake, and briefing inquiries. |

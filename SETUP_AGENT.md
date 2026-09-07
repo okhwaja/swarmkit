@@ -43,10 +43,24 @@ status files are generated views, not an agent-to-agent message bus.
   or background workers for these invocations unless they are fully subordinate
   to the dispatched role and cannot compete for Swarmkit leases.
 - The invoked agent must be able to read the generated prompt file and run the
-  local `swarmctl.py` CLI in the mission root.
+  installed `swarmctl` CLI with the correct mission root.
 - Do not edit `swarmctl.py` merely to match a harness's command syntax. Prefer a
   small adapter executable. If the contract cannot be implemented without a
   Swarmkit change, stop and document the exact incompatibility.
+
+## Make the CLI available
+
+Keep the complete package in a stable directory. From that directory, run
+`./bin/swarmctl install`; use `--bin-dir` if the destination environment has a
+preferred command directory. Add the printed directory to the harness's PATH as
+well as your terminal's PATH. The installer does not modify shell profiles, fetch
+dependencies, or replace a different existing command. Keep the package in place.
+
+From an unrelated directory, verify `swarmctl --version`, `swarmctl guide`, and
+`swarmctl help decision resolve`. If a GUI agent has a different PATH, configure
+that environment explicitly or give it the installed command's absolute path.
+Generated role prompts retain an absolute package command prefix so they cannot
+accidentally select another installed version. Follow that prefix when dispatched.
 
 ## Discover the harness contract
 
@@ -86,7 +100,7 @@ semantics or reliable exit status, record that as a blocker.
 Initialize a mission root if needed:
 
 ```bash
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   init \
   --objective "Prove the local harness can execute Swarmkit roles" \
@@ -153,10 +167,10 @@ secret values—not errors or evidence.
 ### 1. Static and dry-run validation
 
 ```bash
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   setup-check
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   dispatch --role manager --agent setup-manager --dry-run
 ```
@@ -168,13 +182,13 @@ Warnings about properties that require a live test are expected.
 Validate that policy-pack support survived packaging:
 
 ```bash
-python3 /absolute/path/to/swarmctl.py policy validate \
+swarmctl policy validate \
   /absolute/path/to/swarmkit/examples/policy-packs/pr-adversarial-review
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   policy install /absolute/path/to/swarmkit/examples/policy-packs/pr-adversarial-review \
   --actor setup-agent
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   policy list
 ```
@@ -187,7 +201,7 @@ a setup limitation, not permission to weaken the workflow silently.
 Validate that delivery-extension support survived packaging:
 
 ```bash
-python3 /absolute/path/to/swarmctl.py extension validate \
+swarmctl extension validate \
   /absolute/path/to/swarmkit/examples/extensions/harness-email
 ```
 
@@ -203,7 +217,7 @@ receipt. Never use a production mailing list for setup tests.
 Validate persistent-service support and its example policy:
 
 ```bash
-python3 /absolute/path/to/swarmctl.py policy validate \
+swarmctl policy validate \
   /absolute/path/to/swarmkit/examples/policy-packs/human-gated-change-review
 ```
 
@@ -241,13 +255,13 @@ small task, then run a real manager dispatch. Verify from Swarmkit—not just th
 harness transcript—that the workstream and task exist:
 
 ```bash
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   dispatch --role manager --agent setup-manager
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   workstream list
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   task list
 ```
@@ -262,13 +276,13 @@ harness UI does not count as persistence.
 Use `task list` to obtain the ready task ID, then replace `T-ID` below:
 
 ```bash
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   task claim T-ID --agent setup-worker
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   dispatch --role worker --agent setup-worker --task T-ID
-python3 /absolute/path/to/swarmctl.py \
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   task show T-ID
 ```
@@ -294,9 +308,9 @@ worker session.
 ### 6. Final health and evidence
 
 ```bash
-python3 /absolute/path/to/swarmctl.py --root /absolute/path/to/sandbox-mission/.swarm report
-python3 /absolute/path/to/swarmctl.py --root /absolute/path/to/sandbox-mission/.swarm doctor
-python3 /absolute/path/to/swarmctl.py \
+swarmctl --root /absolute/path/to/sandbox-mission/.swarm report
+swarmctl --root /absolute/path/to/sandbox-mission/.swarm doctor
+swarmctl \
   --root /absolute/path/to/sandbox-mission/.swarm \
   export --output /absolute/path/to/sandbox-mission/setup-audit.zip
 ```

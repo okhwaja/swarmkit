@@ -1,75 +1,82 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.11.2`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.12.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
 ```text
-usage: swarmctl [-h] [--root ROOT] [--version]
-                {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,review,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
-                ...
+usage: swarmctl [--root PATH] COMMAND ...
 
-Argument parsing and command routing. Domain rules live in the owning modules.
-
-positional arguments:
-  {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,review,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
-    pause               Set durable mission lifecycle state
-    drain               Set durable mission lifecycle state
-    resume              Set durable mission lifecycle state
-    cancel              Set durable mission lifecycle state
-    abandon             Set durable mission lifecycle state
-    recover             Recover stopped harnesses without rerunning uncertain
-                        effects
-    why                 Explain blocked work, attempts, limits, and uncertain
-                        effects
-    configure           Set persistent runtime limits and evidence enforcement
-    amend               Version a paused mission and require explicit
-                        replanning
-    effect              Track intent and receipts for external actions
-    resource            Lease exclusive resources with attempt fencing
-    evidence            Bind result files to criteria, revision, and
-                        environment
-    review-commit       Record a semantic disposition for every manager
-                        trigger
-    review              Inspect manager review batches and semantic commits
-    workspace           Create, register, or inspect task-specific isolated
-                        checkouts
-    serve               Poll durable service state with bounded restartable
-                        scheduler runs
-    audit-verify        Verify every manifest file in an audit ZIP
-    init                Create a mission workspace
-    demo                Run a synthetic example without configuring a harness
-    status              Show the current canonical snapshot
-    board               Regenerate the Markdown board
-    report              Generate the executive workstream and action report
-    reconcile           Apply deterministic readiness and lease transitions
-    doctor              Check state invariants
-    setup-check         Validate harness integration without launching an
-                        agent
-    ask                 Start a read-only briefing inquiry
-    policy              Install and apply reusable workflow policy packs
-    case                Manage idempotent work requests for persistent
-                        services
-    extension           Install delivery adapters for external systems
-    delivery            Manage the durable external-delivery outbox
-    workstream          Manage executive-level workstreams
-    task                Manage tasks
-    decision            Manage durable decisions
-    finding             Elevate and disposition mission-relevant findings
-    wait                Inspect and signal durable external waits
-    fact                Record sourced, time-bounded operational facts
-    inbox               Read a page of events since an agent cursor
-    prompt              Generate a grounded role prompt
-    dispatch            Invoke the configured third-party harness
-    run                 Run manager/worker cycles through the configured
-                        harness
-    mission             Manage mission lifecycle
-    export              Create a reviewable audit ZIP
+Coordinate agent work across missions, decisions, waits, and restarts.
+New here? Run swarmctl guide for the agent operating workflow.
 
 optional arguments:
-  -h, --help            show this help message and exit
-  --root ROOT           Swarm workspace (default: $SWARM_ROOT or .swarm)
-  --version             show program's version number and exit
+  -h, --help     show this help message and exit
+  --root ROOT    Swarm workspace (default: $SWARM_ROOT or .swarm)
+  --version      show program's version number and exit
+
+commands:
+  COMMAND
+    help         Explain any command, including nested commands
+    guide        Read bundled workflow documentation without a mission or
+                 network
+    install      Install a user-local swarmctl launcher
+    pause        Set durable mission lifecycle state
+    drain        Set durable mission lifecycle state
+    resume       Set durable mission lifecycle state
+    cancel       Set durable mission lifecycle state
+    abandon      Set durable mission lifecycle state
+    recover      Recover stopped harnesses without rerunning uncertain effects
+    why          Explain blocked work, attempts, limits, and uncertain effects
+    configure    Set persistent runtime limits and evidence enforcement
+    amend        Version a paused mission and require explicit replanning
+    effect       Track intent and receipts for external actions
+    resource     Lease exclusive resources with attempt fencing
+    evidence     Bind result files to criteria, revision, and environment
+    review-commit
+                 Record a semantic disposition for every manager trigger
+    review       Inspect manager review batches and semantic commits
+    workspace    Create, register, or inspect task-specific isolated checkouts
+    serve        Poll durable service state with bounded restartable scheduler
+                 runs
+    audit-verify
+                 Verify every manifest file in an audit ZIP
+    init         Create a mission workspace
+    demo         Run a synthetic example without configuring a harness
+    status       Show the current canonical snapshot
+    board        Regenerate the Markdown board
+    report       Generate the executive workstream and action report
+    reconcile    Apply deterministic readiness and lease transitions
+    doctor       Check state invariants
+    setup-check  Validate harness integration without launching an agent
+    ask          Request an evidence-backed explanation of recorded work
+    policy       Install and apply reusable workflow policy packs
+    case         Manage idempotent work requests for persistent services
+    extension    Install delivery adapters for external systems
+    delivery     Manage the durable external-delivery outbox
+    workstream   Manage executive-level workstreams
+    task         Manage tasks
+    decision     Manage durable decisions
+    finding      Elevate and disposition mission-relevant findings
+    wait         Inspect and signal durable external waits
+    fact         Record sourced, time-bounded operational facts
+    inbox        Read a page of events since an agent cursor
+    prompt       Generate a grounded role prompt
+    dispatch     Invoke the configured third-party harness
+    run          Run manager/worker cycles through the configured harness
+    mission      Manage mission lifecycle
+    export       Create a reviewable audit ZIP
+
+Start here:
+  swarmctl guide                 Read the agent operating guide (offline)
+  swarmctl guide user            Read the mission-owner manual
+  swarmctl demo                  Try a synthetic mission without an agent
+  swarmctl status --brief        Check an existing mission
+  swarmctl help ask              Learn a command and its next steps
+
+Choose the mission with --root PATH before the command, or set SWARM_ROOT.
+Help and guides need no mission. Most data commands return JSON; --brief,
+reports, help, and guides are for reading. Errors go to stderr (exit 2).
 ```
 
 ## `swarmctl abandon`
@@ -90,6 +97,10 @@ usage: swarmctl amend [-h] --objective OBJECTIVE [--success SUCCESS]
                       [--constraint CONSTRAINT] --reason REASON
                       [--actor ACTOR]
 
+Replace the complete objective, success criteria, and constraints of a paused,
+quiescent mission. Omitted criteria and constraints are removed. The manager
+must reconsider unfinished work.
+
 optional arguments:
   -h, --help            show this help message and exit
   --objective OBJECTIVE
@@ -97,6 +108,12 @@ optional arguments:
   --constraint CONSTRAINT
   --reason REASON
   --actor ACTOR
+
+First: pause, recover, and resolve reported uncertainty.
+Example: swarmctl amend --objective 'Diagnose only' --success 'Cite evidence'
+--constraint 'Do not change production' --reason 'Separate diagnosis from
+repair'
+Next: resume, then run. See swarmctl guide runtime.
 ```
 
 ## `swarmctl ask`
@@ -105,13 +122,26 @@ optional arguments:
 usage: swarmctl ask [-h] --question QUESTION [--workstream WORKSTREAM]
                     [--case CASE] [--depends-on DEPENDS_ON] [--actor ACTOR]
 
+Create a briefing task to explain recorded work. This writes an inquiry to the
+mission; it does not answer immediately, change the goal, or grant permission.
+A completed or cancelled mission cannot accept new inquiries.
+
 optional arguments:
   -h, --help            show this help message and exit
-  --question QUESTION
+  --question QUESTION   Question to investigate; does not change mission scope
   --workstream WORKSTREAM
-  --case CASE
+                        Optional workstream ID to focus the investigation
+  --case CASE           Optional service case ID to focus the investigation
   --depends-on DEPENDS_ON
-  --actor ACTOR
+                        Wait for this task before investigating (repeatable
+                        task ID)
+  --actor ACTOR         Who requested the inquiry (default: human)
+
+Example: swarmctl ask --question 'What is blocking progress, and what evidence
+explains it?'
+Next: if no controller is active, run swarmctl run --max-cycles 5; then
+swarmctl task show TASK_ID to read the result and artifact paths. A paused
+mission must resume before the briefing can run.
 ```
 
 ## `swarmctl audit-verify`
@@ -140,10 +170,16 @@ optional arguments:
 ```text
 usage: swarmctl cancel [-h] --reason REASON [--actor ACTOR]
 
+Permanently cancel remaining mission work and preserve history. This cannot be
+resumed, does not kill processes, and does not undo external actions.
+
 optional arguments:
   -h, --help       show this help message and exit
   --reason REASON
   --actor ACTOR
+
+Example: swarmctl cancel --reason 'The objective is no longer needed'
+Next: inspect recover and why for outstanding activity.
 ```
 
 ## `swarmctl case`
@@ -368,6 +404,10 @@ usage: swarmctl decision resolve [-h] --answer ANSWER [--choice CHOICE]
                                  [--actor ACTOR]
                                  decision_id
 
+Record the user's answer to an open decision. Include --choice when selecting
+an offered option; copy its exact value. Do not invent authorization on the
+user's behalf.
+
 positional arguments:
   decision_id
 
@@ -376,6 +416,12 @@ optional arguments:
   --answer ANSWER
   --choice CHOICE  Exact machine-readable option from the decision
   --actor ACTOR
+
+First: swarmctl decision show DECISION_ID
+Example: swarmctl decision resolve DECISION_ID --answer 'Keep all changes
+local'
+Next: start another bounded run if execution stopped waiting. A separate
+mission pause still requires resume. A refusal must be honored.
 ```
 
 ## `swarmctl decision revise`
@@ -385,6 +431,9 @@ usage: swarmctl decision revise [-h] --answer ANSWER [--choice CHOICE]
                                 [--actor ACTOR]
                                 decision_id
 
+Correct an existing answer while preserving its history and notifying affected
+work. Supply --choice again when choosing an offered option.
+
 positional arguments:
   decision_id
 
@@ -393,6 +442,9 @@ optional arguments:
   --answer ANSWER
   --choice CHOICE  Exact machine-readable option from the decision
   --actor ACTOR
+
+Example: swarmctl decision revise DECISION_ID --answer 'Limit the repair
+window to ten minutes'
 ```
 
 ## `swarmctl decision show`
@@ -630,10 +682,16 @@ optional arguments:
 ```text
 usage: swarmctl drain [-h] --reason REASON [--actor ACTOR]
 
+Stop new claims, let current activity finish, then pause. Unfinished or
+uncertain external activity can keep the drain pending.
+
 optional arguments:
   -h, --help       show this help message and exit
   --reason REASON
   --actor ACTOR
+
+Example: swarmctl drain --reason 'Pause after current work finishes'
+Next: status --brief; use recover and why if the drain remains pending.
 ```
 
 ## `swarmctl effect`
@@ -841,6 +899,10 @@ usage: swarmctl export [-h] --output OUTPUT [--share-safe]
                        [--include-artifacts]
                        [--max-artifact-mb MAX_ARTIFACT_MB]
 
+Write a local audit ZIP. Full exports may contain confidential prompts,
+outputs, and data. --share-safe exports structural telemetry only, not a
+redacted full report.
+
 optional arguments:
   -h, --help            show this help message and exit
   --output OUTPUT
@@ -848,6 +910,11 @@ optional arguments:
                         excluding free text and files
   --include-artifacts
   --max-artifact-mb MAX_ARTIFACT_MB
+
+Example: swarmctl export --output /work/exports/run.zip --include-artifacts
+Choose an output outside mission state. Review REVIEW_ME.md and omission
+reports inside the archive before sharing. Export does not send or publish
+anything.
 ```
 
 ## `swarmctl extension`
@@ -1029,6 +1096,41 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## `swarmctl guide`
+
+```text
+usage: swarmctl guide [-h]
+                      [{agent,user,setup,harness,runtime,workflows,services,delivery}]
+
+positional arguments:
+  {agent,user,setup,harness,runtime,workflows,services,delivery}
+
+optional arguments:
+  -h, --help            show this help message and exit
+
+Available guides:
+  agent      Operate Swarmkit on a user's behalf
+  user       Direct a mission and review its results
+  setup      Connect and verify an agent harness
+  harness    Integrate tools, permissions, and fresh sessions
+  runtime    Recover, pause, amend, and inspect evidence
+  workflows  Install and apply reusable policies
+  services   Operate standing services and cases
+  delivery   Configure report delivery
+```
+
+## `swarmctl help`
+
+```text
+usage: swarmctl help [-h] [topic ...]
+
+positional arguments:
+  topic       Command path, e.g. decision resolve
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
 ## `swarmctl inbox`
 
 ```text
@@ -1055,6 +1157,9 @@ optional arguments:
 usage: swarmctl init [-h] --objective OBJECTIVE [--success SUCCESS]
                      [--constraint CONSTRAINT] [--mode {FINITE,SERVICE}]
 
+Create a new mission from its outcome, success criteria, and boundaries. This
+creates local state; it does not launch agents or configure their harness.
+
 optional arguments:
   -h, --help            show this help message and exit
   --objective OBJECTIVE
@@ -1064,6 +1169,25 @@ optional arguments:
   --mode {FINITE,SERVICE}
                         FINITE completes once; SERVICE remains available for
                         durable cases
+
+Example: swarmctl --root /work/run/.swarm init --objective 'Diagnose slow
+requests' --success 'Evidence identifies the bottleneck' --constraint 'Keep
+changes local'
+Next: swarmctl guide setup, then setup-check and run --max-cycles 20.
+```
+
+## `swarmctl install`
+
+```text
+usage: swarmctl install [-h] [--bin-dir BIN_DIR]
+
+Install a launcher pointing to this package and Python interpreter. Keep the
+package directory in place. No downloads, sudo, or shell-profile changes.
+Existing different commands are never overwritten.
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --bin-dir BIN_DIR  Launcher directory (default: ~/.local/bin)
 ```
 
 ## `swarmctl mission`
@@ -1113,10 +1237,17 @@ optional arguments:
 ```text
 usage: swarmctl pause [-h] --reason REASON [--actor ACTOR]
 
+Stop new claims and prevent active attempts from recording further task
+progress. Running processes and submitted external actions may continue.
+
 optional arguments:
   -h, --help       show this help message and exit
   --reason REASON
   --actor ACTOR
+
+Example: swarmctl pause --reason 'Review a change in scope'
+Next: recover and why. Resolve unfinished activity before resume or amend. Use
+drain to let current work finish first.
 ```
 
 ## `swarmctl policy`
@@ -1264,8 +1395,15 @@ optional arguments:
 ```text
 usage: swarmctl report [-h]
 
+Refresh the human progress report and print its local Markdown path. It
+describes major workstreams, evidence, forecasts, and needs from the user.
+
 optional arguments:
   -h, --help  show this help message and exit
+
+Example: swarmctl report
+Next: open the printed file; use decision show ID for a question needing an
+answer. This command does not send the report.
 ```
 
 ## `swarmctl resource`
@@ -1324,10 +1462,16 @@ optional arguments:
 ```text
 usage: swarmctl resume [-h] --reason REASON [--actor ACTOR]
 
+Allow a paused mission to work again after unfinished runs and uncertain
+actions have been resolved. This does not itself start a controller.
+
 optional arguments:
   -h, --help       show this help message and exit
   --reason REASON
   --actor ACTOR
+
+Example: swarmctl resume --reason 'Continue the agreed plan'
+Next: run --max-cycles 20 if no controller is active.
 ```
 
 ## `swarmctl review`
@@ -1393,10 +1537,18 @@ optional arguments:
 ```text
 usage: swarmctl run [-h] [--max-cycles MAX_CYCLES] [--dry-run]
 
+Launch configured manager and worker harnesses for a bounded number of cycles.
+It can stop for a decision, external wait, recovery, no ready work, or its
+cycle limit.
+
 optional arguments:
   -h, --help            show this help message and exit
   --max-cycles MAX_CYCLES
   --dry-run
+
+Example: swarmctl run --max-cycles 20
+Next: swarmctl status --brief. For ongoing scheduled checks, see swarmctl
+serve --help and swarmctl guide runtime.
 ```
 
 ## `swarmctl serve`
@@ -1405,11 +1557,16 @@ optional arguments:
 usage: swarmctl serve [-h] [--max-polls MAX_POLLS]
                       [--poll-seconds POLL_SECONDS] [--max-cycles MAX_CYCLES]
 
+Keep a controller running to handle work and future checks. This launches
+configured harnesses; it does not install an OS service.
+
 optional arguments:
   -h, --help            show this help message and exit
   --max-polls MAX_POLLS
   --poll-seconds POLL_SECONDS
   --max-cycles MAX_CYCLES
+
+Read swarmctl guide runtime before configuring unattended operation.
 ```
 
 ## `swarmctl setup-check`
@@ -1426,9 +1583,16 @@ optional arguments:
 ```text
 usage: swarmctl status [-h] [--brief]
 
+Print mission state as JSON, or a concise human update with --brief. Inspect
+the recorded outcome; a stopped controller does not imply success.
+
 optional arguments:
   -h, --help  show this help message and exit
   --brief     Show a short human-readable summary
+
+Example: swarmctl status --brief
+Next: swarmctl report for workstreams, or swarmctl why for blockers and
+recovery needs.
 ```
 
 ## `swarmctl task`

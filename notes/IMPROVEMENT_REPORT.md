@@ -1,19 +1,19 @@
-# Swarmkit 0.11.2 — local improvement report
+# Swarmkit 0.12.0 — local improvement report
 
 The codebase is now on local branch **`codex/readable-reliable-swarmkit`**, with a
-verified 0.11.2 release candidate and schema 12. All changes are committed locally.
+verified 0.12.0 release candidate and schema 12. All changes are committed locally.
 **Nothing was pushed, published, or merged remotely.**
 
 The starting point was commit `9587139`: Swarmkit 0.7.1, schema 8, 71 tests, and a
 6,839-line file containing almost the entire engine. That version already had
 many roadmap foundations. This pass concentrated on making those foundations
 reliable, understandable, efficient, and usable through the expected journeys.
-The result has **237 passing tests**, a much shorter introduction, explicit module
+The result has **246 passing tests**, a much shorter introduction, explicit module
 ownership, and substantially lower history, active-service, and review-burst overhead.
 This report includes both continued passes requested after the 0.8.0 and 0.10.0
 handoffs and the subsequent manual audience correction; the detailed work log records each tested checkpoint.
 
-The distributable is [swarmkit-0.11.2.zip](/Users/osmankhwaja/Documents/swarmkit/dist/swarmkit-0.11.2.zip).
+The distributable is [swarmkit-0.12.0.zip](/Users/osmankhwaja/Documents/swarmkit/dist/swarmkit-0.12.0.zip).
 Start with the [README](/Users/osmankhwaja/Documents/swarmkit/README.md), the
 [code map](/Users/osmankhwaja/Documents/swarmkit/docs/CODE_MAP.md), or the
 [updated backlog](/Users/osmankhwaja/Documents/swarmkit/docs/ROADMAP_BACKLOG.md).
@@ -631,10 +631,56 @@ decision, and inquiry implementations; regenerated command documentation and ran
 the source and extracted-package release checks. This is a documentation change;
 it does not add a chat interface, notifications, or new runtime behavior.
 
+## 25. Delivered an installable CLI with offline agent guidance
+
+**Background.** Your next feedback pointed out that repeatedly invoking
+`python3 swarmctl.py` made Swarmkit feel like a script a user had to operate from
+its source directory. The package already included `bin/swarmctl`, but lacked a
+clear installation path. Its top-level help described code organization rather
+than the product, and argument lists alone did not teach an unfamiliar agent how
+to carry out a user's request.
+
+**Change.** `./bin/swarmctl install` now installs a `swarmctl` launcher into
+`~/.local/bin` or a chosen `--bin-dir`. It pins the current package and Python
+interpreter, works from unrelated directories, quotes paths and arguments safely,
+and publishes a complete executable without overwriting a different existing
+command. Repeating the same installation is safe, including concurrent installs.
+The installer does not download dependencies, require sudo, or edit shell profiles.
+The README explains PATH setup for terminals and GUI agents, moving the package,
+and removal of the launcher.
+
+`swarmctl guide` prints a bundled agent operating guide without network access or
+mission initialization. It explains root selection, how to translate the human's
+intent into the right command, output formats, decision authority, continuation,
+and recovery. Topic guides expose the human manual, setup, harness, runtime,
+workflows, services, and delivery docs. `swarmctl help decision resolve` and
+`swarmctl decision resolve --help` show the same help. Common command help now
+explains side effects and next steps, including the fact that `ask` creates work
+whose result must be retrieved after execution. Bare `swarmctl` shows help.
+
+All product examples now use `swarmctl`. Generated role prompts retain an absolute
+package command so they cannot accidentally select a different installed version
+or mission through PATH. The Python entry points remain compatible. The reference
+is still generated from the parser; guide content comes directly from the shipped
+Markdown instead of maintaining another copy in Python.
+
+**Validation and limits.** Nine new tests cover actual executable installation,
+invocation through PATH without `python3` on PATH, mission creation and inquiry
+retrieval from an unrelated directory, spaces/quotes/shell characters in package
+and interpreter paths, concurrent installs, existing-command/symlink preservation,
+failed publication, nested help, and guide access without touching mission state.
+Release extraction now preserves the ZIP's executable modes so the same launcher
+test runs against the distribution. Source and package each pass 246 tests.
+
+The launcher requires the package and installing Python interpreter to remain
+available. Installation on the user's real machine is an explicit setup step;
+this pass exercised disposable installations only. Version 0.12.0 changes the CLI
+and documentation, with no schema migration or new provider integration.
+
 ## Validation and release compatibility
 
-The final source and newly extracted distribution each pass **237 tests** on
-Python 3.9.6/macOS. The suite grew by 166 tests from the starting point. Coverage
+The final source and newly extracted distribution each pass **246 tests** on
+Python 3.9.6/macOS. The suite grew by 175 tests from the starting point. Coverage
 includes real controller kills, claim/ownership fencing, transaction and commit
 failure injection, timeout behavior, migration, evidence integrity, idempotency,
 privacy boundaries, bounded context, and non-Git checkout adapters.
@@ -649,7 +695,7 @@ python3 -m black --check swarmctl.py swarmkit scripts tests examples/demo_lifecy
 ruff check swarmctl.py swarmkit scripts tests examples/demo_lifecycle.py
 ```
 
-Black checked 57 Python files across source, examples, scripts, and tests.
+Black checked 60 Python files across source, examples, scripts, and tests.
 Ruff reported no configured F-class issues. A real
 schema 8 fixture created by the original 0.7.1 code upgraded successfully: it
 preserved an opaque checkout revision, reconstructed a signal link, backfilled
@@ -671,7 +717,7 @@ disposable-fixture samples. The earlier before/after comparisons remain above.
 Opening an existing mission with 0.11.2 upgrades it sequentially to schema 12;
 older releases cannot read that schema. Existing Git registrations remain intact,
 and no target checkout is converted or cleaned up. The command reference, runtime guide,
-changelog, examples, and package version agree on 0.11.2. Additional migration
+changelog, examples, and package version agree on 0.12.0; this CLI release retains schema 12. Additional migration
 tests preserve schema-9 workspaces, schema-10 review payloads/identities, and
 schema-11 verification records.
 

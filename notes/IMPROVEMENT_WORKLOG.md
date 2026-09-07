@@ -435,3 +435,29 @@ No remote push, PR, merge, provider action, or OS service installation occurred.
   and extracted package. Rebuilt the local 0.11.2 candidate with the revised docs.
 - Added change area 24 to the full improvement report. Work stays on the existing
   local branch; no push or remote merge.
+
+## Installable CLI and agent discovery (0.12.0)
+
+- Responded to the request for `swarmctl ask` and help that lets an unfamiliar
+  agent operate Swarmkit on the user's behalf.
+- Added `install --bin-dir`, publishing a complete executable without replacing
+  different commands. It pins interpreter/package, handles quoted paths, and is
+  safe to repeat. No shell-profile mutation or dependency download.
+- Added `guide [topic]`, nested `help`, useful bare invocation, workflow examples,
+  side-effect/continuation guidance, and stable command names in usage output.
+- Added the offline agent guide, exposed existing guides directly, changed product
+  command examples to `swarmctl`, and documented terminal/GUI-agent PATH setup.
+- Retained absolute generated role command prefixes and Python compatibility.
+- Nine new tests cover executable bootstrap, external cwd and explicit root,
+  PATH without Python, quoted package/interpreter paths and arguments, concurrent
+  installers, existing files/symlinks, publication failure, and mission-free help.
+- Source and extracted distribution pass 246 tests. Release extraction now restores
+  executable bits so bundled launcher tests exercise the actual CLI in both trees.
+- Documentation impact: CLI contract, setup, user and agent journeys, code map,
+  documentation ownership, and release metadata. Schema remains 12.
+- Updated the full report with change area 25. The actual ZIP is rebuilt at
+  dist/swarmkit-0.12.0.zip. No install into the user's home, push, or remote merge.
+- Final actual-ZIP smoke used a quoted temporary package path and unrelated cwd:
+  installed launcher, resolved `swarmctl` via PATH, read the exact offline guide,
+  displayed nested help, completed the synthetic demo, read brief status, and
+  verified its audit. Temporary installations and demo state were removed.

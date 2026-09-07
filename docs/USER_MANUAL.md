@@ -21,7 +21,9 @@ Swarmkit currently provides commands and readable reports. If you work through
 an agent that can operate Swarmkit, you can give it the requests described here;
 it must record directions and answers in the mission. A chat reply on its own
 does not update Swarmkit. Notifications depend on your configured integration.
-The expandable examples below show how to act directly from a terminal.
+The expandable examples below use the [installed CLI](../README.md#install-the-cli).
+An agent can learn the workflow with `swarmctl guide`; use `swarmctl help ask`
+(or any other command) for exact syntax and next steps.
 
 ## Start a mission
 
@@ -51,12 +53,12 @@ and dispatches work. Check the report for the plan and any questions it raises.
 <details>
 <summary>Terminal: create and run a mission</summary>
 
-Run these commands from the Swarmkit package directory. Replace the example state
-directory with your own; reuse that directory for every command for this mission.
+Run these commands from any directory. Replace the example state directory with
+your own; reuse that directory for every command for this mission.
 
 ```sh
 export SWARM_ROOT=/work/pipeline/.swarm
-python3 swarmctl.py init \
+swarmctl init \
   --objective "Restore reliable pipeline delivery" \
   --success "New records reach the destination" \
   --success "The backlog is accounted for without loss or duplication" \
@@ -68,8 +70,8 @@ Have your setup agent configure this mission's `runner.json` and verify the
 integration, then start work:
 
 ```sh
-python3 swarmctl.py run --max-cycles 20
-python3 swarmctl.py status --brief
+swarmctl run --max-cycles 20
+swarmctl status --brief
 ```
 
 The run is bounded. It can stop at its cycle limit or while waiting for something;
@@ -105,9 +107,9 @@ These and later examples assume `SWARM_ROOT` is set as above. Copy the actual
 returned decision ID in place of `D-ID`.
 
 ```sh
-python3 swarmctl.py decision list
-python3 swarmctl.py decision show D-ID
-python3 swarmctl.py decision resolve D-ID \
+swarmctl decision list
+swarmctl decision show D-ID
+swarmctl decision resolve D-ID \
   --answer "Allow the repair during the maintenance window, for at most ten minutes"
 ```
 
@@ -115,14 +117,14 @@ When options are offered, add `--choice` with the exact option from the decision
 For example, if `withhold` is an offered option:
 
 ```sh
-python3 swarmctl.py decision resolve D-ID --choice withhold \
+swarmctl decision resolve D-ID --choice withhold \
   --answer "Withhold approval until the retry path has a concurrency test"
 ```
 
 Use one answer for the relevant decision. To change a saved answer, use
 `decision revise D-ID --answer "Your corrected answer"`, including `--choice`
 again when selecting an option. If the controller has stopped, continue with
-`python3 swarmctl.py run --max-cycles 20` after resolving any pause or recovery need.
+`swarmctl run --max-cycles 20` after resolving any pause or recovery need.
 
 </details>
 
@@ -153,8 +155,8 @@ request. Its setup and intake procedures are in [Persistent services](PERSISTENT
 <summary>Terminal: open the progress report</summary>
 
 ```sh
-python3 swarmctl.py status --brief
-python3 swarmctl.py report
+swarmctl status --brief
+swarmctl report
 ```
 
 The first command gives a short update and next action. The second prints the
@@ -180,13 +182,13 @@ An explanation request does not change priorities or grant permission.
 <summary>Terminal: request and read an explanation</summary>
 
 ```sh
-python3 swarmctl.py ask \
+swarmctl ask \
   --question "Why does backlog replay need deduplication, and what evidence supports that?"
 ```
 
 Optionally add `--workstream WS-ID`. Save the returned inquiry task ID. If no
-controller is running, run `python3 swarmctl.py run --max-cycles 5`, then inspect
-`python3 swarmctl.py task show T-INQUIRY-ID`. Once complete, its result and artifact
+controller is running, run `swarmctl run --max-cycles 5`, then inspect
+`swarmctl task show T-INQUIRY-ID`. Once complete, its result and artifact
 paths lead to the answer. If still pending, check progress before running again.
 
 A paused mission needs to resume before the briefing can run. A completed or
@@ -220,9 +222,9 @@ if Swarmkit reports unfinished or uncertain activity.
 <summary>Terminal: pause, amend, and continue</summary>
 
 ```sh
-python3 swarmctl.py pause --reason "Restrict this mission to diagnosis"
-python3 swarmctl.py recover
-python3 swarmctl.py why
+swarmctl pause --reason "Restrict this mission to diagnosis"
+swarmctl recover
+swarmctl why
 ```
 
 Wait for running activity and resolve any reported uncertainty before amending.
@@ -230,14 +232,14 @@ Supply the **entire replacement** set of success criteria and constraints;
 omitted ones are not carried forward.
 
 ```sh
-python3 swarmctl.py amend \
+swarmctl amend \
   --objective "Diagnose the pipeline failure and propose a repair" \
   --success "The diagnosis cites evidence and the repair proposal includes validation" \
   --constraint "Do not make production changes" \
   --constraint "Preserve customer data" \
   --reason "The production team will carry out the repair"
-python3 swarmctl.py resume --reason "Proceed with diagnosis only"
-python3 swarmctl.py run --max-cycles 20
+swarmctl resume --reason "Proceed with diagnosis only"
+swarmctl run --max-cycles 20
 ```
 
 For a graceful pause, use `drain --reason "Pause after current work finishes"`.
@@ -261,8 +263,8 @@ artifacts. It may contain confidential prompts and data, so inspect it before sh
 <summary>Terminal: export the record</summary>
 
 ```sh
-python3 swarmctl.py report
-python3 swarmctl.py export \
+swarmctl report
+swarmctl export \
   --output /work/exports/pipeline-run.zip \
   --include-artifacts
 ```

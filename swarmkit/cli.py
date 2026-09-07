@@ -3,9 +3,12 @@
 import argparse
 from pathlib import Path
 import sqlite3
+import shlex
 import sys
 
 from .audit import export_audit, verify_audit
+from .cli_help import GUIDES, describe_commands, read_guide, show_command_help
+from .installation import install_launcher
 from .cases import (
     add_case_signal,
     apply_policy_to_case,
@@ -480,10 +483,50 @@ def handle_runtime_cli(root, args):
 
 
 def parser():
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(
+        prog="swarmctl",
+        description="Coordinate agent work across missions, decisions, waits, and restarts.\n"
+        "New here? Run swarmctl guide for the agent operating workflow.",
+        usage="%(prog)s [--root PATH] COMMAND ...",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Start here:\n"
+            "  swarmctl guide                 Read the agent operating guide (offline)\n"
+            "  swarmctl guide user            Read the mission-owner manual\n"
+            "  swarmctl demo                  Try a synthetic mission without an agent\n"
+            "  swarmctl status --brief        Check an existing mission\n"
+            "  swarmctl help ask              Learn a command and its next steps\n\n"
+            "Choose the mission with --root PATH before the command, or set SWARM_ROOT.\n"
+            "Help and guides need no mission. Most data commands return JSON; --brief,\n"
+            "reports, help, and guides are for reading. Errors go to stderr (exit 2)."
+        ),
+    )
     p.add_argument("--root", help="Swarm workspace (default: $SWARM_ROOT or .swarm)")
     p.add_argument("--version", action="version", version=VERSION)
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(
+        dest="command", required=True, prog="swarmctl", title="commands", metavar="COMMAND"
+    )
+
+    help_command = sub.add_parser("help", help="Explain any command, including nested commands")
+    help_command.add_argument("topic", nargs="*", help="Command path, e.g. decision resolve")
+    guide = sub.add_parser(
+        "guide",
+        help="Read bundled workflow documentation without a mission or network",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Available guides:\n"
+        + "\n".join("  %-10s %s" % (name, title) for name, (title, _) in GUIDES.items()),
+    )
+    guide.add_argument("topic", nargs="?", choices=GUIDES, default="agent")
+    install = sub.add_parser(
+        "install",
+        help="Install a user-local swarmctl launcher",
+        description="Install a launcher pointing to this package and Python interpreter. "
+        "Keep the package directory in place. No downloads, sudo, or shell-profile changes. "
+        "Existing different commands are never overwritten.",
+    )
+    install.add_argument(
+        "--bin-dir", default="~/.local/bin", help="Launcher directory (default: ~/.local/bin)"
+    )
 
     add_runtime_cli(sub)
 
@@ -511,12 +554,19 @@ def parser():
     sub.add_parser("doctor", help="Check state invariants")
     sub.add_parser("setup-check", help="Validate harness integration without launching an agent")
 
-    ask = sub.add_parser("ask", help="Start a read-only briefing inquiry")
-    ask.add_argument("--question", required=True)
-    ask.add_argument("--workstream")
-    ask.add_argument("--case")
-    ask.add_argument("--depends-on", action="append", default=[])
-    ask.add_argument("--actor", default="human")
+    ask = sub.add_parser("ask", help="Request an evidence-backed explanation of recorded work")
+    ask.add_argument(
+        "--question", required=True, help="Question to investigate; does not change mission scope"
+    )
+    ask.add_argument("--workstream", help="Optional workstream ID to focus the investigation")
+    ask.add_argument("--case", help="Optional service case ID to focus the investigation")
+    ask.add_argument(
+        "--depends-on",
+        action="append",
+        default=[],
+        help="Wait for this task before investigating (repeatable task ID)",
+    )
+    ask.add_argument("--actor", default="human", help="Who requested the inquiry (default: human)")
 
     policy = sub.add_parser("policy", help="Install and apply reusable workflow policy packs")
     policy_sub = policy.add_subparsers(dest="policy_command", required=True)
@@ -896,13 +946,33 @@ def parser():
     )
     export_p.add_argument("--include-artifacts", action="store_true")
     export_p.add_argument("--max-artifact-mb", type=int, default=25)
+    describe_commands(p)
     return p
 
 
 def main(argv=None):
-    args = parser().parse_args(argv)
-    root = root_path(args.root)
+    parsed = parser()
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        parsed.print_help()
+        return 0
+    args = parsed.parse_args(argv)
     try:
+        if args.command == "help":
+            show_command_help(parsed, args.topic)
+            return 0
+        if args.command == "guide":
+            print(read_guide(args.topic), end="")
+            return 0
+        if args.command == "install":
+            destination = install_launcher(args.bin_dir)
+            print("Installed: %s" % destination)
+            print("Keep this Swarmkit package directory in place.")
+            print("If this directory is not on PATH, add it to your shell or agent environment:")
+            print('  export PATH=%s:"$PATH"' % shlex.quote(str(destination.parent)))
+            print("Then: swarmctl --help; swarmctl guide")
+            return 0
+        root = root_path(args.root)
         if args.command == "demo":
             root = Path(args.root or "swarm-demo/.swarm").expanduser().resolve()
             output = (

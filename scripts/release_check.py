@@ -28,7 +28,13 @@ def main():
         archive = temporary_path / package_script.DEFAULT_OUTPUT.name
         run([sys.executable, "-B", "scripts/package.py", "--output", str(archive)], PACKAGE_ROOT)
         with zipfile.ZipFile(str(archive)) as bundle:
-            bundle.extractall(str(temporary_path / "unpacked"))
+            unpacked = temporary_path / "unpacked"
+            bundle.extractall(str(unpacked))
+            # zipfile extraction does not restore executable bits. Honor the
+            # modes in our own distribution so the shipped CLI is tested too.
+            for member in bundle.infolist():
+                if not member.is_dir():
+                    (unpacked / member.filename).chmod(member.external_attr >> 16 & 0o777)
         extracted = temporary_path / "unpacked" / "swarmkit"
         run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-v"], extracted)
         run([sys.executable, "-B", "scripts/check_docs.py"], extracted)

@@ -8,6 +8,16 @@ adds discovery steps, safety constraints, required evidence, and live acceptance
 tests. The agent should discover the harness-specific CLI syntax, but it should
 not invent the integration requirements.
 
+## CLI discovery
+
+Install with `./bin/swarmctl install` from the permanent package directory and
+make the printed command directory available on the harness's PATH. An agent
+operating for the user should start with `swarmctl guide`, then use `swarmctl help
+COMMAND` or `swarmctl COMMAND --help` for exact syntax. Help and guides need no
+mission and make no provider calls. The root selects state, not the code checkout.
+Generated worker/manager/delivery prompts supply an absolute command prefix to
+pin the package and mission independently of PATH; dispatched roles use that prefix.
+
 ## Runner contract
 
 The `.swarm/runner.json` `command` field is an argv array. Swarmkit substitutes these values in every argument:

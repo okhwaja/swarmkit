@@ -10,6 +10,7 @@ release metadata agree in the same commit.
 |---|---|
 | `README.md` | Installation, quickstart, major capabilities, and release package name |
 | `docs/USER_MANUAL.md` | Mission-owner interaction: start, decide, follow progress, ask, redirect, and review |
+| `docs/AGENT_GUIDE.md` | Offline operating workflow for an agent acting on the human's behalf (`swarmctl guide`) |
 | `docs/HARNESS_INTEGRATION.md` | Harness, skills, and extension integration contracts |
 | `SETUP_AGENT.md` | Destination-machine discovery and acceptance tests |
 | `docs/SYSTEM_EXPLAINER.md` | Architecture, invariants, and design rationale |
@@ -30,7 +31,11 @@ The user manual serves the human directing the mission. Lead with the person's
 question, what they should do, and what happens next. Keep terminal syntax optional
 and subordinate to those journeys. Setup, worker/manager protocols, adapter
 configuration, and detailed recovery belong in their technical homes above.
-Document user-visible limitations where they affect the next action.
+Document user-visible limitations where they affect the next action. Product
+examples use `swarmctl`; reserve Python entry-point syntax for bootstrap,
+development, and pinned internal invocation. Command help should explain important
+side effects and next steps, not only argument names. Keep the offline agent guide
+aligned with user journeys and expose it without requiring mission state.
 
 ## Required change workflow
 
