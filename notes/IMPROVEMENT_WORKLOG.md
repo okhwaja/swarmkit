@@ -195,3 +195,11 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
 - Built the local dist/swarmkit-0.8.0.zip artifact. No remote operation was used.
 - Saved local commit 3fb2ea8 for empty/withdrawn decision validation. Preparing the
   release/documentation/formatting commit, followed by the local handoff report.
+
+- Saved c133792 as the tested 0.8.0 release/documentation/formatting commit.
+- Completed notes/IMPROVEMENT_REPORT.md: newcomer-friendly context and implementation
+  for each change, journey rationale, exact validation/measurement limits, upgrade
+  guidance, unresolved integrations, and local commit navigation. Its links resolve.
+- Final handoff is reporting-only under notes/, excluded from distribution; shipped
+  source remains the version that passed 167 tests in both source/package checks.
+  All work stayed on codex/readable-reliable-swarmkit; nothing was pushed remotely.
