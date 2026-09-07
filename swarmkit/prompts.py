@@ -113,8 +113,9 @@ def manager_context(conn):
         ),
         "pending_manager_reviews": (
             "SELECT * FROM manager_reviews WHERE status IN ('PENDING','RUNNING') "
-            "ORDER BY CASE urgency WHEN 'URGENT' THEN 0 ELSE 1 END,rowid",
-            "manager review list",
+            "ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END,"
+            "CASE urgency WHEN 'URGENT' THEN 0 ELSE 1 END,rowid",
+            "review list",
         ),
         "open_findings": (
             "SELECT * FROM findings WHERE status='OPEN' "
@@ -223,6 +224,7 @@ def bound_context(context):
             if context["task"]
             else None
         ),
+        "current_review": context.get("current_review"),
         "retrieve": "Context exceeded its limit. Fetch status, task show, and inbox --lease before acting.",
     }
 
@@ -273,6 +275,13 @@ def build_prompt(root, role, agent, task_id=None):
             ]
         if role == "manager":
             context.update(manager_context(conn))
+            review = conn.execute(
+                "SELECT id,lease_until FROM manager_reviews WHERE status='RUNNING' AND owner=? LIMIT 1",
+                (agent,),
+            ).fetchone()
+            context["current_review"] = (
+                (dict(review) | {"retrieve": "review show " + review["id"]}) if review else None
+            )
     finally:
         conn.close()
     guide = guidance_path(role)

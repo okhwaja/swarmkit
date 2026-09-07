@@ -67,12 +67,19 @@ def reconcile_deliveries(conn, actor="reconciler"):
     return changed
 
 
+MAX_REVIEW_TRIGGERS = 50
+
+
 @atomic_write
 def request_manager_review(conn, reason, entity_type, entity_id, urgency="NORMAL"):
-    """Coalesce meaningful changes into one durable, serialized manager review."""
+    """Coalesce meaningful changes into bounded, serialized manager reviews."""
     urgency = urgency.upper()
     if urgency not in {"NORMAL", "URGENT"}:
         raise SwarmError("Manager review urgency must be NORMAL or URGENT")
+    if not all(
+        isinstance(value, str) and value.strip() for value in (reason, entity_type, entity_id)
+    ):
+        raise SwarmError("Manager review triggers require a reason and entity identity")
     current_mission = mission(conn)
     now = utcnow()
     trigger = {
@@ -81,34 +88,53 @@ def request_manager_review(conn, reason, entity_type, entity_id, urgency="NORMAL
         "entity_id": entity_id,
         "requested_at": now,
     }
-    pending = conn.execute(
-        "SELECT * FROM manager_reviews WHERE mission_id=? AND status='PENDING' ORDER BY requested_at LIMIT 1",
-        (current_mission["id"],),
+    duplicate = conn.execute(
+        "SELECT mr.id,mr.urgency FROM manager_review_trigger_keys k JOIN manager_reviews mr ON mr.id=k.review_id "
+        "WHERE k.reason=? AND k.entity_type=? AND k.entity_id=? AND mr.status='PENDING' "
+        "ORDER BY mr.requested_at,mr.rowid LIMIT 1",
+        (reason, entity_type, entity_id),
     ).fetchone()
-    if pending:
-        triggers = json_load(pending["triggers_json"], [])
-        identity = (reason, entity_type, entity_id)
-        if any(
-            (item["reason"], item["entity_type"], item["entity_id"]) == identity
-            for item in triggers
-        ):
-            return pending["id"], False
+    if duplicate:
+        if urgency == "URGENT" and duplicate["urgency"] != "URGENT":
+            conn.execute(
+                "UPDATE manager_reviews SET urgency='URGENT',updated_at=? WHERE id=?",
+                (now, duplicate["id"]),
+            )
+            add_event(
+                conn,
+                current_mission["id"],
+                "manager_review",
+                duplicate["id"],
+                "MANAGER_REVIEW_ESCALATED",
+                "system",
+                trigger,
+            )
+            return duplicate["id"], True
+        return duplicate["id"], False
+    pending = conn.execute(
+        "SELECT * FROM manager_reviews WHERE status='PENDING' ORDER BY requested_at DESC,rowid DESC LIMIT 1"
+    ).fetchone()
+    triggers = json_load(pending["triggers_json"], []) if pending else []
+    if pending and len(triggers) < MAX_REVIEW_TRIGGERS:
         triggers.append(trigger)
         review_id = pending["id"]
         next_urgency = (
             "URGENT" if urgency == "URGENT" or pending["urgency"] == "URGENT" else "NORMAL"
         )
         conn.execute(
-            "UPDATE manager_reviews SET urgency=?, triggers_json=?, updated_at=? WHERE id=?",
+            "UPDATE manager_reviews SET urgency=?,triggers_json=?,updated_at=? WHERE id=?",
             (next_urgency, json_dump(triggers), now, review_id),
         )
     else:
         review_id = make_id("MR")
         conn.execute(
-            """INSERT INTO manager_reviews(id, mission_id, urgency, triggers_json,
-               requested_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?)""",
+            "INSERT INTO manager_reviews(id,mission_id,urgency,triggers_json,requested_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
             (review_id, current_mission["id"], urgency, json_dump([trigger]), now, now, now),
         )
+    conn.execute(
+        "INSERT INTO manager_review_trigger_keys VALUES(?,?,?,?)",
+        (review_id, reason, entity_type, entity_id),
+    )
     add_event(
         conn,
         current_mission["id"],

@@ -490,6 +490,30 @@ CREATE INDEX IF NOT EXISTS idx_workspace_creation_task ON workspace_creations(ta
 """
 
 
+REVIEW_BATCH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS manager_review_trigger_keys (
+    review_id TEXT NOT NULL REFERENCES manager_reviews(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+    PRIMARY KEY(review_id,reason,entity_type,entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_review_trigger_identity
+    ON manager_review_trigger_keys(reason,entity_type,entity_id,review_id);
+CREATE INDEX IF NOT EXISTS idx_review_requested ON manager_reviews(status,requested_at);
+"""
+
+
+def migrate_review_batches(conn):
+    execute_schema(conn, REVIEW_BATCH_SCHEMA)
+    # Keep legacy review payloads/order intact. The table is an identity index;
+    # triggers_json remains the ordered review contract and audit payload.
+    for review in conn.execute("SELECT id,triggers_json FROM manager_reviews"):
+        for trigger in json_load(review["triggers_json"], []):
+            conn.execute(
+                "INSERT OR IGNORE INTO manager_review_trigger_keys VALUES(?,?,?,?)",
+                (review["id"], trigger["reason"], trigger["entity_type"], trigger["entity_id"]),
+            )
+
+
 def execute_schema(conn, source):
     # executescript commits implicitly; execute each DDL statement in our transaction.
     for statement in source.split(";"):
@@ -594,7 +618,9 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            if target == 10:
+            if target == 11:
+                migrate_review_batches(conn)
+            elif target == 10:
                 execute_schema(conn, WORKSPACE_CREATION_SCHEMA)
             elif target == 9:
                 migrate_reliability_schema(conn)

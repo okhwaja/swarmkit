@@ -1,18 +1,18 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.9.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.10.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
 ```text
 usage: swarmctl [-h] [--root ROOT] [--version]
-                {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+                {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,review,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
 Argument parsing and command routing. Domain rules live in the owning modules.
 
 positional arguments:
-  {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+  {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,review,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
     pause               Set durable mission lifecycle state
     drain               Set durable mission lifecycle state
     resume              Set durable mission lifecycle state
@@ -31,6 +31,7 @@ positional arguments:
                         environment
     review-commit       Record a semantic disposition for every manager
                         trigger
+    review              Inspect manager review batches and semantic commits
     workspace           Create, register, or inspect task-specific isolated
                         checkouts
     serve               Poll durable service state with bounded restartable
@@ -1298,6 +1299,46 @@ optional arguments:
   -h, --help       show this help message and exit
   --reason REASON
   --actor ACTOR
+```
+
+## `swarmctl review`
+
+```text
+usage: swarmctl review [-h] {list,show} ...
+
+positional arguments:
+  {list,show}
+    list       List newest review summaries without full trigger payloads
+    show       Read every ordered trigger and the recorded commit
+
+optional arguments:
+  -h, --help   show this help message and exit
+```
+
+## `swarmctl review list`
+
+```text
+usage: swarmctl review list [-h] [--status {PENDING,RUNNING,DONE,CANCELLED}]
+                            [--agent AGENT] [--limit LIMIT] [--before BEFORE]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --status {PENDING,RUNNING,DONE,CANCELLED}
+  --agent AGENT         Filter by current review owner
+  --limit LIMIT
+  --before BEFORE       Continue with reviews older than this review ID
+```
+
+## `swarmctl review show`
+
+```text
+usage: swarmctl review show [-h] review_id
+
+positional arguments:
+  review_id
+
+optional arguments:
+  -h, --help  show this help message and exit
 ```
 
 ## `swarmctl review-commit`

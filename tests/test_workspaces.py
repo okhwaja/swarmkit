@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from swarmkit import workspaces
+from swarmkit import workspaces, runtime
 
 import swarmctl as s
 
@@ -334,7 +334,8 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
                 )
         self.assertEqual(workspaces.pending_creation(self.conn, self.task)["state"], "CREATED")
         s.reconcile_conn(self.conn)
-        s.claim_task(self.conn, self.task, "fresh-owner", 600)
+        with self.assertRaisesRegex(s.SwarmError, "before claiming"):
+            s.claim_task(self.conn, self.task, "fresh-owner", 600)
         with mock.patch.object(
             workspaces,
             "run_logged_process",
@@ -344,6 +345,55 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
                 self.root, self.conn, self.task, self.source, "trunk()", agent="fresh-owner"
             )
         self.assertEqual(result["base_revision"], "internal-revision:42")
+        s.claim_task(self.conn, self.task, "fresh-owner", 600)
+
+    def test_dispatch_rechecks_checkout_state_at_run_registration(self):
+        config_path = self.root / "runner.json"
+        config = json.loads(config_path.read_text())
+        config["command"] = [sys.executable, "-c", "pass"]
+        config["workspace"] = {
+            "provider": "command",
+            "command": [sys.executable, "-c", "print('lost')"],
+        }
+        config_path.write_text(json.dumps(config))
+        s.claim_task(self.conn, self.task, "owner", 600)
+        real_lock = runtime.process_lock
+
+        @contextlib.contextmanager
+        def insert_creation_between_reads(path):
+            with real_lock(path) as handle:
+                with self.assertRaisesRegex(s.SwarmError, "JSON"):
+                    s.create_workspace(
+                        self.root, self.conn, self.task, self.source, "base", agent="owner"
+                    )
+                yield handle
+
+        with (
+            mock.patch.object(runtime, "process_lock", insert_creation_between_reads),
+            mock.patch.object(runtime, "run_logged_process") as process,
+        ):
+            with self.assertRaisesRegex(s.SwarmError, "before dispatch"):
+                s.dispatch(self.root, "worker", "owner", self.task)
+            process.assert_not_called()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 0)
+
+    def test_scheduler_waits_for_checkout_without_consuming_attempts(self):
+        config_path = self.root / "runner.json"
+        config = json.loads(config_path.read_text())
+        config["command"] = [sys.executable, "-c", "pass"]
+        config["workspace"] = {
+            "provider": "command",
+            "command": [sys.executable, "-c", "print('lost')"],
+        }
+        config["manager_review_debounce_seconds"] = 0
+        config_path.write_text(json.dumps(config))
+        with self.assertRaises(s.SwarmError):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "base")
+        with mock.patch.object(runtime, "dispatch", return_value={"exit_code": 0}) as dispatch:
+            result = s.run_loop(self.root, 2)
+        self.assertEqual(result["state"], "WAITING_FOR_WORKSPACE")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0], 0)
+        self.assertTrue(all(call.args[1] == "manager" for call in dispatch.call_args_list))
 
     def test_creation_inside_transaction_cannot_launch_uncommitted_action(self):
         self.adapter()
@@ -455,7 +505,7 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
         )
         self.assertEqual(
             self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],
-            "10",
+            s.SCHEMA_VERSION,
         )
 
     def test_migration_preserves_old_git_workspaces(self):

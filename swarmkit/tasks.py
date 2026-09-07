@@ -349,6 +349,11 @@ def claim_task(conn, task_id, agent, lease_seconds):
     if uncertain_effects(conn, task_id):
         raise SwarmError("Reconcile uncertain effects before reclaiming task")
     if conn.execute(
+        "SELECT 1 FROM workspace_creations WHERE task_id=? AND state IN ('UNKNOWN','CREATED')",
+        (task_id,),
+    ).fetchone():
+        raise SwarmError("Attach or reconcile checkout creation before claiming task")
+    if conn.execute(
         "SELECT 1 FROM attempts WHERE task_id=? AND agent=?", (task_id, agent)
     ).fetchone():
         raise SwarmError("Use a fresh agent identity for each attempt")

@@ -1,6 +1,6 @@
 # Durable runtime and recovery
 
-This is the normative runtime contract, including the 0.9.0 checkout recovery changes. Swarmkit supports
+This is the normative runtime contract, including the 0.10.0 bounded-review changes. Swarmkit supports
 one user on one POSIX host (macOS or Linux). The harness and its tools enforce
 permissions and credentials. These commands coordinate work; they do not grant
 authority or intercept arbitrary tool calls.
@@ -239,8 +239,11 @@ to attach it and mark it `REGISTERED`, without calling the provider again. Provi
 source, and requested base must still match. Reconciliation is available during a
 pause or after cancellation; attachment still obeys task ownership and lifecycle
 rules. Terminal tasks retain the creation record for explicit operator cleanup.
-Manual `workspace register` cannot bypass a pending creation record, and dispatch
-refuses a checkout that still needs reconciliation or attachment.
+Manual `workspace register` cannot bypass a pending creation record. Claims and
+dispatch refuse a checkout that still needs reconciliation or attachment. The
+scheduler reports `WAITING_FOR_WORKSPACE` without consuming worker attempts when
+checkout recovery is the remaining gate. Checkout state is re-read under the run
+registration transaction so concurrent creation cannot launch in a stale directory.
 
 Uncertain creation also keeps a drain pending and blocks resume, amendment, and
 mission completion. Observe the provider first; `CREATED` records do not imply a
@@ -390,7 +393,7 @@ and the database. It is deliberately less useful for detailed postmortems.
 
 ## Upgrade
 
-Known schema versions 1–9 upgrade transactionally to schema 10. Versions 2–6 were
+Known schema versions 1–10 upgrade transactionally to schema 11. Versions 2–6 were
 additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
 metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
@@ -485,8 +488,9 @@ command runs. The active harness must change to the returned directory itself;
 subsequent dispatches use the registered path automatically. Checkout subprocesses
 inherit the creation lock, so a controller crash does not permit another creator
 while the original child is still alive. A failed/ambiguous checkout command still
-requires inspecting the provider and registering any created checkout; no automatic
-provider retry or checkout deletion is implied.
+requires inspecting the provider, recording `workspace reconcile`, and attaching
+any recovered receipt with `workspace create`; no automatic provider retry or
+checkout deletion is implied.
 
 ## Schema 10 upgrade
 
@@ -495,3 +499,12 @@ constraint. Existing workspace registrations are unchanged. Old releases have no
 durable record of an unregistered provider operation; inspect those checkouts
 manually before adopting this release. Stop old controllers and keep a backup
 before upgrade. Older binaries cannot read schema 10.
+
+## Schema 11 upgrade
+
+Version 0.10.0 indexes the identity of each stored manager-review trigger and
+adds a pending-review ordering index. Trigger payloads remain in their original
+ordered JSON; the new table accelerates identity lookup, and writes update both
+in the same transaction. Existing oversized reviews are preserved. New batches
+are limited to 50 triggers, with no trigger dropped. Stop old controllers and
+back up before upgrading; older binaries cannot read schema 11.

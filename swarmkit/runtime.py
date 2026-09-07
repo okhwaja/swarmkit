@@ -41,6 +41,27 @@ from .storage import (
 from .tasks import claim_task
 
 
+def task_working_directory(conn, task_id, default):
+    if not task_id:
+        return default
+    pending = conn.execute(
+        "SELECT id FROM workspace_creations WHERE task_id=? AND state IN ('UNKNOWN','CREATED')",
+        (task_id,),
+    ).fetchone()
+    if pending:
+        raise SwarmError(
+            "Checkout creation requires reconciliation or attachment before dispatch: "
+            + pending["id"]
+        )
+    workspace = conn.execute("SELECT path FROM workspaces WHERE task_id=?", (task_id,)).fetchone()
+    if workspace:
+        path = Path(workspace["path"])
+        if not path.is_dir():
+            raise SwarmError("Registered workspace is missing; restore it before dispatch")
+        return path
+    return default
+
+
 def dispatch(root, role, agent, task_id=None, dry_run=False):
     config = runner_config(root)
     prompt_path = write_prompt(root, role, agent, task_id)
@@ -49,22 +70,7 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
     conn = connect(root)
     try:
         if task_id:
-            pending = conn.execute(
-                "SELECT id,state FROM workspace_creations WHERE task_id=? AND state IN ('UNKNOWN','CREATED')",
-                (task_id,),
-            ).fetchone()
-            if pending:
-                raise SwarmError(
-                    "Checkout creation requires reconciliation or attachment before dispatch: "
-                    + pending["id"]
-                )
-            workspace = conn.execute(
-                "SELECT path FROM workspaces WHERE task_id=?", (task_id,)
-            ).fetchone()
-            if workspace:
-                workdir = Path(workspace["path"])
-                if not workdir.is_dir():
-                    raise SwarmError("Registered workspace is missing; restore it before dispatch")
+            workdir = task_working_directory(conn, task_id, workdir)
             attempt = attempt_for_task(conn, task_id)
             if attempt and attempt["generation"] > 1:
                 model = config.get("escalation_models", {}).get(role, model)
@@ -90,6 +96,9 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
         try:
             conn.execute("BEGIN IMMEDIATE")
             require_active_mission(conn)
+            # Re-read checkout authorization under the same write lock as the run
+            # record. Registration/recovery may have changed since prompt creation.
+            workdir = task_working_directory(conn, task_id, workdir)
             if conn.execute("SELECT COUNT(*) FROM agent_runs WHERE ended_at IS NULL").fetchone()[
                 0
             ] >= int(config.get("max_parallel", 3)):
@@ -416,7 +425,9 @@ def _run_loop(root, max_cycles, dry_run=False):
                 if should_launch and not launched and not review_pending:
                     slots = max_parallel - len(active)
                     ready = conn.execute(
-                        """SELECT * FROM tasks WHERE status='READY'
+                        """SELECT * FROM tasks t WHERE status='READY'
+                           AND NOT EXISTS (SELECT 1 FROM workspace_creations w WHERE w.task_id=t.id
+                               AND w.state IN ('UNKNOWN','CREATED'))
                            ORDER BY priority DESC, created_at""",
                     ).fetchall()
                     assignments = []
@@ -478,6 +489,22 @@ def _run_loop(root, max_cycles, dry_run=False):
                 }
             conn = connect(root)
             try:
+                pending_workspaces = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT w.id,w.task_id,w.state FROM workspace_creations w JOIN tasks t ON t.id=w.task_id "
+                        "WHERE w.state IN ('UNKNOWN','CREATED') AND t.status NOT IN ('DONE','CANCELLED') "
+                        "ORDER BY w.created_at,w.id LIMIT 50"
+                    )
+                ]
+                if pending_workspaces:
+                    return {
+                        "state": "WAITING_FOR_WORKSPACE",
+                        "cycles": cycles,
+                        "runs": results,
+                        "workspace_creations": pending_workspaces,
+                        "next_action": "Inspect workspace attempts --pending, reconcile provider outcomes, then attach with workspace create",
+                    }
                 exhausted_tasks = [
                     r["id"]
                     for r in conn.execute("SELECT id FROM tasks WHERE status='READY'")

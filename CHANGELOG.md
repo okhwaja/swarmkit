@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+- Bound newly coalesced manager reviews to 50 triggers each. A burst creates
+  serialized batches instead of repeatedly rewriting one growing JSON document.
+  Indexed identity lookups deduplicate requests across all pending batches.
+- Escalate an existing normal review when its trigger is repeated as urgent;
+  retain its original ordered trigger rather than duplicating it.
+- Added paginated `review list` summaries and complete `review show` retrieval.
+  Manager prompts retain their active review ID through context overflow and
+  prioritize running reviews. Replaced an invalid prompt retrieval command.
+- Recheck checkout state in the run-registration transaction. Unresolved checkout
+  work blocks claims without consuming attempts; the scheduler reports
+  `WAITING_FOR_WORKSPACE` with a recovery next step.
+- Schema 11 adds the review-trigger identity index and review ordering index.
+  Existing review payloads/order are preserved, including legacy oversized
+  batches. New triggers spill into bounded batches; semantic commits still
+  require one disposition per trigger.
+
 ## 0.9.0
 
 - Journal checkout creation before invoking Git or a configured internal CLI.

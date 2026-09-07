@@ -23,6 +23,14 @@ processes are alive. A completed task, material or urgent finding, expired
 lease, task entering external wait, or missed wait deadline creates a durable
 manager-review trigger. Normal triggers coalesce for
 `manager_review_debounce_seconds`; urgent triggers are immediately eligible.
+Each newly created review contains at most 50 triggers. Larger bursts create
+additional serialized batches. Identity lookups deduplicate a trigger across all
+pending batches, including earlier full batches. A repeated trigger marked urgent
+promotes its existing batch instead of creating a duplicate. A new observation
+while that trigger's batch is running or finished can request another review.
+Each batch still needs a disposition for every trigger in strict mode. Legacy
+oversized batches retain their complete order after upgrade; they receive no
+additional triggers.
 Only one manager review can be `RUNNING` at a time.
 
 Manager reviews take scheduling priority over new workers. Existing workers
@@ -198,3 +206,15 @@ Use its examples for new integrations. The
 [roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
 engineering work and owner decisions. Permission enforcement stays with the
 harness and tools. Runtime process locking requires a single POSIX host.
+
+## Inspect complete review batches
+
+`review list` returns the newest 50 review summaries, including trigger counts,
+without loading every trigger payload. Filter with `--status` or `--agent`, use
+`--limit` (1–500), and continue with `--before LAST_REVIEW_ID`.
+
+`review show REVIEW_ID` returns every ordered trigger and any recorded semantic
+commit. A manager prompt includes its current leased review ID even when other
+context overflows; retrieve that review before committing if the prompt omitted
+triggers. Running reviews take precedence over pending reviews in the prompt.
+The old `review-commit` command remains the mutation interface.

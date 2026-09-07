@@ -1,6 +1,7 @@
 """Fresh invocation context stays useful when mission history grows."""
 
 import json
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
@@ -100,6 +101,22 @@ class PromptTest(unittest.TestCase):
         context = self.context(task)
         self.assertIn(str(checkout), json.dumps(context))
         self.assertIn("benchmark-host", json.dumps(context))
+
+    def test_manager_retrieval_commands_exist_and_current_review_survives_overflow(self):
+        s.request_manager_review(self.conn, "ordinary", "task", "first")
+        review = s.claim_manager_review(self.conn, "reader", 600)
+        # Enough urgent batches to otherwise hide a normal running batch from its owner.
+        for n in range(1050):
+            s.request_manager_review(self.conn, "urgent", "task", "urgent-%s" % n, "URGENT")
+        context = self.context()
+        self.assertEqual(context["current_review"]["id"], review["id"])
+        self.assertEqual(context["pending_manager_reviews"]["items"][0]["id"], review["id"])
+        for value in context.values():
+            if isinstance(value, dict) and "retrieve" in value:
+                s.parser().parse_args(shlex.split(value["retrieve"]))
+        with mock.patch.object(prompts, "CONTEXT_BYTES", 100):
+            overflow = self.context()
+        self.assertEqual(overflow["current_review"]["retrieve"], "review show " + review["id"])
 
     def test_large_context_retains_mission_task_and_runtime(self):
         task = self.task()

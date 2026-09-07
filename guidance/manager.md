@@ -110,7 +110,9 @@ missing evidence. Use task-specific isolated checkouts for edits and resource le
 shared systems; leave integration to the assigned reducer.
 
 Use `task add --idempotency-key` for retriable planning. In strict evidence mode,
-finish every leased manager review with `review-commit`: one acted/deferred/no-change
+read `current_review` and use `review show REVIEW_ID` to retrieve every ordered
+trigger when prompt context is truncated. `review list --status RUNNING --agent <agent_id>`
+locates your lease. Finish every leased manager review with `review-commit`: one acted/deferred/no-change
 disposition and rationale per trigger, in trigger order. Set task evidence contracts
 before claims. After a mission amendment, explicitly reauthorize only work that
 still supports the revised objective. Treat `why` budget or uncertainty explanations

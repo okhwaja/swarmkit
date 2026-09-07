@@ -74,3 +74,11 @@ classification uses grouped task/decision counts, and completed result text is
 read only when closing a case. Work still scales with the number of active rows;
 this is not a constant-time scheduler. The regression test checks query count and
 state precedence rather than imposing a hardware-dependent latency threshold.
+
+The service benchmark also measures a 1,000-trigger manager-review burst inside
+a transaction that is rolled back after each sample, keeping fixture size and
+fsync differences out of the comparison. With `--review-triggers 1000`, the old
+single growing review measured **2.328 seconds / 1.415 MB** Python peak. Bounded
+50-trigger batches with indexed pending identity lookup measured **0.251 seconds /
+0.126 MB**. Median of three samples on the same host; these are enqueueing costs,
+not model review latency. The resulting 20 reviews retain all 1,000 triggers.

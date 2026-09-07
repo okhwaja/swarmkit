@@ -58,8 +58,9 @@ def main():
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--cases", type=int, default=1000)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--review-triggers", type=int, default=1000)
     args = parser.parse_args()
-    if args.cases < 1 or args.repeats < 1:
+    if args.cases < 1 or args.repeats < 1 or args.review_triggers < 1:
         parser.error("Counts must be positive")
     sys.path.insert(0, str(args.source.resolve()))
     swarm = importlib.import_module("swarmctl")
@@ -86,6 +87,19 @@ def main():
                 "case_reconciliation": measure(lambda _: swarm.reconcile_cases(conn), args.repeats),
                 "full_reconciliation": measure(lambda _: swarm.reconcile_conn(conn), args.repeats),
             }
+
+            def review_burst(_):
+                # Measure the same burst each time, excluding fixture growth and
+                # fsync differences. All events/index rows roll back afterward.
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for n in range(args.review_triggers):
+                        swarm.request_manager_review(conn, "task completed", "task", "burst-%s" % n)
+                finally:
+                    conn.rollback()
+
+            result["review_triggers"] = args.review_triggers
+            result["review_burst"] = measure(review_burst, args.repeats)
         finally:
             conn.close()
     print(json.dumps(result, indent=2))

@@ -1,7 +1,7 @@
 # Roadmap implementation status and backlog
 
-Reviewed against the approved P0/P1 roadmap, with the 0.9.0 local improvement pass
-on 2026-09-07 UTC. P2 remains deferred. Releases 0.7–0.9 add tested runtime
+Reviewed against the approved P0/P1 roadmap, with the 0.10.0 local improvement pass
+on 2026-09-07 UTC. P2 remains deferred. Releases 0.7–0.10 add tested runtime
 slices across most of the active roadmap; this
 is not a claim that every capability or persistent-coworker release gate is done.
 The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
@@ -9,7 +9,7 @@ The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
 ## Questions for the owner
 
 These questions block the follow-on integrations below, not the changes shipped
-through 0.9.0. No answer or permission is inferred while you are away.
+through 0.10.0. No answer or permission is inferred while you are away.
 
 | Decision | Needed before | Suggested starting point |
 |---|---|---|

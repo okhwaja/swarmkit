@@ -254,3 +254,33 @@ Documentation impact: performance/architecture and release metadata; public
 state semantics retained, with deterministic most recently created delivered-task
 result selection at case closure. Case plan checkpoint d56d0c1 passed 183 tests
 in source and extracted distribution.
+
+## Continued pass: bounded manager review bursts (0.10.0 / schema 11)
+
+A burst of 1,000 completions built one 1,000-trigger JSON review, repeatedly
+decoding/rewriting the growing list. New reviews now cap at 50 triggers; schema 11
+adds an identity index for cross-batch pending deduplication and preserves ordered
+legacy payloads. Duplicate urgent observations promote their existing batch.
+The same burst benchmark measured 2.328→0.251 seconds and 1.415→0.126 MB Python
+peak, retaining 20 batches / all 1,000 triggers.
+
+The burst review also exposed an invalid `manager review list` retrieval hint and
+a normal running review that could be crowded out by urgent pending batches.
+Added actual `review list` summaries with cursor pagination and `review show` for
+complete ordered triggers/semantic commits. Prompt overflow retains current_review
+identity and retrieval command, and running reviews sort first. Tests cover batch
+size, cross-batch dedupe, urgency promotion, all-trigger semantic commits, expiry,
+rollback, schema-10 migration, CLI paging, valid retrieval hints, and overflow.
+Documentation impact: runtime/review state, agent interface/role guidance, CLI,
+performance, migration/release. Prior service checkpoint 5b2fe6f passed all 186
+source/extracted-package tests.
+
+Checkout handoff review found a second-read race: dispatch resolved its cwd before
+its write transaction. A provider creation beginning in that interval could leave
+it launching against the default source. Added a shared cwd check inside run
+registration and fault injection between the two reads. Pending creation now
+blocks claims before generation allocation, and the scheduler reports
+WAITING_FOR_WORKSPACE instead of repeatedly consuming failed worker attempts.
+The expired-owner recovery test now attaches its durable receipt before claiming
+the next attempt. Seventeen workspace tests pass; the prior bounded-review-only
+release check passed 193 source/extracted-package tests.

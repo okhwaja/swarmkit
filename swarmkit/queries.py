@@ -153,6 +153,18 @@ def manager_review_dict(row):
     return data
 
 
+def review_details(conn, review_id):
+    row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
+    if not row:
+        raise SwarmError("Unknown manager review: " + review_id)
+    result = manager_review_dict(row)
+    commit = conn.execute("SELECT * FROM review_commits WHERE review_id=?", (review_id,)).fetchone()
+    result["commit"] = dict(commit) if commit else None
+    if commit:
+        result["commit"]["dispositions"] = json_load(result["commit"].pop("dispositions_json"), [])
+    return result
+
+
 def finding_dict(conn, row):
     data = dict(row)
     data["evidence"] = json_load(data.pop("evidence_json"), [])

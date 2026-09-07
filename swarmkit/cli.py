@@ -76,6 +76,7 @@ from .queries import (
     external_wait_dict,
     finding_dict,
     mission_snapshot,
+    review_details,
     policy_application_dict,
     policy_pack_dict,
     policy_pack_summary,
@@ -185,6 +186,21 @@ def add_runtime_cli(sub):
     review.add_argument("--agent", required=True)
     review.add_argument("--dispositions", required=True, help="JSON list in trigger order")
     review.add_argument("--summary", required=True)
+    review_inspect = sub.add_parser(
+        "review", help="Inspect manager review batches and semantic commits"
+    )
+    review_sub = review_inspect.add_subparsers(dest="review_command", required=True)
+    review_list = review_sub.add_parser(
+        "list", help="List newest review summaries without full trigger payloads"
+    )
+    review_list.add_argument("--status", choices=["PENDING", "RUNNING", "DONE", "CANCELLED"])
+    review_list.add_argument("--agent", help="Filter by current review owner")
+    review_list.add_argument("--limit", type=int, default=50)
+    review_list.add_argument("--before", help="Continue with reviews older than this review ID")
+    review_show = review_sub.add_parser(
+        "show", help="Read every ordered trigger and the recorded commit"
+    )
+    review_show.add_argument("review_id")
     workspace = sub.add_parser(
         "workspace", help="Create, register, or inspect task-specific isolated checkouts"
     )
@@ -260,6 +276,7 @@ def handle_runtime_cli(root, args):
         "resource",
         "evidence",
         "review-commit",
+        "review",
         "workspace",
         "audit-verify",
         "serve",
@@ -352,6 +369,38 @@ def handle_runtime_cli(root, args):
                 conn, args.review_id, args.agent, json_load(args.dispositions), args.summary
             )
             result = {"review_id": args.review_id, "committed": True}
+        elif args.command == "review":
+            if args.review_command == "show":
+                result = review_details(conn, args.review_id)
+            else:
+                if not 1 <= args.limit <= 500:
+                    raise SwarmError("Review limit must be between 1 and 500")
+                before = None
+                if args.before:
+                    row = conn.execute(
+                        "SELECT rowid FROM manager_reviews WHERE id=?", (args.before,)
+                    ).fetchone()
+                    if not row:
+                        raise SwarmError("Unknown review cursor: " + args.before)
+                    before = row[0]
+                result = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT mr.id,mr.status,mr.urgency,mr.owner,mr.requested_at,mr.started_at,mr.lease_until,mr.completed_at,"
+                        "(SELECT COUNT(*) FROM manager_review_trigger_keys k WHERE k.review_id=mr.id) AS trigger_count "
+                        "FROM manager_reviews mr WHERE (? IS NULL OR mr.status=?) AND (? IS NULL OR mr.owner=?) "
+                        "AND (? IS NULL OR mr.rowid<?) ORDER BY mr.rowid DESC LIMIT ?",
+                        (
+                            args.status,
+                            args.status,
+                            args.agent,
+                            args.agent,
+                            before,
+                            before,
+                            args.limit,
+                        ),
+                    )
+                ]
         elif args.command == "workspace":
             if args.workspace_command == "create":
                 result = create_workspace(
