@@ -75,6 +75,56 @@ class AuditSafetyTest(unittest.TestCase):
             self.assertNotIn("swarm-audit/intake/orphan.json", archive.namelist())
         self.assertTrue(payload.exists())  # An audit does not clean the live workspace.
 
+    def case_with_payload(self):
+        source = self.root.parent / "intake-source.json"
+        source.write_text('{"event":"original"}')
+        return s.open_case(
+            self.root,
+            self.conn,
+            "provider",
+            "event-1",
+            "Inspect",
+            "Verify event",
+            50,
+            "ingress",
+            ["Verified"],
+            payload=source,
+            ready=True,
+        )
+
+    def test_payload_changed_during_export_is_omitted_and_explained(self):
+        case = self.case_with_payload()
+        payload_path = Path(case["payload_path"])
+        real_copy = audit.shutil.copy2
+
+        def change_before_copy(source, target, *args, **kwargs):
+            if Path(source) == payload_path:
+                payload_path.write_text('{"event":"changed during export"}')
+            return real_copy(source, target, *args, **kwargs)
+
+        with mock.patch.object(audit.shutil, "copy2", side_effect=change_before_copy):
+            audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            status = json.loads(archive.read("swarm-audit/intake-export.json"))
+            payload_name = "swarm-audit/" + str(payload_path.relative_to(self.root))
+            self.assertNotIn(payload_name, archive.namelist())
+        self.assertEqual(status["copied"], [])
+        self.assertEqual(
+            status["skipped"],
+            [{"id": case["id"], "entity_type": "case", "reason": "payload changed since intake"}],
+        )
+        self.assertTrue(audit.verify_audit(self.output)["ok"])
+        self.assertTrue(payload_path.exists())
+
+    def test_missing_payload_is_visible_in_export_manifest(self):
+        case = self.case_with_payload()
+        Path(case["payload_path"]).unlink()
+        audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            status = json.loads(archive.read("swarm-audit/intake-export.json"))
+        self.assertEqual(status["skipped"][0]["reason"], "payload file is missing")
+        self.assertEqual(status["skipped"][0]["id"], case["id"])
+
     def test_malformed_manifest_returns_problems_instead_of_crashing(self):
         for manifest in (
             {"files": [None]},

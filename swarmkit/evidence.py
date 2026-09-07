@@ -69,8 +69,15 @@ def record_evidence(
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise SwarmError("Evidence must reference an existing result file")
-    sha, _ = hash_file(path)
     evidence_id = make_id("V")
+    artifact_id = register_artifact(
+        conn, task_id, str(path), kind="verification", note="Evidence " + evidence_id, actor=agent
+    )
+    # One file observation supplies both records. Rehashing here could bind the
+    # evidence and its artifact to different bytes if a result file is replaced.
+    sha = conn.execute("SELECT sha256 FROM artifacts WHERE id=?", (artifact_id,)).fetchone()[0]
+    if sha is None:
+        raise SwarmError("Evidence result file disappeared before registration")
     conn.execute(
         "INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (
@@ -87,9 +94,6 @@ def record_evidence(
             sha,
             utcnow(),
         ),
-    )
-    artifact_id = register_artifact(
-        conn, task_id, str(path), kind="verification", note="Evidence " + evidence_id, actor=agent
     )
     add_event(
         conn,
@@ -122,17 +126,31 @@ def evidence_gaps(conn, task_id):
     contract = conn.execute("SELECT * FROM task_contracts WHERE task_id=?", (task_id,)).fetchone()
     if not contract:
         return ["No revision/environment contract"]
-    covered = set()
+    covered, seen = set(), set()
+    digests = {}
     for row in conn.execute(
-        "SELECT * FROM evidence WHERE task_id=? AND generation=? AND mission_revision=? AND exit_code=0",
-        (task_id, task["generation"], runtime_state(conn)["revision"]),
+        "SELECT criterion,exit_code,path,sha256 FROM evidence WHERE task_id=? AND generation=? "
+        "AND mission_revision=? AND revision=? AND environment=? ORDER BY rowid DESC",
+        (
+            task_id,
+            task["generation"],
+            runtime_state(conn)["revision"],
+            contract["revision"],
+            contract["environment"],
+        ),
     ):
-        path = Path(row["path"])
-        if (
-            row["revision"] == contract["revision"]
-            and row["environment"] == contract["environment"]
-            and path.is_file()
-            and hash_file(path)[0] == row["sha256"]
-        ):
+        if row["criterion"] in seen:
+            continue
+        seen.add(row["criterion"])
+        # The newest result for this criterion/target supersedes earlier records,
+        # including a failed rerun after an earlier passing result.
+        if row["exit_code"] != 0:
+            continue
+        if row["path"] not in digests:
+            try:
+                digests[row["path"]] = hash_file(Path(row["path"]))[0]
+            except OSError:
+                digests[row["path"]] = None
+        if digests[row["path"]] == row["sha256"]:
             covered.add(row["criterion"])
     return sorted(set(criteria) - covered)

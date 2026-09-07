@@ -289,7 +289,13 @@ python3 swarmctl.py evidence gaps --task TASK
 A task with an evidence contract, or any task in strict mode, cannot complete
 until every criterion has successful evidence for the exact contracted revision,
 environment, task generation, and mission revision. Result files are registered as verification artifacts for optional audit export;
-their hashes are rechecked at completion. Failed, stale, missing, or changed files do not count.
+their hashes are rechecked at completion. The newest record for each criterion
+on that contracted target/attempt is authoritative: a later failed rerun blocks
+completion even if an older passing file is retained. A new successful record can
+restore coverage. Evidence for another revision or environment does not supersede
+the contracted target. Failed, stale, missing, or changed files do not count.
+Evidence and its artifact share one file hash observation; each distinct result
+path is hashed once per completion check even when it covers several criteria.
 The manager can pin the contract before a claim, especially for independent
 verification of a known revision. When an implementation produces its revision
 only after work begins, the current owner may bind the first contract using
@@ -508,3 +514,9 @@ ordered JSON; the new table accelerates identity lookup, and writes update both
 in the same transaction. Existing oversized reviews are preserved. New batches
 are limited to 50 triggers, with no trigger dropped. Stop old controllers and
 back up before upgrading; older binaries cannot read schema 11.
+
+Private exports include `intake-export.json`, which lists copied case/signal
+payloads and those omitted because they were missing, outside intake, or changed.
+Copied bytes are checked against the recorded intake hash and size after copying.
+An archive can pass `audit-verify` while reporting missing source evidence: archive
+integrity is separate from completeness of the original mission's evidence.

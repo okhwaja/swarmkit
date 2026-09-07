@@ -160,10 +160,11 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
         runs = [dict(row) for row in conn.execute("SELECT * FROM agent_runs ORDER BY started_at")]
         cases = snapshot["cases"]
         summary = audit_summary(conn, snapshot)
-        intake_paths = [
-            row[0]
+        intake_payloads = [
+            dict(row)
             for row in conn.execute(
-                "SELECT payload_path FROM cases WHERE payload_path IS NOT NULL UNION SELECT payload_path FROM case_signals WHERE payload_path IS NOT NULL"
+                "SELECT 'case' AS entity_type,id,payload_path,payload_sha256,payload_size_bytes FROM cases WHERE payload_path IS NOT NULL "
+                "UNION ALL SELECT 'signal',id,payload_path,payload_sha256,payload_size_bytes FROM case_signals WHERE payload_path IS NOT NULL"
             )
         ]
     finally:
@@ -199,22 +200,39 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
             )
     # A crash or an outer caller's rollback may leave an unregistered snapshot.
     # Only payloads referenced by this database snapshot belong in its audit.
-    for value in intake_paths:
-        path = Path(value)
+    intake_copied, intake_skipped = [], []
+    for payload in intake_payloads:
+        identity = {"id": payload["id"], "entity_type": payload["entity_type"]}
+        path = Path(payload["payload_path"])
         try:
             relative = path.resolve().relative_to((source_root / "intake").resolve())
         except ValueError:
+            intake_skipped.append(identity | {"reason": "payload is outside the intake directory"})
             continue
-        if path.is_file():
-            target = stage / "intake" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
+        if not path.is_file():
+            intake_skipped.append(identity | {"reason": "payload file is missing"})
+            continue
+        target = stage / "intake" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        if hash_file(target) != (payload["payload_sha256"], payload["payload_size_bytes"]):
+            target.unlink()
+            intake_skipped.append(identity | {"reason": "payload changed since intake"})
+        else:
+            intake_copied.append(identity | {"archive_path": str(target.relative_to(stage))})
+    (stage / "intake-export.json").write_text(
+        json.dumps({"copied": intake_copied, "skipped": intake_skipped}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     audit_guide = textwrap.dedent(
         """\
         # How to review this swarm run
 
         Start with `snapshot.json`, `health.json`, and `BOARD.md`. For a persistent service,
-        use `cases.json` for complete case and signal histories. Use `events.jsonl` to
+        use `cases.json` for complete case and signal histories. Check `intake-export.json`
+        and `artifact-export.json` for files omitted because they changed or disappeared.
+        Archive integrity verification does not prove that every source file was available.
+        Use `events.jsonl` to
         reconstruct causality and `agent-runs.json` plus `runs/` to inspect individual
         invocations. The SQLite database is included for custom queries.
 

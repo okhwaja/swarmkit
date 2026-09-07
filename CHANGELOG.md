@@ -13,6 +13,11 @@
 - Recheck checkout state in the run-registration transaction. Unresolved checkout
   work blocks claims without consuming attempts; the scheduler reports
   `WAITING_FOR_WORKSPACE` with a recovery next step.
+- Use the newest verification record per criterion/target/attempt. A later failed
+  rerun supersedes an older pass. Evidence and artifact hashes come from one file
+  observation, and shared result paths are hashed once per completion check.
+- Verify copied intake payloads against their recorded hashes and sizes; omit
+  changed/missing payloads with explicit `intake-export.json` explanations.
 - Schema 11 adds the review-trigger identity index and review ordering index.
   Existing review payloads/order are preserved, including legacy oversized
   batches. New triggers spill into bounded batches; semantic commits still

@@ -284,3 +284,21 @@ WAITING_FOR_WORKSPACE instead of repeatedly consuming failed worker attempts.
 The expired-owner recovery test now attaches its durable receipt before claiming
 the next attempt. Seventeen workspace tests pass; the prior bounded-review-only
 release check passed 193 source/extracted-package tests.
+
+## Continued pass: current verification and copied evidence integrity
+
+Evidence coverage accepted any old passing record even after a later failed rerun
+on the same criterion/revision/environment/attempt. It also hashed one result
+twice when creating evidence plus artifact records, allowing mismatched hashes
+if the file changed between reads. The newest matching verification now governs
+coverage; artifact/evidence share one hash observation; completion hashes each
+distinct result path once. Tests cover failure supersession/recovery, unrelated
+targets, file mutation between observations, shared-path reuse, and missing files.
+
+Private audit intake copies were not checked after copying. A concurrent writer
+could produce an internally valid archive whose payload did not match canonical
+intake. Copies now verify hash/size against the frozen database and exclude changed
+bytes, with a new intake-export.json inclusion/omission report. Failure-in-copy
+and missing-file tests retain the source and distinguish archive integrity from
+evidence completeness. Documentation impact: evidence/runtime and audit contracts;
+no migration. Prior checkpoint abad367 passed all 195 source/extracted tests.
