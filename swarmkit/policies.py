@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import hashlib
 
 from .coordination import reconcile_conn
 from .core import SwarmError, VALID_TASK_KINDS, atomic_write, json_dump, make_id, utcnow
@@ -219,7 +220,12 @@ def render_policy_text(value, variables, location):
 
 
 @atomic_write
-def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
+def apply_policy(
+    conn, policy_id, variable_items, workstream_id, actor, ready, idempotency_key=None
+):
+    """Create one atomic task graph, optionally deduplicated by a stable request key."""
+    if idempotency_key is not None and not idempotency_key.strip():
+        raise SwarmError("Policy idempotency key must not be empty")
     row = conn.execute("SELECT * FROM policy_packs WHERE id=?", (policy_id,)).fetchone()
     if not row:
         raise SwarmError("Unknown installed policy: %s" % policy_id)
@@ -235,6 +241,27 @@ def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
             values[name] = str(specification["default"])
         if specification.get("required") and not values.get(name):
             raise SwarmError("Missing required policy variable: %s" % name)
+    specification = hashlib.sha256(
+        json_dump(
+            {
+                "policy_id": policy_id,
+                "manifest": manifest,
+                "guidance": pack["guidance_text"],
+                "variables": values,
+                "workstream_id": workstream_id,
+                "ready": bool(ready),
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+    if idempotency_key is not None:
+        existing = conn.execute(
+            "SELECT specification,application_id FROM policy_application_keys WHERE key=?",
+            (idempotency_key,),
+        ).fetchone()
+        if existing:
+            if existing["specification"] != specification:
+                raise SwarmError("Policy idempotency key already belongs to different work")
+            return policy_application_dict(conn, existing["application_id"])
     if workstream_id:
         stream = workstream_row(conn, workstream_id)
         if stream["status"] in {"DONE", "CANCELLED"}:
@@ -277,6 +304,11 @@ def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
             utcnow(),
         ),
     )
+    if idempotency_key is not None:
+        conn.execute(
+            "INSERT INTO policy_application_keys(key,specification,application_id) VALUES(?,?,?)",
+            (idempotency_key, specification, application_id),
+        )
     for item in rendered:
         stage = item["stage"]
         dependencies = [stage_tasks[stage_id] for stage_id in stage.get("depends_on", [])]
@@ -357,6 +389,7 @@ def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
             "variables": values,
             "workstream_id": workstream_id,
             "tasks": stage_tasks,
+            "idempotency_key": idempotency_key,
         },
     )
     reconcile_conn(conn)

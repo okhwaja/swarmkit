@@ -116,3 +116,11 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   visible human decisions/pause.
 - Rewrote README around fit, a runnable demo, three real-work steps, core concepts,
   VCS-neutral checkouts, and focused documentation links.
+
+- Saved local commit faa1b64 for first use; 129 source/package tests passed.
+- Added policy application retry keys bound to manifest, guidance, resolved
+  variables, workstream, and authorization. Failed transactions do not consume keys;
+  identical retries return existing work after lifecycle changes.
+- Replaced description-LIKE signal deduplication with a signal/task foreign-key
+  relation. Migration reconstructs links from structured events. Six new tests
+  cover policy retries/conflicts/rollback and signal edits/false matches/migration.

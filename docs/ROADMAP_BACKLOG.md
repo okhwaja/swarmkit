@@ -33,7 +33,7 @@ explicit. “Existing” identifies foundations present before this release.
 | 6 | Workspaces and locks | Added VCS-neutral registered checkouts, configurable internal CLI adapters, opt-in Git worktrees, automatic dispatch cwd selection, and exclusive resource leases. Shared locks, automatic cleanup, and crash-atomic external checkout creation remain. |
 | 7 | Completion evidence | Added exact criterion/revision/environment/attempt evidence coverage and file integrity checks. Opt-in for old workflows. Trusted command execution and mission-wide criterion-to-result mapping remain. |
 | 8 | Bounded invocation context | Added snapshot watermarks, unique immutable prompt paths, prompt digests, bounded lists/text, and an explicit overflow retrieval packet. Invocation context now uses bounded SQL pages and scoped indexes; inbox pagination occurs before decoding. Full audit and explicit entity-history queries remain deliberately complete. |
-| 9 | Safe planning/review commits | Added task planning keys and strict semantic manager review commits. Whole-policy-application idempotency and atomic multi-task plan replacement remain. |
+| 9 | Safe planning/review commits | Added task planning keys and strict semantic manager review commits. Whole-policy-application retry keys are now supported; atomic multi-task plan replacement remains. |
 | 10 | Causal attempt audit | Added generation/revision/model/prompt provenance, attempt dispositions, resource/effect events, and recovery history. A complete causal graph and critical-path computation remain. |
 | 11 | Consistent/private exports | Added one SQLite snapshot for derived views, manifest verification, changed-artifact rejection, and structural-only sharing mode. Fine-grained redaction of useful full exports remains. |
 | 12 | Migrations | Added transactional sequential upgrades and rollback/future-version rejection tests. New migrations must follow the contributor contract. |
@@ -46,7 +46,7 @@ explicit. “Existing” identifies foundations present before this release.
 | 19 | Risk-based policies | Existing policy packs and human decisions remain. Automated risk classification and provider-specific approval policy await owner scope decisions above. |
 | 20 | Explanation tools | Added deterministic why/explanation output with attempts, blockers, limits, and uncertain effects in exports. Full critical paths and timeline visualization remain. |
 | 21 | Evaluation loop | Integrity-checked exports and reproducible failure tests are available; scored model postmortem evaluations await a labeled dataset and model choices. |
-| 22 | Templates/setup | Added performance investigation, pipeline repair, and system port templates alongside existing PR workflows, plus runtime setup instructions. Interactive setup remains. |
+| 22 | Templates/setup | Added performance investigation, pipeline repair, and system port templates alongside existing PR workflows, plus runtime setup instructions. An isolated demo and concise status are available; interactive harness setup remains. |
 | 23 | Operator CLI | Added lifecycle, recovery, why, configure, effect, resource, workspace, evidence, amendment, review commit, serve, and audit verification commands with generated reference. |
 | 24 | Budgets | Added persistent task/run/failure-attempt/deadline limits and stopping dispositions. Money/token/API/attention limits await metering integration. |
 | 25 | Model escalation | Added optional attempt-based escalation_models and model provenance. Semantic/risk routing and measured cost-quality optimization remain. |
@@ -57,7 +57,7 @@ These are remaining implementation work, not decisions being pushed to the owner
 
 - Uniform typed outcomes and criterion coverage at mission, workstream, task group,
   and service-case scope, with explicit partial-result and cleanup contracts.
-- Semantic policy evaluation, whole-plan transactions, application deduplication,
+- Semantic policy evaluation, whole-plan replacement,
   version-aware service supersession, and first-class reducer groups.
 - Indexed context/event pagination, complete causal graphs, critical paths, and
   long-history performance tests.

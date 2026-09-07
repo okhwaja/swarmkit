@@ -273,3 +273,11 @@ affected tasks are withdrawn; shared questions remain open for other work.
 New follow-up work clears the old completion summary and timestamp. Repeating an
 already-recorded task link does not reopen a completed case. A late reply to a
 withdrawn question is retained as a signal without resolving or reopening it.
+
+### Follow-up identity
+
+Each signal that creates follow-up work has a durable signal-to-task relationship.
+Retrying the same signal returns the same task even if its description changes or
+the case is subsequently cancelled. Mentioning a signal in another task's prose
+does not count as handling it. New wakeups on explicitly cancelled cases remain
+rejected. Schema 9 reconstructs existing links from structured `CASE_WOKEN` events.

@@ -45,11 +45,20 @@ swarmctl --root /work/my-run/.swarm policy apply \
   --var 'base_branch=main' \
   --var 'test_command=python3 -m unittest' \
   --actor manager \
+  --idempotency-key review-request-123 \
   --ready
 ```
 
 `--ready` authorizes every generated stage, but dependencies expose only the
 first stage as ready. Without it, the stages remain proposed until authorized.
+
+Use a stable `--idempotency-key` when a manager or ingress adapter may retry a
+workflow request. An identical retry returns the original application and tasks,
+even after a pause or completion. Changing the installed manifest/guidance,
+resolved variables, workstream, or authorization under that key is rejected.
+Actor identity and variable ordering do not change the request. Without a key,
+each application deliberately creates a new plan. Keys and the full task graph
+commit together; a failed application does not consume its key.
 
 Inspect all applications or one application:
 

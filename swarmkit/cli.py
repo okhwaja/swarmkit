@@ -412,6 +412,9 @@ def parser():
         "--var", action="append", default=[], help="Template value as name=value"
     )
     policy_apply.add_argument("--workstream")
+    policy_apply.add_argument(
+        "--idempotency-key", help="Stable key for safely retrying one workflow request"
+    )
     policy_apply.add_argument("--actor", default="manager")
     policy_apply.add_argument("--ready", action="store_true", help="Authorize all generated stages")
     policy_sub.add_parser("applications")
@@ -1033,6 +1036,7 @@ def main(argv=None):
                             args.workstream,
                             args.actor,
                             args.ready,
+                            args.idempotency_key,
                         )
                     )
                 elif args.policy_command == "applications":

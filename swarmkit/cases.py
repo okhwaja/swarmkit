@@ -342,18 +342,16 @@ def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, read
 @atomic_write
 def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
     case = case_row(conn, case_id)
-    if case["status"] == "CANCELLED":
-        raise SwarmError("Cancelled cases cannot be woken")
     signal = conn.execute("SELECT * FROM case_signals WHERE id=?", (signal_id,)).fetchone()
     if not signal or signal["case_id"] != case_id:
         raise SwarmError("Signal does not belong to case %s" % case_id)
     existing = conn.execute(
-        """SELECT t.id FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
-           WHERE ct.case_id=? AND t.description LIKE ?""",
-        (case_id, "%%signal %s%%" % signal_id),
+        "SELECT task_id FROM case_signal_tasks WHERE signal_id=?", (signal_id,)
     ).fetchone()
     if existing:
-        return existing["id"]
+        return existing["task_id"]
+    if case["status"] == "CANCELLED":
+        raise SwarmError("Cancelled cases cannot be woken")
     now = utcnow()
     require_task_capacity(conn)
     task_id = make_id("T")
@@ -392,6 +390,9 @@ def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
         ),
     )
     conn.execute("INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, task_id))
+    conn.execute(
+        "INSERT INTO case_signal_tasks(signal_id,task_id) VALUES(?,?)", (signal_id, task_id)
+    )
     conn.execute(
         "UPDATE cases SET status='ACTIVE', closed_at=NULL, result_summary=NULL, completion_outcome=NULL, updated_at=? WHERE id=?",
         (now, case_id),

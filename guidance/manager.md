@@ -129,3 +129,8 @@ defaults to PARTIAL if any tasks were cancelled. Use `mission complete --outcome
 SUCCEEDED` only with evidence explaining why any cancelled approaches were obsolete
 and every actual success criterion was met. New case follow-ups clear previous
 completion summaries; do not present an old revision's result as the new result.
+
+When applying a reusable policy in a retryable planning step, supply a stable
+`policy apply --idempotency-key` for that specific workflow request. Repeat the
+same key and specification after uncertainty about command completion. Use a new
+key only for deliberately new work; changed work under an existing key is refused.

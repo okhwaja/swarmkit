@@ -6,6 +6,7 @@ from .core import (
     SwarmError,
     VERSION,
     json_dump,
+    json_load,
     make_id,
     utcnow,
 )
@@ -449,6 +450,16 @@ CREATE TABLE IF NOT EXISTS workspaces (
 
 
 CONTEXT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS policy_application_keys (
+    key TEXT PRIMARY KEY,
+    specification TEXT NOT NULL,
+    application_id TEXT NOT NULL UNIQUE REFERENCES policy_applications(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS case_signal_tasks (
+    signal_id TEXT PRIMARY KEY REFERENCES case_signals(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_entity_seq ON events(entity_id, seq);
 CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task ON agent_runs(task_id, ended_at);
@@ -477,6 +488,19 @@ def migrate_workspace_schema(conn):
 
 def migrate_reliability_schema(conn):
     execute_schema(conn, CONTEXT_SCHEMA)
+    # The old wakeup identity lived in prose. Recover the actual relationship
+    # from the structured creation event, even if a task description was edited.
+    for event in conn.execute(
+        "SELECT entity_id,payload_json FROM events WHERE event_type='CASE_WOKEN' ORDER BY seq"
+    ):
+        payload = json_load(event[1], {})
+        conn.execute(
+            """INSERT OR IGNORE INTO case_signal_tasks(signal_id,task_id)
+               SELECT s.id,t.id FROM case_signals s JOIN case_tasks ct ON ct.case_id=s.case_id
+               JOIN tasks t ON t.id=ct.task_id
+               WHERE s.id=? AND t.id=? AND s.case_id=?""",
+            (payload.get("signal_id"), payload.get("task_id"), event[0]),
+        )
     for table in ("cases", "workstreams"):
         columns = {row[1] for row in conn.execute("PRAGMA table_info(" + table + ")")}
         if "completion_outcome" not in columns:

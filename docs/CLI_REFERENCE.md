@@ -1121,6 +1121,7 @@ optional arguments:
 
 ```text
 usage: swarmctl policy apply [-h] [--var VAR] [--workstream WORKSTREAM]
+                             [--idempotency-key IDEMPOTENCY_KEY]
                              [--actor ACTOR] [--ready]
                              policy_id
 
@@ -1131,6 +1132,8 @@ optional arguments:
   -h, --help            show this help message and exit
   --var VAR             Template value as name=value
   --workstream WORKSTREAM
+  --idempotency-key IDEMPOTENCY_KEY
+                        Stable key for safely retrying one workflow request
   --actor ACTOR
   --ready               Authorize all generated stages
 ```
