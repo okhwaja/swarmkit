@@ -50,6 +50,8 @@ def require_decision_choice(conn, decision_id, choice):
 
 @atomic_write
 def resolve_decision(conn, decision_id, answer, actor, choice=None):
+    if not answer.strip():
+        raise SwarmError("Decision answer must not be empty")
     row = decision_row(conn, decision_id)
     if row["status"] != "OPEN":
         raise SwarmError("Decision %s is already %s" % (decision_id, row["status"]))
@@ -94,6 +96,8 @@ def resolve_decision(conn, decision_id, answer, actor, choice=None):
 
 @atomic_write
 def revise_decision(conn, decision_id, answer, actor, choice=None):
+    if not answer.strip():
+        raise SwarmError("Decision answer must not be empty")
     row = decision_row(conn, decision_id)
     if row["status"] != "RESOLVED":
         raise SwarmError("Decision %s must be resolved before it can be revised" % decision_id)
@@ -157,6 +161,8 @@ def link_decision(conn, decision_id, task_id, actor):
     ).fetchone()
     if existing:
         return False
+    if decision["status"] == "CANCELLED":
+        raise SwarmError("A withdrawn decision cannot be linked to new work; ask a new question")
     conn.execute(
         "INSERT INTO decision_tasks(decision_id, task_id) VALUES(?,?)", (decision_id, task_id)
     )

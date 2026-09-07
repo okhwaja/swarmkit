@@ -560,6 +560,8 @@ def cancel_task(conn, task_id, actor, reason):
 
 @atomic_write
 def block_task(conn, task_id, agent, kind, question, recommendation, options):
+    if not question.strip():
+        raise SwarmError("A blocker requires a non-empty question")
     if kind not in VALID_BLOCKER_KINDS:
         raise SwarmError("Invalid blocker kind: %s" % kind)
     row = task_row(conn, task_id)

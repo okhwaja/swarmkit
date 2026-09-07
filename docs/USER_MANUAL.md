@@ -619,3 +619,8 @@ as `command` for a repeatable internal CLI, or use `workspace register` for a
 harness-created checkout. The default is manual registration, with no VCS
 assumption. See the [workspace adapter contract](RUNTIME_SAFETY.md#isolate-files-and-scarce-resources)
 for argv placeholders, JSON receipts, ownership, failure handling, and migration.
+
+Questions and answers must contain actual text. Cancelling all work affected by
+an open question withdraws it; a withdrawn decision cannot be linked to new work.
+Ask a new question when the scope requires a new answer. Historical links remain
+available for audit, and repeated existing links do not change state.

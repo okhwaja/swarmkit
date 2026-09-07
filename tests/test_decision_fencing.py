@@ -39,6 +39,33 @@ class DecisionFencingTest(unittest.TestCase):
         s.resolve_decision(self.conn, self.decision, "Pause ingestion", "human", "Pause")
         s.claim_task(self.conn, self.task, "second", 600)
 
+    def test_blank_question_preserves_current_attempt(self):
+        with self.assertRaises(s.SwarmError):
+            s.block_task(self.conn, self.task, "second", "human_decision", " ", "", [])
+        self.assertEqual(s.task_row(self.conn, self.task)["owner"], "second")
+
+    def test_blank_answers_cannot_clear_or_revise_a_decision(self):
+        with self.assertRaises(s.SwarmError):
+            s.revise_decision(self.conn, self.decision, " ", "human")
+        decision = s.block_task(
+            self.conn, self.task, "second", "human_decision", "Proceed?", "Wait", []
+        )
+        with self.assertRaises(s.SwarmError):
+            s.resolve_decision(self.conn, decision, " ", "human")
+        self.assertEqual(s.decision_row(self.conn, decision)["status"], "OPEN")
+
+    def test_withdrawn_question_cannot_gate_new_work(self):
+        decision = s.block_task(
+            self.conn, self.task, "second", "human_decision", "Proceed?", "Wait", []
+        )
+        s.cancel_task(self.conn, self.task, "human", "Withdrawn")
+        other = s.add_task(
+            self.conn, "Other", "Other work", "discovery", ["Checked"], [], 50, "manager", True
+        )
+        with self.assertRaises(s.SwarmError):
+            s.link_decision(self.conn, decision, other, "manager")
+        self.assertFalse(s.link_decision(self.conn, decision, self.task, "manager"))
+
     def test_another_agent_cannot_acknowledge_for_the_owner(self):
         with self.assertRaises(s.SwarmError):
             s.acknowledge_decision(self.conn, self.decision, self.task, "stranger")
