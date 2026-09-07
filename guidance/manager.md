@@ -134,3 +134,9 @@ When applying a reusable policy in a retryable planning step, supply a stable
 `policy apply --idempotency-key` for that specific workflow request. Repeat the
 same key and specification after uncertainty about command completion. Use a new
 key only for deliberately new work; changed work under an existing key is refused.
+
+Pin an independent verifier's exact revision/environment contract before its
+claim. An implementation owner may bind an initially absent contract once its
+result revision is known; it cannot replace your pinned target during that attempt.
+Tasks need a concrete title, description, and at least one non-empty acceptance
+criterion. Empty criteria cannot serve as a verification shortcut.

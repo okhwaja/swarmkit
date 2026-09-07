@@ -50,7 +50,7 @@ def validate_extension_manifest(manifest):
     ):
         raise SwarmError("Delivery extension handles must be a non-empty string array")
     executor = manifest.get("executor")
-    if not isinstance(executor, dict) or executor.get("type") not in {"agent", "command"}:
+    if not isinstance(executor, dict) or executor.get("type") not in ("agent", "command"):
         raise SwarmError("Extension executor.type must be agent or command")
     if executor["type"] == "command":
         command = executor.get("command")

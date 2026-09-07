@@ -217,3 +217,7 @@ Use its examples for new integrations. The
 [roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
 engineering work and owner decisions. Permission enforcement stays with the
 harness and tools. Runtime process locking requires a single POSIX host.
+
+Malformed stage kinds, dependency values, and template field expressions are
+reported as policy validation errors. Templates must render from the declared
+variables; validation does not invoke the harness or execute policy prose.

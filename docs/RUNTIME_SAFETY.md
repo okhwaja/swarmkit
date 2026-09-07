@@ -247,8 +247,14 @@ A task with an evidence contract, or any task in strict mode, cannot complete
 until every criterion has successful evidence for the exact contracted revision,
 environment, task generation, and mission revision. Result files are registered as verification artifacts for optional audit export;
 their hashes are rechecked at completion. Failed, stale, missing, or changed files do not count.
-The manager sets the contract before a claim; a new verification task can target
-the final implementation revision. The harness is responsible for running the
+The manager can pin the contract before a claim, especially for independent
+verification of a known revision. When an implementation produces its revision
+only after work begins, the current owner may bind the first contract using
+`evidence contract --actor ATTEMPT_AGENT`. That owner must acknowledge current
+decisions first and cannot replace an already pinned contract during the attempt.
+An identical contract retry has no extra event. Use fresh verification if the
+pinned target needs to change. This works with opaque provider revisions, including
+jj/internal identifiers; no Git commit format is assumed. The harness is responsible for running the
 reported command honestly. This is an evidence coverage/integrity contract, not
 a trusted test execution service. Legacy missions retain free-text verification
 unless strict mode or a task contract is enabled.

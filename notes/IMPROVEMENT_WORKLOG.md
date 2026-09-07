@@ -154,3 +154,21 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   the creator. Added workspace create --agent, pre-launch ownership checks, and
   inherited checkout locks. Tests use an internal-style adapter with opaque jj
   revisions and a real killed controller. Git remains explicitly selected only.
+
+- Added a disposable, repeatable standard-library benchmark. Against 9587139 on
+  1,000 completed tasks/25,000 events, worker context improved 264.387→2.014 ms,
+  manager context 267.902→2.076 ms, inbox lease 216.369→0.982 ms under tracemalloc.
+  Python allocation peaks fell from 55–58 MB to about 0.2 MB. At 10× history,
+  improved prompt/inbox peaks remained stable. Method and limits are documented
+  in docs/PERFORMANCE.md; raw measurement output remains in /tmp.
+
+- Saved local commit 415a573 for checkout creation ownership/liveness; 155
+  source/package tests passed.
+- Implementation output revisions are often unknown before a claim. Current
+  owners may now bind the first evidence contract, while existing pinned targets
+  remain immutable during an attempt. Identical retries are inert; stale owners
+  cannot bind. Added strict-mode end-to-end completion and legacy-empty-criteria tests.
+- Malformed manifest values previously raised raw TypeError/AttributeError/
+  IndexError exceptions; validation now returns domain errors. New tasks reject
+  blank goals/criteria. Amendment also waits for sender runs and uncertain
+  deliveries. All 164 source tests pass after these changes.

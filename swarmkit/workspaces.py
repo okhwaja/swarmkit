@@ -20,7 +20,7 @@ def workspace_config(root, provider=None):
         raise SwarmError("runner.json workspace must be an object")
     value = dict(config.get("workspace", {}))
     selected = provider or value.get("provider", "manual")
-    if selected not in {"manual", "command", "git"}:
+    if not isinstance(selected, str) or selected not in {"manual", "command", "git"}:
         raise SwarmError("Workspace provider must be manual, command, or git")
     value["provider"] = selected
     timeout = value.get("timeout_seconds", 300)

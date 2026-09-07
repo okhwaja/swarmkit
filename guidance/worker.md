@@ -102,3 +102,9 @@ with `--agent <agent_id>`, then use its returned directory for all project edits
 Registering/creating it does not change the working directory of an already
 running harness. A timeout or failed checkout receipt is not proof that the
 provider created nothing; inspect the provider before another creation attempt.
+
+If no evidence contract was assigned and your implementation's exact result
+revision becomes known during the task, bind its first contract with
+`evidence contract --actor <agent_id>` before recording final evidence. You cannot
+replace a pinned contract during the attempt. Ask for fresh verification work if
+the required target changes; every criterion must still match the final contract.

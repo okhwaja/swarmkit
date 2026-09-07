@@ -234,6 +234,16 @@ def add_task(
     workstream_id=None,
     idempotency_key=None,
 ):
+    if not all(isinstance(value, str) and value.strip() for value in (title, description)):
+        raise SwarmError("Task title and description must not be empty")
+    if (
+        not isinstance(acceptance, list)
+        or not acceptance
+        or not all(isinstance(item, str) and item.strip() for item in acceptance)
+    ):
+        raise SwarmError("Task requires at least one non-empty acceptance criterion")
+    if idempotency_key is not None and not idempotency_key.strip():
+        raise SwarmError("Task idempotency key must not be empty")
     if kind not in VALID_TASK_KINDS:
         raise SwarmError("Invalid task kind: %s" % kind)
     specification = json_dump(
@@ -873,10 +883,14 @@ def amend_mission(conn, objective, success, constraints, reason, actor):
     state = runtime_state(conn)
     if state["desired_state"] != "PAUSED":
         raise SwarmError("Pause the mission before amending it")
-    if conn.execute(
-        "SELECT 1 FROM agent_runs WHERE ended_at IS NULL"
-    ).fetchone() or uncertain_effects(conn):
-        raise SwarmError("Drain/recover harnesses and reconcile effects before amendment")
+    if (
+        has_unfinished_runs(conn)
+        or uncertain_effects(conn)
+        or conn.execute("SELECT 1 FROM deliveries WHERE status IN ('CLAIMED','UNKNOWN')").fetchone()
+    ):
+        raise SwarmError(
+            "Drain/recover harnesses and reconcile effects and deliveries before amendment"
+        )
     if not objective.strip() or not reason.strip():
         raise SwarmError("Amendment requires objective and rationale")
     previous = dict(mission(conn))

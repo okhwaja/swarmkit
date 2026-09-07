@@ -129,6 +129,8 @@ class LifecycleBoundaryTest(unittest.TestCase):
         s.control_mission(self.conn, "pause", "human", "Investigate")
         with self.assertRaises(s.SwarmError):
             s.control_mission(self.conn, "resume", "human", "Continue")
+        with self.assertRaises(s.SwarmError):
+            s.amend_mission(self.conn, "New objective", ["Verified"], [], "Changed scope", "human")
 
     def test_drain_waits_for_manager_review_without_registered_harness(self):
         review = self.review()

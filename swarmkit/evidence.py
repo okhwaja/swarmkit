@@ -25,10 +25,21 @@ from .storage import (
 @atomic_write
 def set_contract(conn, task_id, revision, environment, actor):
     task = task_row(conn, task_id)
-    if task["status"] in ACTIVE_TASK_STATES or task["status"] in TERMINAL_TASK_STATES:
-        raise SwarmError("Set the evidence contract before claiming a task")
+    if task["status"] in TERMINAL_TASK_STATES:
+        raise SwarmError("Completed or cancelled task evidence contracts are immutable")
     if not revision.strip() or not environment.strip():
         raise SwarmError("Contract requires exact revision and environment")
+    existing = conn.execute("SELECT * FROM task_contracts WHERE task_id=?", (task_id,)).fetchone()
+    if task["status"] in ACTIVE_TASK_STATES:
+        require_owner(task, actor)
+        if unresolved_ack_count(conn, task_id):
+            raise SwarmError("Acknowledge current decisions before binding an evidence contract")
+        if existing and (existing["revision"], existing["environment"]) != (revision, environment):
+            raise SwarmError(
+                "An active owner cannot replace a pinned evidence contract; arrange fresh verification"
+            )
+    if existing and (existing["revision"], existing["environment"]) == (revision, environment):
+        return
     conn.execute(
         "INSERT OR REPLACE INTO task_contracts VALUES(?,?,?)", (task_id, revision, environment)
     )
@@ -101,6 +112,13 @@ def record_evidence(
 
 def evidence_gaps(conn, task_id):
     task = task_row(conn, task_id)
+    criteria = json_load(task["acceptance_json"], [])
+    if (
+        not isinstance(criteria, list)
+        or not criteria
+        or not all(isinstance(item, str) and item.strip() for item in criteria)
+    ):
+        return ["Task has no valid acceptance criteria"]
     contract = conn.execute("SELECT * FROM task_contracts WHERE task_id=?", (task_id,)).fetchone()
     if not contract:
         return ["No revision/environment contract"]
@@ -117,4 +135,4 @@ def evidence_gaps(conn, task_id):
             and hash_file(path)[0] == row["sha256"]
         ):
             covered.add(row["criterion"])
-    return sorted(set(json_load(task["acceptance_json"], [])) - covered)
+    return sorted(set(criteria) - covered)

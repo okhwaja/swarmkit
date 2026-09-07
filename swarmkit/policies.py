@@ -58,7 +58,7 @@ def validate_policy_manifest(manifest):
         for key in ("title", "description"):
             if not isinstance(stage[key], str) or not stage[key].strip():
                 raise SwarmError("Policy stage %s %s must be a non-empty string" % (stage_id, key))
-        if stage["kind"] not in VALID_TASK_KINDS:
+        if not isinstance(stage["kind"], str) or stage["kind"] not in VALID_TASK_KINDS:
             raise SwarmError("Policy stage %s has invalid task kind %s" % (stage_id, stage["kind"]))
         if (
             not isinstance(stage["acceptance"], list)
@@ -70,12 +70,16 @@ def validate_policy_manifest(manifest):
         if not isinstance(priority, int) or isinstance(priority, bool):
             raise SwarmError("Policy stage %s priority must be an integer" % stage_id)
         dependencies = stage.get("depends_on", [])
-        if not isinstance(dependencies, list) or any(dep not in seen for dep in dependencies):
+        if not isinstance(dependencies, list) or any(
+            not isinstance(dep, str) or dep not in seen for dep in dependencies
+        ):
             raise SwarmError("Policy stage %s dependencies must name earlier stages" % stage_id)
         fresh_from = stage.get("fresh_session_from", [])
         if isinstance(fresh_from, str):
             fresh_from = [fresh_from]
-        if not isinstance(fresh_from, list) or any(item not in seen for item in fresh_from):
+        if not isinstance(fresh_from, list) or any(
+            not isinstance(item, str) or item not in seen for item in fresh_from
+        ):
             raise SwarmError(
                 "Policy stage %s fresh_session_from must name earlier stages" % stage_id
             )
@@ -113,7 +117,7 @@ def validate_policy_manifest(manifest):
                 )
             try:
                 template.format_map(sample_values)
-            except (KeyError, ValueError) as exc:
+            except (KeyError, ValueError, IndexError, AttributeError, TypeError) as exc:
                 raise SwarmError(
                     "Policy stage %s %s has invalid variables: %s" % (stage_id, location, exc)
                 )
@@ -215,7 +219,7 @@ def parse_policy_variables(items):
 def render_policy_text(value, variables, location):
     try:
         return value.format_map(variables)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, IndexError, AttributeError, TypeError) as exc:
         raise SwarmError("Could not render policy %s: %s" % (location, exc))
 
 
