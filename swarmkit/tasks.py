@@ -14,6 +14,7 @@ from .core import (
     VALID_WORKSTREAM_STATES,
     atomic_write,
     canonical_time,
+    future_time,
     json_dump,
     json_load,
     make_id,
@@ -293,8 +294,7 @@ def approve_task(conn, task_id, actor):
 def claim_task(conn, task_id, agent, lease_seconds):
     reconcile_conn(conn)
     state = require_active_mission(conn)
-    if lease_seconds <= 0:
-        raise SwarmError("Lease duration must be positive")
+    lease = future_time(lease_seconds)
     row = task_row(conn, task_id)
     reason = budget_reason(conn, task_id)
     if reason:
@@ -344,8 +344,7 @@ def claim_task(conn, task_id, agent, lease_seconds):
                     "Task %s requires a fresh agent identity distinct from policy stage %s"
                     % (task_id, prior_stage)
                 )
-    now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
+    lease = future_time(lease_seconds)
     generation = row["generation"] + 1
     changed = conn.execute(
         """UPDATE tasks SET status='CLAIMED', owner=?, lease_until=?, generation=?, updated_at=?
@@ -376,8 +375,7 @@ def checkpoint_task(conn, task_id, agent, summary, next_action, lease_seconds):
     require_owner(row, agent)
     if unresolved_ack_count(conn, task_id):
         raise SwarmError("A resolved decision affecting %s has not been acknowledged" % task_id)
-    now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
+    lease = future_time(lease_seconds)
     now = utcnow()
     conn.execute(
         """UPDATE tasks SET status='RUNNING', checkpoint_summary=?, next_action=?,

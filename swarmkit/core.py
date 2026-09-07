@@ -17,7 +17,7 @@ CLI_PATH = PACKAGE_ROOT / "swarmctl.py"
 VERSION = "0.7.1"
 
 
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 
 
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}
@@ -106,6 +106,10 @@ def transaction(conn):
     conn.execute("SAVEPOINT " + savepoint if nested else "BEGIN IMMEDIATE")
     try:
         yield conn
+        if nested:
+            conn.execute("RELEASE " + savepoint)
+        else:
+            conn.commit()
     except BaseException:
         if nested:
             conn.execute("ROLLBACK TO " + savepoint)
@@ -113,11 +117,6 @@ def transaction(conn):
         else:
             conn.rollback()
         raise
-    else:
-        if nested:
-            conn.execute("RELEASE " + savepoint)
-        else:
-            conn.commit()
 
 
 def atomic_write(function):
@@ -213,13 +212,9 @@ def print_json(value):
 
 
 def future_time(seconds):
-    if seconds <= 0:
-        raise SwarmError("Lease duration must be positive")
-    return (
-        (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=seconds))
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds <= 0:
+        raise SwarmError("Lease duration must be a positive integer")
+    return (parse_time(utcnow()) + dt.timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
 
 
 @contextlib.contextmanager
@@ -230,9 +225,6 @@ def process_lock(path):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise SwarmError("Another process owns %s" % path.name)
-        try:
-            yield handle
-        finally:
-            # Closing, without LOCK_UN, lets an inherited child descriptor retain
-            # the lock after a controller crash until the actual process exits.
-            pass
+        # Closing, without LOCK_UN, lets an inherited child descriptor retain
+        # the lock after a controller crash until the actual process exits.
+        yield handle

@@ -440,6 +440,18 @@ CREATE TABLE IF NOT EXISTS workspaces (
 """
 
 
+CONTEXT_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_events_entity_seq ON events(entity_id, seq);
+CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_task ON agent_runs(task_id, ended_at);
+CREATE INDEX IF NOT EXISTS idx_decision_tasks_task ON decision_tasks(task_id, decision_id);
+CREATE INDEX IF NOT EXISTS idx_finding_tasks_task ON finding_tasks(task_id, finding_id);
+CREATE INDEX IF NOT EXISTS idx_facts_task ON facts(task_id);
+CREATE INDEX IF NOT EXISTS idx_effects_task ON effects(task_id, state);
+CREATE INDEX IF NOT EXISTS idx_attempts_agent ON attempts(task_id, agent);
+"""
+
+
 def execute_schema(conn, source):
     # executescript commits implicitly; execute each DDL statement in our transaction.
     for statement in source.split(";"):
@@ -465,7 +477,9 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            if target == 8:
+            if target == 9:
+                execute_schema(conn, CONTEXT_SCHEMA)
+            elif target == 8:
                 migrate_workspace_schema(conn)
             else:
                 execute_schema(conn, SCHEMA if target <= 6 else RUNTIME_SCHEMA)

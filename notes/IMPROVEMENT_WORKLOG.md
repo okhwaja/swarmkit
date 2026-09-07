@@ -44,3 +44,17 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   commands and root Python compatibility imports. Added `python3 -m swarmkit`.
 - Temporary formatter installed only under /tmp; no runtime dependency added.
 - Added `docs/CODE_MAP.md` to explain module ownership and transaction rules.
+
+- Saved local commit 05cb4cc for transaction fixes/module split. Release checks
+  passed 77 tests in source and extracted package. Nothing pushed.
+- Inbox reads now page within SQL. A 5,003-event regression workload decoded only
+  7 events for a 7-event lease. Scope expansion uses a CTE, not a Python list of
+  bound IDs. Plain reads honor --limit; legacy advancement uses scoped offsets.
+- Prompts no longer build full mission snapshots for each worker. Added bounded
+  context pages, newest-first case signals, checkout/evidence/runtime context, and
+  progressive size reduction that retains the primary task and mission.
+- Added schema 9 indexes for context/event relations. No history is discarded.
+- Lease timestamps now use the same sortable UTC format; nonpositive renewals
+  are rejected. Transaction commit failures also roll back pending writes.
+- Current focused/full source checks: 91 tests passing. Broader release validation
+  will repeat after the next feature group.

@@ -113,6 +113,13 @@ once: the handler must deduplicate mutations using event IDs or planning/effect
 keys. Legacy `--advance` is retained for compatibility and is unsuitable when a
 crash between reading and acting would lose important information.
 
+Both plain reads and leased reads return at most `--limit` events (default 50,
+maximum 500). Use `--after` with the last returned `seq` to inspect the next page;
+plain reads never advance the offset. Task scoping is resolved within SQLite, so
+large case histories do not become oversized parameter lists or get decoded just
+to return a small batch. Legacy advancement also respects task scopes and the
+caller's transaction. Lease durations must be positive integer seconds.
+
 ## Isolate files and scarce resources
 
 Swarmkit does not assume a VCS. An isolated workspace is an existing directory,
@@ -242,11 +249,17 @@ unless strict mode or a task contract is enabled.
 
 Invocation contexts are read in one SQLite snapshot and carry an event watermark.
 Prompt files have unique names and are created exclusively; run events record
-their SHA-256 and selected model. Lists and long strings are bounded; omitted
-items contain retrieval instructions. Context above 64 KB becomes a compact
-retrieval packet rather than silently dropping unmarked state. Fetch the current
-full task, decisions, and constraints before acting on any truncated packet.
-Role guidance is additional to this context limit.
+their SHA-256 and selected model. Database queries select bounded pages before
+building context. A worker reads its task and related state rather than every
+finished task in the mission. Case signals are newest first, so an old comment
+history cannot hide the most recent revision or human response.
+
+Pages carry `items`, `has_more`, and an explicit retrieval command. Context includes
+the runtime lifecycle/revision, registered checkout, and task evidence contract.
+Lists and long strings are bounded to a 64 KB JSON budget; progressive reduction
+preserves the mission and task identity. Truncation is marked, and agents must fetch
+full task, decision, or constraint data before relying on its completeness. Role
+guidance and pretty-print whitespace are additional to this context budget.
 
 ## Planning, amendments, limits, and services
 
@@ -321,10 +334,11 @@ and the database. It is deliberately less useful for detailed postmortems.
 
 ## Upgrade
 
-Known schema versions 1–7 upgrade transactionally to schema 8. Versions 2–6 were
+Known schema versions 1–8 upgrade transactionally to schema 9. Versions 2–6 were
 additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
-metadata; existing registrations retain provider `git`. Each version step and final metadata update occur
+metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
+scoped event and context queries. Each version step and final metadata update occur
 inside one write transaction. A failed migration rolls back, and unknown/newer
 versions fail instead of being relabeled. Stop old controllers before upgrading;
 back up the mission directory before moving between releases. Old history is

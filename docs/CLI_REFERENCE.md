@@ -56,7 +56,7 @@ positional arguments:
     finding             Elevate and disposition mission-relevant findings
     wait                Inspect and signal durable external waits
     fact                Record sourced, time-bounded operational facts
-    inbox               Read all events since an agent cursor
+    inbox               Read a page of events since an agent cursor
     prompt              Generate a grounded role prompt
     dispatch            Invoke the configured third-party harness
     run                 Run manager/worker cycles through the configured

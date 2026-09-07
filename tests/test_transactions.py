@@ -2,6 +2,7 @@
 
 import contextlib
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -111,6 +112,38 @@ class TransactionTest(unittest.TestCase):
                 self.task()
         self.assertEqual(self.count("tasks"), 0)
         self.assertEqual(self.count("events"), before)
+
+    def test_commit_failure_rolls_back_instead_of_leaving_pending_writes(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            with s.transaction(self.conn):
+                self.conn.execute("PRAGMA defer_foreign_keys=ON")
+                self.conn.execute(
+                    "INSERT INTO task_dependencies(task_id,depends_on) VALUES('missing-task','missing-dependency')")
+        self.assertFalse(self.conn.in_transaction)
+        self.assertEqual(self.count("task_dependencies"), 0)
+
+    def test_nested_failure_can_be_caught_without_losing_the_outer_plan(self):
+        with s.transaction(self.conn):
+            task = self.task()
+            with self.assertRaises(s.SwarmError):
+                self.case(policy_id="missing-policy")
+            self.assertEqual(s.task_row(self.conn, task)["status"], "READY")
+        self.assertEqual(self.count("tasks"), 1)
+        self.assertEqual(self.count("cases"), 0)
+
+    def test_checkpoint_rejects_nonpositive_lease_without_changing_state(self):
+        task = self.task()
+        s.claim_task(self.conn, task, "worker", 600)
+        before = dict(s.task_row(self.conn, task))
+        with self.assertRaises(s.SwarmError):
+            s.checkpoint_task(self.conn, task, "worker", "Keep working", "Inspect", 0)
+        self.assertEqual(dict(s.task_row(self.conn, task)), before)
+
+    def test_all_lease_timestamps_use_the_same_sortable_format(self):
+        task = self.task()
+        s.claim_task(self.conn, task, "worker", 600)
+        lease = s.acquire_resource(self.conn, "benchmark-host", task, "worker", 30)
+        self.assertRegex(lease["lease_until"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
     def test_cancelled_case_cannot_be_resurrected_by_linking_a_task(self):
         case = self.case()

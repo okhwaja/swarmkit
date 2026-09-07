@@ -685,7 +685,7 @@ def parser():
     fact_record.add_argument("--expires-at")
     fact_record.add_argument("--ttl-seconds", type=int)
 
-    inbox_p = sub.add_parser("inbox", help="Read all events since an agent cursor")
+    inbox_p = sub.add_parser("inbox", help="Read a page of events since an agent cursor")
     inbox_p.add_argument("--agent", required=True)
     inbox_p.add_argument("--task", help="Limit events to one task and its dependencies")
     inbox_p.add_argument("--after", type=int)
@@ -1452,7 +1452,7 @@ def main(argv=None):
                         lease_inbox(conn, args.agent, args.task, args.limit, args.lease_seconds)
                     )
                 else:
-                    print_json(inbox(conn, args.agent, args.after, args.advance, args.task))
+                    print_json(inbox(conn, args.agent, args.after, args.advance, args.task, args.limit))
             finally:
                 conn.close()
             return 0

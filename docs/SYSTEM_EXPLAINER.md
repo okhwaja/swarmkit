@@ -34,7 +34,7 @@ message.
 
 ### Manager
 
-The manager is a planner and reconciler. On each invocation it reads the complete current state and all events it has not seen. It creates a few bounded investigations, combines their findings, and then creates justified implementation or verification tasks. Durable review triggers can invoke it while unrelated workers remain active; reviews are serialized and nearby normal triggers are coalesced.
+The manager is a planner and reconciler. On each invocation it receives bounded pages of current state and unseen events, then retrieves more when a decision requires the full history. It creates a few bounded investigations, combines their findings, and then creates justified implementation or verification tasks. Durable review triggers can invoke it while unrelated workers remain active; reviews are serialized and nearby normal triggers are coalesced.
 
 The manager should be restartable. It must not depend on remembering a previous conversation.
 
@@ -148,7 +148,7 @@ Any non-terminal task ──manager cancellation──> CANCELLED
 
 ## Events and inboxes
 
-Every state change produces an ordered event. Each agent has a cursor marking the last event it processed. At the beginning of an invocation, the manager reads every unseen event. A task worker reads unseen mission events plus events for its task, dependencies, decisions, artifacts, and runs. It considers the whole relevant batch before acting.
+Every state change produces an ordered event. Each agent has a cursor marking the last event it processed. At the beginning of an invocation, the manager receives the first bounded page of unseen events. It retrieves and acknowledges additional pages before relying on a complete history. A task worker reads unseen mission events plus events for its task, dependencies, decisions, artifacts, and runs. It considers the whole relevant batch before acting.
 
 This changes communication from “react to the latest message” into “reconcile everything that changed since I last looked.”
 
