@@ -740,6 +740,11 @@ def parser():
     done.add_argument("--evidence", required=True)
     done.add_argument("--actor", default="manager")
     done.add_argument("--shutdown-service", action="store_true")
+    done.add_argument(
+        "--outcome",
+        choices=["SUCCEEDED", "PARTIAL"],
+        help="Default: PARTIAL if any tasks were cancelled, otherwise SUCCEEDED",
+    )
 
     export_p = sub.add_parser("export", help="Create a reviewable audit ZIP")
     export_p.add_argument("--output", required=True)
@@ -1497,8 +1502,10 @@ def main(argv=None):
                     set_mission_phase(conn, args.phase, args.actor)
                     print_json({"phase": args.phase.upper()})
                 else:
-                    complete_mission(conn, args.evidence, args.actor, args.shutdown_service)
-                    print_json({"status": "DONE"})
+                    outcome = complete_mission(
+                        conn, args.evidence, args.actor, args.shutdown_service, args.outcome
+                    )
+                    print_json({"status": "DONE", "outcome": outcome})
             finally:
                 conn.close()
             render_board(root)

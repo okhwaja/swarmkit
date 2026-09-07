@@ -36,7 +36,9 @@ A mission has a separate durable desired state and an outcome. `why` explains
 claims, missing decisions, dependencies, limits, unfinished runs, and uncertain
 effects. `status` includes `runtime`. Mission success, cancellation, abandonment,
 and scheduler budget/escalation dispositions are recorded separately from task
-states. Uniform typed outcomes for every case and workstream remain future work.
+states. Case and workstream `completion_outcome` fields distinguish successful, partial,
+and cancelled task histories. Their lifecycle can be `DONE` while their result is
+`PARTIAL`; stopping work is different from delivering all planned work.
 
 ## Crash-safe runs and attempts
 
@@ -343,7 +345,9 @@ additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
 metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
 scoped event and context queries and marks legacy deliveries with known ambiguous
-run/lease error records `UNKNOWN`, requiring provider reconciliation. Each version step and final metadata update occur
+run/lease error records `UNKNOWN`, requiring provider reconciliation. It also adds
+case/workstream completion outcomes and distinguishes old automatic intake closure
+from explicitly cancelled cases. Each version step and final metadata update occur
 inside one write transaction. A failed migration rolls back, and unknown/newer
 versions fail instead of being relabeled. Stop old controllers before upgrading;
 back up the mission directory before moving between releases. Old history is
@@ -361,3 +365,19 @@ returns the job to `PENDING`. See [delivery operations](EXTENSIONS.md).
 Final reports can be sent after finite task work is complete. Paused, cancelled,
 or abandoned missions still reject new delivery claims. Mission completion and
 provider-confirmed report delivery are separate recorded outcomes.
+
+## Honest completion
+
+A task needs a non-empty result and verification statements. Cases and workstreams
+report `completion_outcome` separately from their lifecycle state. A mixed history
+of completed and cancelled tasks is conservatively `PARTIAL`; this does not prove
+that every mission criterion was met or missed.
+
+`mission complete` defaults to `PARTIAL` when any tasks were cancelled, otherwise
+`SUCCEEDED`. A manager may explicitly select `--outcome SUCCEEDED` when its evidence
+explains why cancelled approaches were obsolete and all actual success criteria
+were met. Repeating identical completion is idempotent; conflicting new completion
+evidence is rejected. Reports and scheduler results include the recorded outcome.
+
+Cancellation withdraws open decisions only when none of their affected tasks remain
+active. It never answers the question on the human's behalf.

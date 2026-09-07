@@ -21,7 +21,13 @@ from .delivery import read_extension_source
 from .diagnostics import doctor
 from .policies import read_policy_source
 from .runtime import dispatch
-from .schema import CONTEXT_SCHEMA, RUNTIME_SCHEMA, SCHEMA, execute_schema, migrate_workspace_schema
+from .schema import (
+    migrate_reliability_schema,
+    RUNTIME_SCHEMA,
+    SCHEMA,
+    execute_schema,
+    migrate_workspace_schema,
+)
 from .storage import add_event, connect, mission
 from .views import render_board
 from .workspaces import workspace_config
@@ -41,7 +47,7 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
         conn.executescript(SCHEMA)
         execute_schema(conn, RUNTIME_SCHEMA)
         migrate_workspace_schema(conn)
-        execute_schema(conn, CONTEXT_SCHEMA)
+        migrate_reliability_schema(conn)
         now = utcnow()
         mission_id = make_id("M")
         conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))

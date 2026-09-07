@@ -1,6 +1,14 @@
 """SQLite schema and sequential migrations. Existing databases upgrade atomically."""
 
-from .core import SCHEMA_VERSION, SwarmError, VERSION, json_dump, make_id, utcnow
+from .core import (
+    completion_outcome,
+    SCHEMA_VERSION,
+    SwarmError,
+    VERSION,
+    json_dump,
+    make_id,
+    utcnow,
+)
 
 
 SCHEMA = """
@@ -469,6 +477,50 @@ def migrate_workspace_schema(conn):
 
 def migrate_reliability_schema(conn):
     execute_schema(conn, CONTEXT_SCHEMA)
+    for table in ("cases", "workstreams"):
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(" + table + ")")}
+        if "completion_outcome" not in columns:
+            conn.execute("ALTER TABLE " + table + " ADD COLUMN completion_outcome TEXT")
+    # Only explicit case cancellation is permanent. An exhausted intake plan may
+    # be replaced by new work without reopening a cancelled user request.
+    mission_cancelled = conn.execute(
+        "SELECT 1 FROM runtime_state WHERE desired_state IN ('CANCELLED','ABANDONED')"
+    ).fetchone()
+    for case in conn.execute(
+        "SELECT id,status,workstream_id FROM cases WHERE status IN ('DONE','CANCELLED')"
+    ).fetchall():
+        explicit = (
+            mission_cancelled
+            or conn.execute(
+                "SELECT 1 FROM events WHERE entity_id=? AND event_type='CASE_CANCELLED'", (case[0],)
+            ).fetchone()
+        )
+        states = [
+            row[0]
+            for row in conn.execute(
+                "SELECT t.status FROM tasks t JOIN case_tasks ct ON ct.task_id=t.id WHERE ct.case_id=?",
+                (case[0],),
+            )
+        ]
+        status = "CANCELLED" if case[1] == "CANCELLED" and explicit else "DONE"
+        outcome = "CANCELLED" if status == "CANCELLED" else completion_outcome(states)
+        conn.execute(
+            "UPDATE cases SET status=?,completion_outcome=? WHERE id=?", (status, outcome, case[0])
+        )
+        conn.execute("UPDATE workstreams SET status=? WHERE id=?", (status, case[2]))
+    for stream in conn.execute(
+        "SELECT id,status FROM workstreams WHERE status IN ('DONE','CANCELLED')"
+    ).fetchall():
+        states = [
+            row[0]
+            for row in conn.execute(
+                "SELECT t.status FROM tasks t JOIN task_workstreams tw ON tw.task_id=t.id WHERE tw.workstream_id=?",
+                (stream[0],),
+            )
+        ]
+        outcome = "CANCELLED" if stream[1] == "CANCELLED" else completion_outcome(states)
+        conn.execute("UPDATE workstreams SET completion_outcome=? WHERE id=?", (outcome, stream[0]))
+
     # Older dispatchers queued ambiguous attempts for replay. Preserve the job,
     # but require provider reconciliation before any new send under this release.
     rows = conn.execute(

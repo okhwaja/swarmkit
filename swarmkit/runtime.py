@@ -258,7 +258,12 @@ def _run_loop(root, max_cycles, dry_run=False):
         if runtime_state(conn)["desired_state"] != "ACTIVE":
             return {"state": runtime_state(conn)["desired_state"], "cycles": 0, "runs": []}
         if current_mission["status"] == "DONE":
-            return {"state": "DONE", "cycles": 0, "runs": results}
+            return {
+                "state": "DONE",
+                "outcome": runtime_state(conn)["outcome"],
+                "cycles": 0,
+                "runs": results,
+            }
         manager_runs = conn.execute(
             "SELECT COUNT(*) AS n FROM agent_runs WHERE role='manager'"
         ).fetchone()["n"]
@@ -339,7 +344,12 @@ def _run_loop(root, max_cycles, dry_run=False):
                 reconcile_conn(conn)
                 current_mission = mission(conn)
                 if current_mission["status"] == "DONE" and not active:
-                    return {"state": "DONE", "cycles": cycles, "runs": results}
+                    return {
+                        "state": "DONE",
+                        "outcome": runtime_state(conn)["outcome"],
+                        "cycles": cycles,
+                        "runs": results,
+                    }
 
                 desired = runtime_state(conn)["desired_state"]
                 exhausted = budget_reason(conn)

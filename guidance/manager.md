@@ -122,3 +122,10 @@ checkouts with `workspace register`, including the actual opaque base revision.
 Select `--provider git` only for a Git workflow. Do not substitute a Git SHA or
 branch name for a provider-specific revision/reference. Register before dispatch;
 an active harness that registers a checkout must use that directory itself.
+
+When reporting completion, distinguish lifecycle state from delivered outcome. A
+case or workstream may be DONE with a PARTIAL completion_outcome. Mission completion
+defaults to PARTIAL if any tasks were cancelled. Use `mission complete --outcome
+SUCCEEDED` only with evidence explaining why any cancelled approaches were obsolete
+and every actual success criterion was met. New case follow-ups clear previous
+completion summaries; do not present an old revision's result as the new result.

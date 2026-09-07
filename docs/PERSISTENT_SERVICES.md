@@ -255,3 +255,21 @@ Use its examples for new integrations. The
 [roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
 engineering work and owner decisions. Permission enforcement stays with the
 harness and tools. Runtime process locking requires a single POSIX host.
+
+## Completion, follow-ups, and cancellation
+
+`DONE` means that the current case has no unfinished linked tasks. Inspect
+`completion_outcome` to distinguish `SUCCEEDED`, `PARTIAL` (a mixture of completed
+and cancelled tasks), and `CANCELLED` (no linked task delivered a result). The
+linked workstream carries the same result, and operator reports display it. These
+are conservative summaries of linked task history, not proof of mission criteria.
+
+Only `case cancel` permanently closes a request to new work. Cancelling an obsolete
+intake task permits a replacement policy or a later follow-up; it does not silently
+turn into permanent case cancellation. Explicit case cancellation also cancels
+dependency descendants outside the case. Questions with no remaining active
+affected tasks are withdrawn; shared questions remain open for other work.
+
+New follow-up work clears the old completion summary and timestamp. Repeating an
+already-recorded task link does not reopen a completed case. A late reply to a
+withdrawn question is retained as a signal without resolving or reopening it.

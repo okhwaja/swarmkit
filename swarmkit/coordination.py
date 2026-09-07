@@ -4,12 +4,12 @@ import datetime as dt
 
 from .core import (
     SwarmError,
-    TERMINAL_TASK_STATES,
     VALID_FINDING_SIGNIFICANCE,
     VALID_FINDING_STATES,
     VALID_WAKE_REASONS,
     atomic_write,
     canonical_time,
+    completion_outcome,
     future_time,
     json_dump,
     json_load,
@@ -672,6 +672,26 @@ def reconcile_conn(conn, actor="reconciler", at=None):
                 continue
             add_event(conn, row["mission_id"], "task", row["id"], "TASK_DECISION_CLEARED", actor)
             changed.append((row["id"], "PROPOSED"))
+    withdrawn = conn.execute(
+        """SELECT * FROM decisions d WHERE status='OPEN'
+            AND EXISTS (SELECT 1 FROM decision_tasks dt WHERE dt.decision_id=d.id)
+            AND NOT EXISTS (SELECT 1 FROM decision_tasks dt JOIN tasks t ON t.id=dt.task_id
+                WHERE dt.decision_id=d.id AND t.status NOT IN ('DONE','CANCELLED'))"""
+    ).fetchall()
+    for decision in withdrawn:
+        conn.execute(
+            "UPDATE decisions SET status='CANCELLED',updated_at=? WHERE id=?", (now, decision["id"])
+        )
+        add_event(
+            conn,
+            decision["mission_id"],
+            "decision",
+            decision["id"],
+            "DECISION_CANCELLED",
+            actor,
+            {"reason": "All affected work is terminal; no answer is needed"},
+        )
+        changed.append((decision["id"], "CANCELLED"))
     changed.extend(reconcile_cases(conn, actor))
     return changed
 
@@ -680,7 +700,9 @@ def reconcile_conn(conn, actor="reconciler", at=None):
 def reconcile_cases(conn, actor="reconciler"):
     changed = []
     now = utcnow()
-    for case in conn.execute("SELECT * FROM cases WHERE status <> 'CANCELLED'").fetchall():
+    for case in conn.execute(
+        "SELECT * FROM cases WHERE status NOT IN ('DONE','CANCELLED')"
+    ).fetchall():
         tasks = conn.execute(
             """SELECT t.status, t.result FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
                WHERE ct.case_id=?""",
@@ -694,7 +716,10 @@ def reconcile_cases(conn, actor="reconciler"):
             (case["id"],),
         ).fetchall()
         kinds = {row["kind"] for row in decisions}
-        if kinds & {"human_decision", "missing_access", "safety_stop"}:
+        outcome = completion_outcome(row["status"] for row in tasks) if tasks else None
+        if tasks and outcome:
+            status = "DONE"
+        elif kinds & {"human_decision", "missing_access", "safety_stop"}:
             status = "WAITING_HUMAN"
         elif any(row["status"] == "WAITING_EXTERNAL" for row in tasks):
             status = "WAITING_EXTERNAL"
@@ -702,22 +727,32 @@ def reconcile_cases(conn, actor="reconciler"):
             status = "WAITING_EXTERNAL"
         elif not tasks:
             status = "OPEN"
-        elif all(row["status"] in TERMINAL_TASK_STATES for row in tasks):
-            status = "DONE" if any(row["status"] == "DONE" for row in tasks) else "CANCELLED"
         elif any(row["status"] == "VERIFYING" for row in tasks):
             status = "VERIFYING"
         else:
             status = "ACTIVE"
         if status != case["status"]:
             result_summary = case["result_summary"]
-            if status == "DONE" and not result_summary:
-                results = [row["result"] for row in tasks if row["result"]]
-                result_summary = results[-1] if results else "All case tasks reached terminal state"
+            if status == "DONE":
+                results = [
+                    row["result"] for row in tasks if row["status"] == "DONE" and row["result"]
+                ]
+                result_summary = results[-1] if results else "No task result was delivered"
+                cancelled = sum(row["status"] == "CANCELLED" for row in tasks)
+                if cancelled:
+                    result_summary += "; %d task(s) cancelled" % cancelled
             closed_at = now if status in {"DONE", "CANCELLED"} else None
             conn.execute(
-                """UPDATE cases SET status=?, result_summary=?, updated_at=?, closed_at=?
+                """UPDATE cases SET status=?, result_summary=?, updated_at=?, closed_at=?, completion_outcome=?
                    WHERE id=?""",
-                (status, result_summary, now, closed_at, case["id"]),
+                (
+                    status,
+                    result_summary,
+                    now,
+                    closed_at,
+                    outcome if status == "DONE" else None,
+                    case["id"],
+                ),
             )
             workstream_status = {
                 "OPEN": "ACTIVE",
@@ -729,8 +764,14 @@ def reconcile_cases(conn, actor="reconciler"):
                 "CANCELLED": "CANCELLED",
             }[status]
             conn.execute(
-                """UPDATE workstreams SET status=?, progress_summary=?, updated_at=? WHERE id=?""",
-                (workstream_status, result_summary, now, case["workstream_id"]),
+                """UPDATE workstreams SET status=?, progress_summary=?, updated_at=?, completion_outcome=? WHERE id=?""",
+                (
+                    workstream_status,
+                    result_summary,
+                    now,
+                    outcome if status == "DONE" else None,
+                    case["workstream_id"],
+                ),
             )
             add_event(
                 conn,
@@ -742,6 +783,7 @@ def reconcile_cases(conn, actor="reconciler"):
                 {
                     "from": case["status"],
                     "to": status,
+                    "completion_outcome": outcome if status == "DONE" else None,
                 },
             )
             changed.append((case["id"], status))

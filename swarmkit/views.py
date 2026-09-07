@@ -11,6 +11,11 @@ def md_escape(value):
     return str(value or "").replace("|", "\\|").replace("\n", " ")
 
 
+def completion_label(entity):
+    outcome = entity.get("completion_outcome")
+    return entity["status"] + (" / " + outcome if outcome else "")
+
+
 def forecast_text(workstream):
     if workstream.get("status") == "DONE":
         return "Completed %s" % workstream.get("updated_at", "at an unrecorded time")
@@ -46,6 +51,8 @@ def render_board(root):
         "- Mission: `%s`" % m["id"],
         "- Mode: **%s**" % m["mode"],
         "- Status: **%s**" % m["status"],
+        "- Control: **%s**" % snapshot["runtime"]["desired_state"],
+        "- Outcome: **%s**" % (snapshot["runtime"]["outcome"] or "Not yet completed"),
         "- Phase: **%s**" % m["phase"],
         "- Updated: %s" % m["updated_at"],
         "",
@@ -169,7 +176,7 @@ def render_board(root):
             "| `%s` | %s | %s | %s | %s | %s |"
             % (
                 case["id"],
-                case["status"],
+                completion_label(case),
                 md_escape(case["source"]),
                 md_escape(case["external_id"]),
                 md_escape(case["title"]),
@@ -193,7 +200,7 @@ def render_board(root):
             "| `%s` | %s | %s | %s | %s | %s |"
             % (
                 workstream["id"],
-                workstream["status"],
+                completion_label(workstream),
                 md_escape(workstream["name"]),
                 md_escape(workstream["outcome"]),
                 md_escape(forecast_text(workstream)),
@@ -404,6 +411,8 @@ def render_status_report(root):
         "",
         "- Mode: **%s**" % m["mode"],
         "- Status: **%s**" % m["status"],
+        "- Control: **%s**" % snapshot["runtime"]["desired_state"],
+        "- Outcome: **%s**" % (snapshot["runtime"]["outcome"] or "Not yet completed"),
         "- Phase: **%s**" % m["phase"],
         "- Objective: %s" % m["objective"],
         "- Tasks: %s"
@@ -471,7 +480,7 @@ def render_status_report(root):
             "- `%s` **%s** — %s; `%s:%s`; open decisions: %s"
             % (
                 case["id"],
-                case["status"],
+                completion_label(case),
                 case["title"],
                 case["source"],
                 case["external_id"],
@@ -496,7 +505,7 @@ def render_status_report(root):
             [
                 "### %s (`%s`)" % (workstream["name"], workstream["id"]),
                 "",
-                "- Status: **%s**" % workstream["status"],
+                "- Status: **%s**" % completion_label(workstream),
                 "- Aiming to: %s" % workstream["outcome"],
                 "- How it is going: %s"
                 % (workstream["progress_summary"] or "No progress summary recorded yet"),

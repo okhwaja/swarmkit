@@ -14,6 +14,7 @@ from .core import (
     VALID_WORKSTREAM_STATES,
     atomic_write,
     canonical_time,
+    completion_outcome,
     future_time,
     json_dump,
     json_load,
@@ -27,6 +28,7 @@ from .storage import (
     add_event,
     attempt_for_task,
     budget_reason,
+    cancel_external_waits,
     end_attempt,
     mission,
     mission_mode,
@@ -56,6 +58,11 @@ def add_workstream(conn, name, outcome, actor, status="PLANNED"):
            VALUES(?,?,?,?,?,?,?)""",
         (workstream_id, m["id"], name, outcome, status, now, now),
     )
+    if status in {"DONE", "CANCELLED"}:
+        conn.execute(
+            "UPDATE workstreams SET completion_outcome=? WHERE id=?",
+            ("SUCCEEDED" if status == "DONE" else "CANCELLED", workstream_id),
+        )
     add_event(
         conn,
         m["id"],
@@ -121,13 +128,34 @@ def update_workstream(
             raise SwarmError(
                 "Cannot complete workstream while %d linked tasks are non-terminal" % remaining
             )
+    completed_outcome = None
+    if next_status == "DONE":
+        completed_outcome = completion_outcome(
+            item[0]
+            for item in conn.execute(
+                "SELECT t.status FROM tasks t JOIN task_workstreams tw ON tw.task_id=t.id WHERE tw.workstream_id=?",
+                (workstream_id,),
+            )
+        )
+    elif next_status == "CANCELLED":
+        completed_outcome = "CANCELLED"
     next_summary = summary if summary is not None else row["progress_summary"]
     next_basis = forecast_basis if forecast_basis is not None else row["forecast_basis"]
     now = utcnow()
     conn.execute(
         """UPDATE workstreams SET status=?, progress_summary=?, forecast_earliest=?,
-           forecast_latest=?, forecast_confidence=?, forecast_basis=?, updated_at=? WHERE id=?""",
-        (next_status, next_summary, earliest, latest, confidence, next_basis, now, workstream_id),
+           forecast_latest=?, forecast_confidence=?, forecast_basis=?, updated_at=?, completion_outcome=? WHERE id=?""",
+        (
+            next_status,
+            next_summary,
+            earliest,
+            latest,
+            confidence,
+            next_basis,
+            now,
+            completed_outcome,
+            workstream_id,
+        ),
     )
     add_event(
         conn,
@@ -138,6 +166,7 @@ def update_workstream(
         actor,
         {
             "status": next_status,
+            "completion_outcome": completed_outcome,
             "progress_summary": next_summary,
             "forecast_earliest": earliest,
             "forecast_latest": latest,
@@ -155,6 +184,12 @@ def link_task_workstream(conn, workstream_id, task_id, actor):
         raise SwarmError("Task and workstream belong to different missions")
     if workstream["status"] in {"DONE", "CANCELLED"} and task["status"] not in TERMINAL_TASK_STATES:
         raise SwarmError("Cannot link active task to terminal workstream %s" % workstream_id)
+    case = conn.execute(
+        "SELECT c.workstream_id FROM cases c JOIN case_tasks ct ON ct.case_id=c.id WHERE ct.task_id=?",
+        (task_id,),
+    ).fetchone()
+    if case and case["workstream_id"] != workstream_id:
+        raise SwarmError("Case-linked tasks must stay in their case's workstream")
     prior = conn.execute(
         "SELECT workstream_id FROM task_workstreams WHERE task_id=?", (task_id,)
     ).fetchone()
@@ -417,8 +452,10 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
         gaps = evidence_gaps(conn, task_id)
         if gaps:
             raise SwarmError("Missing current evidence: " + "; ".join(gaps))
-    if not verification:
-        raise SwarmError("At least one verification statement is required")
+    if not result.strip():
+        raise SwarmError("Task completion requires a result summary")
+    if not verification or any(not item.strip() for item in verification):
+        raise SwarmError("At least one non-empty verification statement is required")
     policy = policy_context_for_task(conn, task_id)
     completion = policy["stage"].get("completion", {}) if policy and policy.get("stage") else {}
     minimum_artifacts = completion.get("minimum_artifacts", 0)
@@ -471,58 +508,42 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
 
 @atomic_write
 def cancel_task(conn, task_id, actor, reason):
-    row = task_row(conn, task_id)
-    if row["status"] in TERMINAL_TASK_STATES:
+    task = task_row(conn, task_id)
+    if task["status"] in TERMINAL_TASK_STATES:
         raise SwarmError("Task is already terminal")
-    conn.execute(
-        "UPDATE tasks SET status='CANCELLED', owner=NULL, lease_until=NULL, result=?, updated_at=? WHERE id=?",
-        (reason, utcnow(), task_id),
-    )
-    active_waits = conn.execute(
-        "SELECT * FROM external_waits WHERE task_id=? AND status='WAITING'", (task_id,)
+    if not reason.strip():
+        raise SwarmError("Task cancellation requires a reason")
+    affected = conn.execute(
+        """WITH RECURSIVE affected(id) AS (
+            SELECT ? UNION SELECT d.task_id FROM task_dependencies d
+            JOIN affected a ON d.depends_on=a.id)
+            SELECT t.* FROM tasks t JOIN affected a ON a.id=t.id
+            WHERE t.status NOT IN ('DONE','CANCELLED')""",
+        (task_id,),
     ).fetchall()
-    for wait in active_waits:
+    for row in affected:
+        direct = row["id"] == task_id
+        explanation = reason if direct else "Dependency cancelled: " + task_id
+        end_attempt(conn, row["id"], "CANCELLED", explanation)
+        cancel_external_waits(conn, row["id"], actor, explanation)
         conn.execute(
-            "UPDATE external_waits SET status='CANCELLED', updated_at=? WHERE id=?",
-            (utcnow(), wait["id"]),
+            """UPDATE tasks SET status='CANCELLED',owner=NULL,lease_until=NULL,
+                next_action=NULL,result=?,updated_at=? WHERE id=?""",
+            (explanation, utcnow(), row["id"]),
         )
+        payload = {"reason": reason}
+        if not direct:
+            payload["dependency"] = task_id
         add_event(
             conn,
             row["mission_id"],
-            "external_wait",
-            wait["id"],
-            "EXTERNAL_WAIT_CANCELLED",
-            actor,
-            {"task_id": task_id, "reason": reason},
-        )
-    end_attempt(conn, task_id, "CANCELLED", reason)
-    add_event(conn, row["mission_id"], "task", task_id, "TASK_CANCELLED", actor, {"reason": reason})
-    descendants = conn.execute(
-        """WITH RECURSIVE children(id) AS (
-        SELECT task_id FROM task_dependencies WHERE depends_on=?
-        UNION SELECT d.task_id FROM task_dependencies d JOIN children c ON d.depends_on=c.id)
-        SELECT t.* FROM tasks t JOIN children c ON t.id=c.id WHERE t.status NOT IN ('DONE','CANCELLED')""",
-        (task_id,),
-    ).fetchall()
-    for child in descendants:
-        end_attempt(conn, child["id"], "CANCELLED", "Dependency cancelled: " + task_id)
-        conn.execute(
-            "UPDATE tasks SET status='CANCELLED',owner=NULL,lease_until=NULL,result=?,updated_at=? WHERE id=?",
-            ("Dependency cancelled: " + task_id, utcnow(), child["id"]),
-        )
-        conn.execute(
-            "UPDATE external_waits SET status='CANCELLED',updated_at=? WHERE task_id=? AND status='WAITING'",
-            (utcnow(), child["id"]),
-        )
-        add_event(
-            conn,
-            child["mission_id"],
             "task",
-            child["id"],
-            "TASK_DEPENDENCY_CANCELLED",
+            row["id"],
+            "TASK_CANCELLED" if direct else "TASK_DEPENDENCY_CANCELLED",
             actor,
-            {"dependency": task_id, "reason": reason},
+            payload,
         )
+    reconcile_conn(conn)
 
 
 @atomic_write
@@ -650,8 +671,15 @@ def set_mission_phase(conn, phase, actor):
 
 
 @atomic_write
-def complete_mission(conn, evidence, actor, shutdown_service=False):
+def complete_mission(conn, evidence, actor, shutdown_service=False, outcome=None):
     m = mission(conn)
+    if outcome not in {None, "SUCCEEDED", "PARTIAL"}:
+        raise SwarmError("Mission completion outcome must be SUCCEEDED or PARTIAL")
+    if m["status"] == "DONE":
+        current_outcome = runtime_state(conn)["outcome"]
+        if evidence == m["completion_evidence"] and outcome in {None, current_outcome}:
+            return current_outcome
+        raise SwarmError("Mission is already complete with different evidence or outcome")
     if runtime_state(conn)["desired_state"] not in {"ACTIVE", "DRAINING"}:
         raise SwarmError("Mission must be active or draining to complete")
     if uncertain_effects(conn):
@@ -687,8 +715,20 @@ def complete_mission(conn, evidence, actor, shutdown_service=False):
         "UPDATE missions SET status='DONE', completion_evidence=?, updated_at=? WHERE id=?",
         (evidence, utcnow(), m["id"]),
     )
-    conn.execute("UPDATE runtime_state SET outcome='SUCCEEDED' WHERE id=1")
-    add_event(conn, m["id"], "mission", m["id"], "MISSION_COMPLETED", actor, {"evidence": evidence})
+    if outcome is None:
+        has_cancelled_work = conn.execute("SELECT 1 FROM tasks WHERE status='CANCELLED'").fetchone()
+        outcome = "PARTIAL" if has_cancelled_work else "SUCCEEDED"
+    conn.execute("UPDATE runtime_state SET outcome=? WHERE id=1", (outcome,))
+    add_event(
+        conn,
+        m["id"],
+        "mission",
+        m["id"],
+        "MISSION_COMPLETED",
+        actor,
+        {"evidence": evidence, "outcome": outcome},
+    )
+    return outcome
 
 
 @atomic_write
@@ -749,11 +789,11 @@ def control_mission(conn, action, actor, reason):
             (utcnow(),),
         )
         conn.execute(
-            "UPDATE cases SET status='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')",
+            "UPDATE cases SET status='CANCELLED',completion_outcome='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')",
             (utcnow(),),
         )
         conn.execute(
-            "UPDATE workstreams SET status='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')",
+            "UPDATE workstreams SET status='CANCELLED',completion_outcome='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')",
             (utcnow(),),
         )
     outcome = "CANCELLED" if action == "cancel" else ("ESCALATED" if action == "abandon" else None)

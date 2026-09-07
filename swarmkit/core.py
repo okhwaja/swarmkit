@@ -263,3 +263,15 @@ def run_logged_process(command, workdir, timeout, stdout_path, stderr_path, lock
             except ProcessLookupError:
                 pass
             process.wait()
+
+
+def completion_outcome(statuses):
+    """Summarize terminal work without treating cancelled slices as delivered."""
+    states = set(statuses)
+    if states - TERMINAL_TASK_STATES:
+        return None
+    if states == {"CANCELLED"}:
+        return "CANCELLED"
+    if "CANCELLED" in states:
+        return "PARTIAL"
+    return "SUCCEEDED"

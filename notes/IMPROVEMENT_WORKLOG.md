@@ -81,3 +81,17 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
 - Ran temporary Ruff static checks; removed unused imports from the module split.
   Runtime remains standard-library only. Source suite passed 103 before the last
   migration regression was added; full validation follows.
+
+- Saved local commit e8521ef for delivery recovery; source/package release checks
+  passed 104 tests, including real delivery-controller kill and child-lock recovery.
+- Added explicit case/workstream completion_outcome, conservative PARTIAL mission
+  completion (with an explicit manager override), and outcome/control visibility in
+  boards/reports. Schema 9 backfills old terminal outcomes and preserves explicit
+  cancellations. Eight initial completion regressions reproduced seven failures;
+  all now pass, plus four additional outcome/late-reply/empty-completion checks.
+- Cancellation now shares dependency propagation across tasks and cases, closes
+  obsolete wait subscriptions, and withdraws questions only when all affected work
+  is terminal. Explicit case cancellation is permanent; cancelling an intake task
+  can be followed by a replacement policy.
+- Repeated case-task links preserve completed state. Follow-ups clear stale result
+  summaries. Completed cases are no longer rescanned by every reconciliation.

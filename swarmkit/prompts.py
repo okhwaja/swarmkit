@@ -137,7 +137,7 @@ def manager_context(conn):
             "delivery list",
         ),
         "recent_terminal_cases": (
-            "SELECT id,title,status,result_summary FROM cases WHERE status IN ('DONE','CANCELLED') "
+            "SELECT id,title,status,completion_outcome,result_summary FROM cases WHERE status IN ('DONE','CANCELLED') "
             "ORDER BY rowid DESC",
             "case list",
         ),

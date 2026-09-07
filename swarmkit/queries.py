@@ -265,6 +265,7 @@ def case_summary(conn, row):
         "title": case["title"],
         "objective": case["objective"],
         "status": case["status"],
+        "completion_outcome": case["completion_outcome"],
         "priority": case["priority"],
         "workstream_id": case["workstream_id"],
         "policy_application_id": case["policy_application_id"],

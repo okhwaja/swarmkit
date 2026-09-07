@@ -7,6 +7,7 @@ import shutil
 from .coordination import reconcile_conn
 from .core import (
     SwarmError,
+    TERMINAL_TASK_STATES,
     atomic_write,
     hash_file,
     json_dump,
@@ -23,13 +24,12 @@ from .storage import (
     add_event,
     case_row,
     decision_row,
-    end_attempt,
     mission,
     require_task_capacity,
     runtime_state,
     task_row,
 )
-from .tasks import add_task
+from .tasks import add_task, cancel_task
 
 
 def snapshot_case_payload(root, case_id, payload, name):
@@ -61,6 +61,8 @@ def link_case_task(conn, case_id, task_id, actor):
     prior = conn.execute("SELECT case_id FROM case_tasks WHERE task_id=?", (task_id,)).fetchone()
     if prior and prior["case_id"] != case_id:
         raise SwarmError("Task %s already belongs to case %s" % (task_id, prior["case_id"]))
+    if prior:
+        return False
     task_workstream = conn.execute(
         "SELECT workstream_id FROM task_workstreams WHERE task_id=?", (task_id,)
     ).fetchone()
@@ -76,11 +78,11 @@ def link_case_task(conn, case_id, task_id, actor):
     )
     now = utcnow()
     conn.execute(
-        "UPDATE cases SET status='ACTIVE', closed_at=NULL, updated_at=? WHERE id=?",
+        "UPDATE cases SET status='ACTIVE', closed_at=NULL, result_summary=NULL, completion_outcome=NULL, updated_at=? WHERE id=?",
         (now, case_id),
     )
     conn.execute(
-        """UPDATE workstreams SET status='ACTIVE', updated_at=?
+        """UPDATE workstreams SET status='ACTIVE', completion_outcome=NULL, progress_summary=NULL, updated_at=?
            WHERE id=? AND status NOT IN ('ACTIVE')""",
         (now, case["workstream_id"]),
     )
@@ -299,6 +301,10 @@ def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, read
         raise SwarmError(
             "Complete or cancel the case's existing intake work before applying a policy"
         )
+    conn.execute(
+        "UPDATE workstreams SET status='ACTIVE',completion_outcome=NULL,progress_summary=NULL WHERE id=?",
+        (case["workstream_id"],),
+    )
     application = apply_policy(
         conn,
         policy_id,
@@ -313,7 +319,7 @@ def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, read
             (case_id, item["task_id"]),
         )
     conn.execute(
-        "UPDATE cases SET policy_application_id=?, status='ACTIVE', updated_at=? WHERE id=?",
+        "UPDATE cases SET policy_application_id=?, status='ACTIVE', completion_outcome=NULL, result_summary=NULL, closed_at=NULL, updated_at=? WHERE id=?",
         (application["id"], utcnow(), case_id),
     )
     add_event(
@@ -352,7 +358,7 @@ def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
     require_task_capacity(conn)
     task_id = make_id("T")
     conn.execute(
-        """UPDATE workstreams SET status='ACTIVE', updated_at=? WHERE id=?""",
+        """UPDATE workstreams SET status='ACTIVE', completion_outcome=NULL, progress_summary=NULL, updated_at=? WHERE id=?""",
         (now, case["workstream_id"]),
     )
     conn.execute(
@@ -387,7 +393,7 @@ def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
     )
     conn.execute("INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, task_id))
     conn.execute(
-        "UPDATE cases SET status='ACTIVE', closed_at=NULL, updated_at=? WHERE id=?",
+        "UPDATE cases SET status='ACTIVE', closed_at=NULL, result_summary=NULL, completion_outcome=NULL, updated_at=? WHERE id=?",
         (now, case_id),
     )
     add_event(
@@ -456,7 +462,8 @@ def add_case_signal(
             ).fetchone()
             if not linked:
                 raise SwarmError("Decision %s is not linked to case %s" % (decision_id, case_id))
-            if decision["status"] not in {"OPEN", "RESOLVED"}:
+            # Late replies remain evidence even after their question was withdrawn.
+            if decision["status"] not in {"OPEN", "RESOLVED", "CANCELLED"}:
                 raise SwarmError("Decision %s cannot be resolved" % decision_id)
         metadata = parse_metadata(metadata_items or [])
         source_payload = Path(payload).expanduser().resolve() if payload else None
@@ -567,65 +574,27 @@ def cancel_case(conn, case_id, actor, reason):
     case = case_row(conn, case_id)
     if not reason.strip():
         raise SwarmError("Case cancellation requires a reason")
-    if case["status"] in {"DONE", "CANCELLED"}:
-        raise SwarmError("Case %s is already terminal" % case_id)
+    if case["status"] == "CANCELLED":
+        raise SwarmError("Case %s is already cancelled" % case_id)
     now = utcnow()
-    linked_tasks = conn.execute(
-        """SELECT t.* FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
-           WHERE ct.case_id=? AND t.status NOT IN ('DONE','CANCELLED')""",
-        (case_id,),
-    ).fetchall()
-    for task in linked_tasks:
-        end_attempt(conn, task["id"], "CANCELLED", reason)
-        task_waits = conn.execute(
-            "SELECT * FROM external_waits WHERE task_id=? AND status='WAITING'", (task["id"],)
-        ).fetchall()
-        conn.execute(
-            """UPDATE tasks SET status='CANCELLED', owner=NULL, lease_until=NULL,
-               result=?, updated_at=? WHERE id=?""",
-            (reason, now, task["id"]),
-        )
-        conn.execute(
-            """UPDATE external_waits SET status='CANCELLED', updated_at=?
-               WHERE task_id=? AND status='WAITING'""",
-            (now, task["id"]),
-        )
-        for wait in task_waits:
-            add_event(
-                conn,
-                case["mission_id"],
-                "external_wait",
-                wait["id"],
-                "EXTERNAL_WAIT_CANCELLED",
-                actor,
-                {
-                    "task_id": task["id"],
-                    "case_id": case_id,
-                    "reason": reason,
-                },
-            )
-        add_event(
-            conn,
-            case["mission_id"],
-            "task",
-            task["id"],
-            "TASK_CANCELLED",
-            actor,
-            {
-                "reason": reason,
-                "case_id": case_id,
-            },
-        )
+    linked = [
+        row[0] for row in conn.execute("SELECT task_id FROM case_tasks WHERE case_id=?", (case_id,))
+    ]
     conn.execute(
-        """UPDATE cases SET status='CANCELLED', result_summary=?, updated_at=?, closed_at=?
-           WHERE id=?""",
+        """UPDATE cases SET status='CANCELLED',completion_outcome='CANCELLED',
+            result_summary=?,updated_at=?,closed_at=? WHERE id=?""",
         (reason, now, now, case_id),
     )
     conn.execute(
-        """UPDATE workstreams SET status='CANCELLED', progress_summary=?, updated_at=?
-           WHERE id=?""",
+        """UPDATE workstreams SET status='CANCELLED',completion_outcome='CANCELLED',
+            progress_summary=?,updated_at=? WHERE id=?""",
         (reason, now, case["workstream_id"]),
     )
+    cancelled = []
+    for task_id in linked:
+        if task_row(conn, task_id)["status"] not in TERMINAL_TASK_STATES:
+            cancel_task(conn, task_id, actor, reason)
+            cancelled.append(task_id)
     add_event(
         conn,
         case["mission_id"],
@@ -633,8 +602,6 @@ def cancel_case(conn, case_id, actor, reason):
         case_id,
         "CASE_CANCELLED",
         actor,
-        {
-            "reason": reason,
-            "cancelled_tasks": [task["id"] for task in linked_tasks],
-        },
+        {"reason": reason, "cancelled_tasks": cancelled},
     )
+    reconcile_conn(conn)

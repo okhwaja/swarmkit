@@ -1022,12 +1022,16 @@ optional arguments:
 ```text
 usage: swarmctl mission complete [-h] --evidence EVIDENCE [--actor ACTOR]
                                  [--shutdown-service]
+                                 [--outcome {SUCCEEDED,PARTIAL}]
 
 optional arguments:
-  -h, --help           show this help message and exit
+  -h, --help            show this help message and exit
   --evidence EVIDENCE
   --actor ACTOR
   --shutdown-service
+  --outcome {SUCCEEDED,PARTIAL}
+                        Default: PARTIAL if any tasks were cancelled,
+                        otherwise SUCCEEDED
 ```
 
 ## `swarmctl mission phase`

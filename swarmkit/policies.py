@@ -236,7 +236,9 @@ def apply_policy(conn, policy_id, variable_items, workstream_id, actor, ready):
         if specification.get("required") and not values.get(name):
             raise SwarmError("Missing required policy variable: %s" % name)
     if workstream_id:
-        workstream_row(conn, workstream_id)
+        stream = workstream_row(conn, workstream_id)
+        if stream["status"] in {"DONE", "CANCELLED"}:
+            raise SwarmError("Cannot apply a policy to a terminal workstream")
 
     rendered = []
     for stage in manifest["stages"]:
