@@ -124,7 +124,7 @@ def register_workspace(
     )
 
 
-def run_workspace_command(command, repository, timeout):
+def run_workspace_command(command, repository, timeout, lock_handle=None):
     # A failed/timeout adapter may have created a checkout. Never retry automatically
     # or delete its output: the operator can inspect and register it explicitly.
     try:
@@ -132,7 +132,12 @@ def run_workspace_command(command, repository, timeout):
             mode="w+", encoding="utf-8"
         ) as errors:
             process = subprocess.Popen(
-                command, cwd=str(repository), stdout=output, stderr=errors, start_new_session=True
+                command,
+                cwd=str(repository),
+                stdout=output,
+                stderr=errors,
+                start_new_session=True,
+                pass_fds=(lock_handle.fileno(),) if lock_handle else (),
             )
             try:
                 process.wait(timeout=timeout)
@@ -163,15 +168,16 @@ def run_workspace_command(command, repository, timeout):
         raise SwarmError("Could not run workspace command: %s" % exc)
 
 
-def create_workspace(root, conn, task_id, repository, base, provider=None):
-    workspace_task(conn, task_id)
+def create_workspace(root, conn, task_id, repository, base, provider=None, agent=None):
+    workspace_task(conn, task_id, agent)
     config = workspace_config(root, provider)
     repository = Path(repository).expanduser().resolve()
     if not repository.is_dir() or not isinstance(base, str) or not base.strip():
         raise SwarmError(
             "Workspace creation requires an existing source directory and base revision"
         )
-    with process_lock(root / "workspaces.lock"):
+    with process_lock(root / "workspaces.lock") as lock_handle:
+        workspace_task(conn, task_id, agent)
         existing = conn.execute("SELECT * FROM workspaces WHERE task_id=?", (task_id,)).fetchone()
         if existing:
             if (
@@ -229,6 +235,7 @@ def create_workspace(root, conn, task_id, repository, base, provider=None):
                 ],
                 repository,
                 config["timeout_seconds"],
+                lock_handle,
             )
         else:
             values = {
@@ -242,7 +249,7 @@ def create_workspace(root, conn, task_id, repository, base, provider=None):
                 command = [part.format(**values) for part in config["command"]]
             except (KeyError, ValueError, IndexError) as exc:
                 raise SwarmError("Invalid workspace command placeholder: %s" % exc)
-            raw = run_workspace_command(command, repository, config["timeout_seconds"])
+            raw = run_workspace_command(command, repository, config["timeout_seconds"], lock_handle)
             try:
                 receipt = json.loads(raw)
             except ValueError:
@@ -267,5 +274,6 @@ def create_workspace(root, conn, task_id, repository, base, provider=None):
             revision,
             reference,
             config["provider"],
+            agent=agent,
             requested_base=base,
         )

@@ -96,3 +96,9 @@ A decision acknowledgement belongs to your current leased attempt. Never write o
 for another agent or rely on an earlier worker's acknowledgement. If a decision
 changes, your old attempt is retired: stop publishing state and let a fresh attempt
 incorporate the revised answer.
+
+If creating a configured checkout during your attempt, run `workspace create`
+with `--agent <agent_id>`, then use its returned directory for all project edits.
+Registering/creating it does not change the working directory of an already
+running harness. A timeout or failed checkout receipt is not proof that the
+provider created nothing; inspect the provider before another creation attempt.

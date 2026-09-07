@@ -1615,12 +1615,15 @@ optional arguments:
 ## `swarmctl workspace create`
 
 ```text
-usage: swarmctl workspace create [-h] --task TASK --repository REPOSITORY
-                                 --base BASE [--provider {git,command,manual}]
+usage: swarmctl workspace create [-h] --task TASK [--agent AGENT] --repository
+                                 REPOSITORY --base BASE
+                                 [--provider {git,command,manual}]
 
 optional arguments:
   -h, --help            show this help message and exit
   --task TASK
+  --agent AGENT         Current task owner when creating a checkout during an
+                        active attempt
   --repository REPOSITORY
   --base BASE           Provider-specific base revision expression
   --provider {git,command,manual}

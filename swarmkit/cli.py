@@ -191,6 +191,9 @@ def add_runtime_cli(sub):
     ws = workspace.add_subparsers(dest="workspace_command", required=True)
     wc = ws.add_parser("create")
     wc.add_argument("--task", required=True)
+    wc.add_argument(
+        "--agent", help="Current task owner when creating a checkout during an active attempt"
+    )
     wc.add_argument("--repository", required=True)
     wc.add_argument("--base", required=True, help="Provider-specific base revision expression")
     wc.add_argument(
@@ -336,7 +339,7 @@ def handle_runtime_cli(root, args):
         elif args.command == "workspace":
             if args.workspace_command == "create":
                 result = create_workspace(
-                    root, conn, args.task, args.repository, args.base, args.provider
+                    root, conn, args.task, args.repository, args.base, args.provider, args.agent
                 )
             elif args.workspace_command == "register":
                 result = register_workspace(

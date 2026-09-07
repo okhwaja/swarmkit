@@ -414,3 +414,12 @@ deliveries to be reconciled, just as with uncertain effects.
 A claimed or `UNKNOWN` delivery cannot be cancelled into a misleading terminal
 state. Observe its provider outcome first; a live sender may still record its
 receipt. Confirmed not-sent work can subsequently be cancelled while pending.
+
+An active task owner can call `workspace create --agent AGENT` with the configured
+command or explicit Git provider. Stale/nonowners are rejected before the checkout
+command runs. The active harness must change to the returned directory itself;
+subsequent dispatches use the registered path automatically. Checkout subprocesses
+inherit the creation lock, so a controller crash does not permit another creator
+while the original child is still alive. A failed/ambiguous checkout command still
+requires inspecting the provider and registering any created checkout; no automatic
+provider retry or checkout deletion is implied.

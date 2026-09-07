@@ -148,3 +148,9 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
 - Existing case retries survive terminal mission state without reopening work.
   Audit intake copies now select only canonical payload references. Seven added
   tests cover these behaviors; all 153 source tests pass.
+
+- Saved local commit 5685062 for atomic intake and inquiries; 153 source tests passed.
+- Reproduced missing active-owner checkout creation and lock loss after killing
+  the creator. Added workspace create --agent, pre-launch ownership checks, and
+  inherited checkout locks. Tests use an internal-style adapter with opaque jj
+  revisions and a real killed controller. Git remains explicitly selected only.
