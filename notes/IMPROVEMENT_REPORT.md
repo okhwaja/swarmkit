@@ -11,7 +11,7 @@ reliable, understandable, efficient, and usable through the expected journeys.
 The result has **237 passing tests**, a much shorter introduction, explicit module
 ownership, and substantially lower history, active-service, and review-burst overhead.
 This report includes both continued passes requested after the 0.8.0 and 0.10.0
-handoffs; the detailed work log records each tested checkpoint.
+handoffs and the subsequent manual audience correction; the detailed work log records each tested checkpoint.
 
 The distributable is [swarmkit-0.11.2.zip](/Users/osmankhwaja/Documents/swarmkit/dist/swarmkit-0.11.2.zip).
 Start with the [README](/Users/osmankhwaja/Documents/swarmkit/README.md), the
@@ -599,6 +599,37 @@ previous published archive through atomic replacement.
 **Evidence.** Tests cover directory/file symlinks, FIFOs, normal retained logs,
 links introduced during copying, disappearing files of each kind, canonical database
 retention, and manifest verification after omissions.
+
+## 24. Reframed the manual around the person directing the mission
+
+**Background.** Your feedback after reading the manual identified an audience
+mismatch. The opening promised a guide for the human who starts a mission,
+answers decisions, and follows major workstreams. Its body instead taught setup,
+worker findings, callbacks, delivery adapters, and manager operations. A reader
+had to learn internal protocols to find an everyday action. It also incorrectly
+said mission amendment and immediate coordination stops were not yet supported.
+
+**Change.** Kept the User Manual name and rebuilt it around six human questions:
+start a mission, answer a decision, check progress, ask for an explanation,
+change direction or stop, and review the result. The first three are the primary
+journeys. Each explains what to provide or inspect and what happens next.
+Terminal examples are expandable, while a short navigation table makes each
+journey easy to find. Setup and agent protocols link to their existing technical
+homes; unique cancellation and diagnostic details moved into the runtime guide.
+
+The revised guide makes the current interaction boundary explicit: Swarmkit has
+commands and reports, and a harness may operate them on the human's behalf.
+A chat reply alone does not update mission state, and notifications require an
+integration. It explains that decisions may need a controller restart, a paused
+mission needs resume, inquiries take an agent run, amendment replaces all criteria
+and constraints, and pause/cancel do not undo external actions. The documentation
+policy now names the mission owner as the audience so future features do not turn
+the manual back into a protocol reference. The README points to that purpose.
+
+**Validation and limits.** Checked the examples against the CLI and lifecycle,
+decision, and inquiry implementations; regenerated command documentation and ran
+the source and extracted-package release checks. This is a documentation change;
+it does not add a chat interface, notifications, or new runtime behavior.
 
 ## Validation and release compatibility
 

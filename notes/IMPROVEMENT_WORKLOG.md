@@ -413,3 +413,25 @@ No remote push, PR, merge, provider action, or OS service installation occurred.
 - All report links resolve. Distribution is built, source checks pass, schema8
   migration and actual packaged CLI smoke pass. No push, remote merge, PR, provider
   action, or installed OS service was performed. Owner questions remain in backlog.
+
+## Manual audience feedback
+
+- Read the final recommendation in “Clarify manual target audience,” including the
+  owner's clarification that the manual serves the person initiating a mission,
+  answering decisions, and checking major workstreams.
+- Replaced the mixed operator/agent runbook with six mission-owner journeys.
+  Primary prose explains intent, action, and expected result; direct terminal
+  examples are expandable. Kept the User Manual name.
+- Corrected obsolete claims about amendment and stopping. Explained full-spec
+  replacement, decision versus inquiry, controller restart versus mission resume,
+  external-action limits, and review of partial results without exposing agent
+  leases or acknowledgment protocols in the human journey.
+- Linked existing setup/protocol documentation. Preserved unique workstream
+  cancellation and diagnostic details in the runtime guide; tightened its amendment
+  contract. Updated README discovery and documentation audience policy.
+- Documentation impact: user journey, documentation ownership, operational reference.
+  No runtime or schema changes. All 18 fenced CLI command examples parse; generated
+  CLI docs and doc checks pass. Release validation passed with 237 tests in source
+  and extracted package. Rebuilt the local 0.11.2 candidate with the revised docs.
+- Added change area 24 to the full improvement report. Work stays on the existing
+  local branch; no push or remote merge.

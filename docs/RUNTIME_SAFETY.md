@@ -32,6 +32,13 @@ remote action was reversed. Inspect `recover`, `effect list`, and `workspace lis
 for outstanding processes, actions, and changes. Terminal missions cannot resume.
 Cancelling an individual task also cancels its dependency descendants.
 
+For a whole workstream, use `workstream update WS-ID --status CANCELLED --summary 'Reason for cancellation'`. A non-empty summary is required. Cancellation
+retires unfinished linked tasks and their unfinished dependency descendants,
+including dependents in other workstreams. Completed results remain intact and
+uncertain actions remain available for reconciliation. For a case-owned workstream,
+use `case cancel CASE-ID --reason '...'` to close both together. Other workstream
+statuses describe progress; they do not pause or resume workers.
+
 A mission has a separate durable desired state and an outcome. `why` explains
 claims, missing decisions, dependencies, limits, unfinished runs, and uncertain
 effects. `status` includes `runtime`. Mission success, cancellation, abandonment,
@@ -376,7 +383,9 @@ python3 swarmctl.py configure --limits '{"max_tasks":100,"max_runs":200,"max_att
 python3 swarmctl.py resume --reason 'Manager may review revised plan'
 ```
 
-Amendment increments mission revision and saves old/new specifications. Remaining
+Amendment replaces the entire objective, success-criterion list, and constraint
+list; omitted criteria and constraints are not retained. It increments mission
+revision and saves old/new specifications. Remaining
 work loses scheduling authorization, including blocked and externally waiting
 tasks. The manager explicitly adopts or replaces it. Completed work remains
 historical evidence; it is not automatically proof of the revised objective.
@@ -571,3 +580,12 @@ If an intake payload or artifact disappears between inspection and copying,
 the archive retains its canonical database record and explains the missing file
 in `intake-export.json` or `artifact-export.json`. Review these omission reports
 alongside `audit-verify`: an intact archive can have incomplete source evidence.
+
+## Inspect coordination problems
+
+`doctor` reads state without reconciling or repairing it. It reports structured
+problems and returns a nonzero exit code for integrity errors, including malformed
+stored timestamps/JSON and unavailable evidence files. Duplicate active task titles
+are compared within a workstream; repeated workflow titles in independent cases
+are expected. If an older cancelled workstream still contains unfinished tasks,
+inspect and explicitly cancel that work with a recorded reason.

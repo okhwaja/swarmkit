@@ -111,7 +111,7 @@ See [workspace configuration](docs/RUNTIME_SAFETY.md).
 
 ## Where to go next
 
-- [User manual](docs/USER_MANUAL.md): operate a mission, answer questions, inspect results.
+- [User manual](docs/USER_MANUAL.md): direct a mission, answer decisions, and check progress.
 - [Policy packs](docs/POLICY_PACKS.md): reusable performance, pipeline, port, and PR workflows.
 - [Persistent services](docs/PERSISTENT_SERVICES.md): cases, follow-ups, and ingress adapters.
 - [Runtime safety](docs/RUNTIME_SAFETY.md): pause, recovery, evidence, effects, and workspaces.

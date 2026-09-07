@@ -9,7 +9,7 @@ release metadata agree in the same commit.
 | Document | Authoritative for |
 |---|---|
 | `README.md` | Installation, quickstart, major capabilities, and release package name |
-| `docs/USER_MANUAL.md` | Human-facing operational journeys |
+| `docs/USER_MANUAL.md` | Mission-owner interaction: start, decide, follow progress, ask, redirect, and review |
 | `docs/HARNESS_INTEGRATION.md` | Harness, skills, and extension integration contracts |
 | `SETUP_AGENT.md` | Destination-machine discovery and acceptance tests |
 | `docs/SYSTEM_EXPLAINER.md` | Architecture, invariants, and design rationale |
@@ -25,6 +25,12 @@ release metadata agree in the same commit.
 
 Keep one normative home for each concept. Other documents should summarize and
 link to it rather than maintaining competing copies.
+
+The user manual serves the human directing the mission. Lead with the person's
+question, what they should do, and what happens next. Keep terminal syntax optional
+and subordinate to those journeys. Setup, worker/manager protocols, adapter
+configuration, and detailed recovery belong in their technical homes above.
+Document user-visible limitations where they affect the next action.
 
 ## Required change workflow
 
