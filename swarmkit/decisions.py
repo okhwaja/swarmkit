@@ -2,7 +2,14 @@
 
 from .coordination import reconcile_conn
 from .core import SwarmError, TERMINAL_TASK_STATES, atomic_write, json_load, utcnow
-from .storage import add_event, decision_row, task_row
+from .storage import (
+    add_event,
+    cancel_external_waits,
+    decision_row,
+    end_attempt,
+    require_owner,
+    task_row,
+)
 
 
 def validate_decision_choice(row, choice):
@@ -112,6 +119,8 @@ def revise_decision(conn, decision_id, answer, actor, choice=None):
     for task_id in affected:
         task = task_row(conn, task_id)
         if task["status"] not in TERMINAL_TASK_STATES and task["authorized"]:
+            end_attempt(conn, task_id, "INTERRUPTED", "Decision revised: " + decision_id)
+            cancel_external_waits(conn, task_id, actor, "Decision revised: " + decision_id)
             conn.execute(
                 """UPDATE tasks SET status='BLOCKED', owner=NULL, lease_until=NULL,
                    next_action=?, updated_at=? WHERE id=?""",
@@ -152,6 +161,8 @@ def link_decision(conn, decision_id, task_id, actor):
         "INSERT INTO decision_tasks(decision_id, task_id) VALUES(?,?)", (decision_id, task_id)
     )
     if task["status"] not in TERMINAL_TASK_STATES and task["authorized"]:
+        end_attempt(conn, task_id, "INTERRUPTED", "Decision linked: " + decision_id)
+        cancel_external_waits(conn, task_id, actor, "Decision linked: " + decision_id)
         conn.execute(
             """UPDATE tasks SET status='BLOCKED', owner=NULL, lease_until=NULL,
                next_action=?, updated_at=? WHERE id=?""",
@@ -178,6 +189,7 @@ def link_decision(conn, decision_id, task_id, actor):
 def acknowledge_decision(conn, decision_id, task_id, agent):
     drow = decision_row(conn, decision_id)
     trow = task_row(conn, task_id)
+    require_owner(trow, agent)
     if drow["status"] != "RESOLVED":
         raise SwarmError("Decision %s is not resolved" % decision_id)
     linked = conn.execute(

@@ -58,3 +58,14 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   are rejected. Transaction commit failures also roll back pending writes.
 - Current focused/full source checks: 91 tests passing. Broader release validation
   will repeat after the next feature group.
+
+- Saved local commit 9a6bff5 for bounded inbox/context reads; release check passed
+  91 tests in source and extracted package.
+- Reproduced and fixed five decision-fencing gaps: nonowners could acknowledge;
+  a new attempt inherited an old agent's acknowledgement; revised/newly linked
+  decisions left old attempts RUNNING; revisions left obsolete waits active;
+  executing effects were not made uncertain on decision change. All 96 tests pass.
+- Upcoming journey audit findings: mixed cancelled/completed case tasks can be
+  labeled DONE without a partial outcome; auto-cancelled intake conflicts with
+  applying a replacement policy; delivery subprocesses need the same liveness
+  and uncertain-result handling as ordinary harness runs. These are not fixed yet.

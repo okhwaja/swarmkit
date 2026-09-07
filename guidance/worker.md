@@ -91,3 +91,8 @@ checkouts with `workspace register`, including the actual opaque base revision.
 Select `--provider git` only for a Git workflow. Do not substitute a Git SHA or
 branch name for a provider-specific revision/reference. Register before dispatch;
 an active harness that registers a checkout must use that directory itself.
+
+A decision acknowledgement belongs to your current leased attempt. Never write one
+for another agent or rely on an earlier worker's acknowledgement. If a decision
+changes, your old attempt is retired: stop publishing state and let a fresh attempt
+incorporate the revised answer.

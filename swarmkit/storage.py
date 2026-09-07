@@ -137,9 +137,11 @@ def unresolved_ack_count(conn, task_id):
     return conn.execute(
         """SELECT COUNT(*) AS n FROM decision_tasks dt
            JOIN decisions d ON d.id = dt.decision_id
+           JOIN tasks t ON t.id = dt.task_id
            LEFT JOIN decision_acks a ON a.decision_id = d.id AND a.task_id = dt.task_id
            WHERE dt.task_id = ? AND d.status = 'RESOLVED'
-             AND (a.version IS NULL OR a.version < d.version)""",
+             AND (a.version IS NULL OR a.version < d.version
+                  OR COALESCE(a.agent_id, '') <> COALESCE(t.owner, ''))""",
         (task_id,),
     ).fetchone()["n"]
 
@@ -237,6 +239,29 @@ def end_attempt(conn, task_id, state, reason=None):
         "UPDATE attempts SET state=?, ended_at=?, reason=? WHERE task_id=? AND generation=? AND ended_at IS NULL",
         (state, utcnow(), reason, task_id, row["generation"]),
     )
+
+
+def cancel_external_waits(conn, task_id, actor, reason):
+    """Retire wait subscriptions; never infer that the external job was cancelled."""
+    rows = conn.execute(
+        "SELECT id,mission_id FROM external_waits WHERE task_id=? AND status='WAITING'",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE external_waits SET status='CANCELLED',updated_at=? WHERE id=?",
+            (utcnow(), row["id"]),
+        )
+        add_event(
+            conn,
+            row["mission_id"],
+            "external_wait",
+            row["id"],
+            "EXTERNAL_WAIT_CANCELLED",
+            actor,
+            {"task_id": task_id, "reason": reason},
+        )
+    return [row["id"] for row in rows]
 
 
 def uncertain_effects(conn, task_id=None):

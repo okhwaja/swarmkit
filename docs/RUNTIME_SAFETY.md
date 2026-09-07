@@ -96,7 +96,11 @@ and recommendation. Resolution survives restart; a fresh attempt claims the task
 and acknowledges the current decision version before continuing. Use
 `decision require-choice` when a branch requires a particular answer. An answer
 of “no” is a decision to honor, not implicit permission merely because work woke.
-Revised decisions invalidate old acknowledgments. No approval is inferred from
+Acknowledgments belong to the currently leased task owner. Each fresh attempt
+acknowledges the current answer itself, even if the answer did not change.
+Revising or newly linking a decision retires an active attempt, marks its executing
+effects uncertain, and closes any obsolete external-wait subscription. Closing a
+subscription does not claim the provider job stopped or succeeded. No approval is inferred from
 elapsed time or from a harness exit code.
 
 ```bash
