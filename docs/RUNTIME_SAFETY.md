@@ -325,7 +325,7 @@ python3 swarmctl.py export --output shareable-telemetry.zip --share-safe
 python3 swarmctl.py audit-verify private-audit.zip
 ```
 
-Exports freeze SQLite once and derive snapshot, board, events, health, and
+Private exports freeze SQLite once without reconciling that historical copy, and derive snapshot, board, events, health, and
 attempt-level `explanation.json` from that copy. Artifact bytes that differ from
 registration are omitted and reported. The manifest hashes all included bytes;
 `audit-verify` checks hashes, sizes, missing/extra entries, and duplicate entries.
@@ -390,3 +390,12 @@ closed database is published atomically; a failed initializer leaves no partial
 canonical database that would prevent a retry. Existing `runner.json` is preserved.
 The `.init.lock` file is an ownership mechanism and must not be deleted to bypass
 a live initializer. Failed/crashed staging directories do not become missions.
+
+Export publication is atomic: a failed build preserves any previous output. Choose
+an output path outside the mission state directory so the archive cannot overwrite
+its own source data. Event JSONL and archive files are streamed. Share-safe export
+has a separate counter-only path; it never builds a private archive or copies
+prompts, logs, payloads, or the database. Verification validates manifest structure,
+relative paths, duplicate entries, sizes, and streaming content hashes; malformed
+archives return problems rather than a Python traceback. Hash verification detects
+content changes, not the identity or trustworthiness of the archive's author.

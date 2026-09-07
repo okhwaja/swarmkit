@@ -124,3 +124,10 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
 - Replaced description-LIKE signal deduplication with a signal/task foreign-key
   relation. Migration reconstructs links from structured events. Six new tests
   cover policy retries/conflicts/rollback and signal edits/false matches/migration.
+
+- Saved local commit 1362a64 for service/workflow retry identity; 135 tests passed.
+- Reproduced private-first share-safe export, output clobber on late failure,
+  unrecorded reconciliation in the exported snapshot, whole-ZIP memory loading,
+  and malformed-manifest tracebacks. Exports now stage once, stream content, keep
+  canonical history unchanged, and atomically publish. Share-safe queries only
+  allowlisted counters. Five regressions pass; full source suite passes 140 tests.

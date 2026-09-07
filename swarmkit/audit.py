@@ -3,21 +3,22 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
 import textwrap
 import zipfile
 
-from .core import PACKAGE_ROOT, VERSION, hash_file, json_load, parse_time, utcnow
+from .core import PACKAGE_ROOT, VERSION, hash_file, json_load, parse_time, utcnow, SwarmError
 from .diagnostics import doctor
-from .queries import case_dict, explain_state, mission_snapshot
-from .storage import connect
+from .queries import explain_state, mission_snapshot
+from .storage import connect, runtime_state
 from .views import render_board
 
 
-def audit_summary(conn):
-    snap = mission_snapshot(conn)
+def audit_summary(conn, snapshot=None):
+    snap = snapshot if snapshot is not None else mission_snapshot(conn)
     counts = {}
     for task in snap["tasks"]:
         counts[task["status"]] = counts.get(task["status"], 0) + 1
@@ -146,126 +147,236 @@ def audit_summary(conn):
     }
 
 
-def _export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
-    render_board(root)
+def stage_private_audit(root, source_root, stage, include_artifacts=False, max_artifact_mb=25):
+    render_board(root, reconcile=False)
     conn = connect(root)
     try:
         snapshot = mission_snapshot(conn)
-        events = []
-        for row in conn.execute("SELECT * FROM events ORDER BY seq"):
-            data = dict(row)
-            data["payload"] = json_load(data.pop("payload_json"), {})
-            events.append(data)
+        with (stage / "events.jsonl").open("w", encoding="utf-8") as event_file:
+            for row in conn.execute("SELECT * FROM events ORDER BY seq"):
+                data = dict(row)
+                data["payload"] = json_load(data.pop("payload_json"), {})
+                event_file.write(json.dumps(data, ensure_ascii=False) + "\n")
         runs = [dict(row) for row in conn.execute("SELECT * FROM agent_runs ORDER BY started_at")]
-        cases = [
-            case_dict(conn, row)
-            for row in conn.execute("SELECT * FROM cases ORDER BY created_at, id")
-        ]
-        summary = audit_summary(conn)
+        cases = snapshot["cases"]
+        summary = audit_summary(conn, snapshot)
     finally:
         conn.close()
 
-    output = Path(output).expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "format_version": 1,
-        "created_at": utcnow(),
-        "swarmctl_version": VERSION,
-        "source_root": str(root),
-        "include_artifacts": bool(include_artifacts),
-    }
-    with tempfile.TemporaryDirectory(prefix="swarm-audit-") as tmp:
-        stage = Path(tmp) / "swarm-audit"
-        stage.mkdir()
-        (stage / "snapshot.json").write_text(
-            json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
-        (stage / "cases.json").write_text(
-            json.dumps(cases, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
-        (stage / "events.jsonl").write_text(
-            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events), encoding="utf-8"
-        )
-        (stage / "agent-runs.json").write_text(
-            json.dumps(runs, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
-        (stage / "health.json").write_text(
-            json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
-        shutil.copy2(root / "views" / "BOARD.md", stage / "BOARD.md")
-        source_db = connect(root)
-        audit_db = sqlite3.connect(str(stage / "state.sqlite3"))
-        try:
-            source_db.backup(audit_db)
-        finally:
-            audit_db.close()
-            source_db.close()
-        package_root = PACKAGE_ROOT
-        if (package_root / "guidance").exists():
-            shutil.copytree(package_root / "guidance", stage / "guidance")
-        if (root / "prompts").exists():
-            shutil.copytree(root / "prompts", stage / "prompts")
-        if (root / "runs").exists():
-            shutil.copytree(root / "runs", stage / "runs")
-        if (root / "outbox").exists():
-            shutil.copytree(root / "outbox", stage / "outbox")
-        if (root / "intake").exists():
-            shutil.copytree(root / "intake", stage / "intake")
-        audit_guide = textwrap.dedent(
-            """\
-            # How to review this swarm run
+    (stage / "snapshot.json").write_text(
+        json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    (stage / "cases.json").write_text(
+        json.dumps(cases, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    (stage / "agent-runs.json").write_text(
+        json.dumps(runs, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    (stage / "health.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    shutil.copy2(root / "views" / "BOARD.md", stage / "BOARD.md")
+    source_db = connect(root)
+    audit_db = sqlite3.connect(str(stage / "state.sqlite3"))
+    try:
+        source_db.backup(audit_db)
+    finally:
+        audit_db.close()
+        source_db.close()
+    package_root = PACKAGE_ROOT
+    if (package_root / "guidance").exists():
+        shutil.copytree(package_root / "guidance", stage / "guidance")
+    for name in ("prompts", "runs", "outbox", "intake"):
+        if (source_root / name).exists():
+            shutil.copytree(
+                source_root / name, stage / name, ignore=shutil.ignore_patterns("*.lock")
+            )
+    audit_guide = textwrap.dedent(
+        """\
+        # How to review this swarm run
 
-            Start with `snapshot.json`, `health.json`, and `BOARD.md`. For a persistent service,
-            use `cases.json` for complete case and signal histories. Use `events.jsonl` to
-            reconstruct causality and `agent-runs.json` plus `runs/` to inspect individual
-            invocations. The SQLite database is included for custom queries.
+        Start with `snapshot.json`, `health.json`, and `BOARD.md`. For a persistent service,
+        use `cases.json` for complete case and signal histories. Use `events.jsonl` to
+        reconstruct causality and `agent-runs.json` plus `runs/` to inspect individual
+        invocations. The SQLite database is included for custom queries.
 
-            Review for: stale facts, weak or unstable workstreams, forecast misses, speculative
-            tasks, duplicated work, missing checkpoints,
-            long human-decision propagation, expired leases, weak verification, manager churn,
-            excessive fan-out, policy stages that were skipped or claimed by disallowed agent
-            identities, named skills without evidence, duplicate inbound cases or signals,
-            missed follow-ups, untriaged material findings, finding-to-work linkage, overdue or
-            repeatedly rescheduled external waits, duplicate wake signals, manager-review latency,
-            failed or duplicated external deliveries, missing provider receipts, and work that
-            bypassed canonical state.
+        Review for: stale facts, weak or unstable workstreams, forecast misses, speculative
+        tasks, duplicated work, missing checkpoints,
+        long human-decision propagation, expired leases, weak verification, manager churn,
+        excessive fan-out, policy stages that were skipped or claimed by disallowed agent
+        identities, named skills without evidence, duplicate inbound cases or signals,
+        missed follow-ups, untriaged material findings, finding-to-work linkage, overdue or
+        repeatedly rescheduled external waits, duplicate wake signals, manager-review latency,
+        failed or duplicated external deliveries, missing provider receipts, and work that
+        bypassed canonical state.
 
-            Secrets warning: prompts, stdout, stderr, and registered artifacts may contain
-            sensitive material. Inspect this archive before sharing it outside your organization.
-            """
-        )
-        (stage / "REVIEW_ME.md").write_text(audit_guide, encoding="utf-8")
-        copied = []
-        skipped = []
-        if include_artifacts:
-            artifact_dir = stage / "artifacts"
-            artifact_dir.mkdir()
-            limit = max_artifact_mb * 1024 * 1024
-            for artifact in snapshot["artifacts"]:
-                path = Path(artifact["path"])
-                if path.is_file() and path.stat().st_size <= limit:
-                    target = artifact_dir / (artifact["id"] + "-" + path.name)
-                    shutil.copy2(path, target)
-                    if hash_file(target)[0] != artifact["sha256"]:
-                        target.unlink()
-                        skipped.append(
-                            {"id": artifact["id"], "reason": "content changed since registration"}
-                        )
-                    else:
-                        copied.append(
-                            {"id": artifact["id"], "archive_path": str(target.relative_to(stage))}
-                        )
-                else:
+        Secrets warning: prompts, stdout, stderr, and registered artifacts may contain
+        sensitive material. Inspect this archive before sharing it outside your organization.
+        """
+    )
+    (stage / "REVIEW_ME.md").write_text(audit_guide, encoding="utf-8")
+    copied = []
+    skipped = []
+    if include_artifacts:
+        artifact_dir = stage / "artifacts"
+        artifact_dir.mkdir()
+        limit = max_artifact_mb * 1024 * 1024
+        for artifact in snapshot["artifacts"]:
+            path = Path(artifact["path"])
+            if path.is_file() and path.stat().st_size <= limit:
+                target = artifact_dir / (artifact["id"] + "-" + path.name)
+                shutil.copy2(path, target)
+                if hash_file(target)[0] != artifact["sha256"]:
+                    target.unlink()
                     skipped.append(
-                        {
-                            "id": artifact["id"],
-                            "path": str(path),
-                            "reason": "missing, non-file, or over size limit",
-                        }
+                        {"id": artifact["id"], "reason": "content changed since registration"}
                     )
-        (stage / "artifact-export.json").write_text(
-            json.dumps({"copied": copied, "skipped": skipped}, indent=2) + "\n", encoding="utf-8"
-        )
+                else:
+                    copied.append(
+                        {"id": artifact["id"], "archive_path": str(target.relative_to(stage))}
+                    )
+            else:
+                skipped.append(
+                    {
+                        "id": artifact["id"],
+                        "path": str(path),
+                        "reason": "missing, non-file, or over size limit",
+                    }
+                )
+    (stage / "artifact-export.json").write_text(
+        json.dumps({"copied": copied, "skipped": skipped}, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def verify_audit(path):
+    """Check manifest structure and streaming content hashes without extracting files."""
+    problems = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            with archive.open("swarm-audit/manifest.json") as handle:
+                raw = handle.read(16 * 1024 * 1024 + 1)
+            if len(raw) > 16 * 1024 * 1024:
+                raise ValueError("Audit manifest exceeds 16 MiB")
+            manifest = json.loads(raw)
+            if not isinstance(manifest, dict) or manifest.get("format_version") != 1:
+                raise ValueError("Unsupported audit manifest format")
+            if not isinstance(manifest.get("files"), list):
+                raise ValueError("Audit manifest files must be an array")
+            expected = {"swarm-audit/manifest.json"}
+            for item in manifest["files"]:
+                if not isinstance(item, dict):
+                    raise ValueError("Audit manifest file entries must be objects")
+                relative = item.get("path")
+                size = item.get("size_bytes")
+                sha = item.get("sha256")
+                if (
+                    not isinstance(relative, str)
+                    or not relative
+                    or "\\" in relative
+                    or any(part in {"", ".", ".."} for part in relative.split("/"))
+                ):
+                    raise ValueError("Audit manifest contains an invalid relative path")
+                if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                    raise ValueError("Audit file size must be a non-negative integer")
+                if (
+                    not isinstance(sha, str)
+                    or len(sha) != 64
+                    or any(c not in "0123456789abcdef" for c in sha)
+                ):
+                    raise ValueError("Audit file digest must be a SHA-256 hex string")
+                name = "swarm-audit/" + relative
+                if name in expected:
+                    raise ValueError("Duplicate manifest path: " + name)
+                expected.add(name)
+                try:
+                    info = archive.getinfo(name)
+                    if info.file_size != size:
+                        problems.append("Integrity mismatch: " + name)
+                        continue
+                    digest = hashlib.sha256()
+                    with archive.open(info) as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    if digest.hexdigest() != sha:
+                        problems.append("Integrity mismatch: " + name)
+                except KeyError:
+                    problems.append("Missing " + name)
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                problems.append("Duplicate archive entries")
+            if set(names) != expected:
+                problems.append("Archive contains unmanifested or missing entries")
+    except (OSError, KeyError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+        problems.append(str(exc))
+    return {"ok": not problems, "problems": problems}
+
+
+def structural_telemetry(conn):
+    """Read only allowlisted counters, never free text, paths, or payloads."""
+    state = runtime_state(conn)
+    return {
+        "event_watermark": conn.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0],
+        "desired_state": state["desired_state"],
+        "outcome": state["outcome"],
+        "task_counts": dict(conn.execute("SELECT status,COUNT(*) FROM tasks GROUP BY status")),
+        "attempt_counts": dict(conn.execute("SELECT state,COUNT(*) FROM attempts GROUP BY state")),
+    }
+
+
+def export_audit(root, output, include_artifacts=False, max_artifact_mb=25, share_safe=False):
+    """Publish one consistent export, keeping the old output intact on failure."""
+    if max_artifact_mb < 0:
+        raise SwarmError("Artifact size limit must not be negative")
+    output = Path(output).expanduser().resolve()
+    root = Path(root).expanduser().resolve()
+    if output == root or root in output.parents:
+        raise SwarmError("Write audit exports outside the mission state directory")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Stage on the output filesystem so publication is an atomic rename.
+    with tempfile.TemporaryDirectory(prefix=".swarm-export-", dir=str(output.parent)) as temp:
+        directory = Path(temp)
+        stage = directory / "swarm-audit"
+        stage.mkdir()
+        manifest = {
+            "format_version": 1,
+            "created_at": utcnow(),
+            "swarmctl_version": VERSION,
+            "include_artifacts": bool(include_artifacts and not share_safe),
+            "privacy_mode": "structural-only" if share_safe else "private-full",
+        }
+        if share_safe:
+            conn = connect(root)
+            try:
+                conn.execute("BEGIN")
+                telemetry = structural_telemetry(conn)
+            finally:
+                conn.close()
+            (stage / "telemetry.json").write_text(
+                json.dumps(telemetry, indent=2) + "\n", encoding="utf-8"
+            )
+            manifest["event_watermark"] = telemetry["event_watermark"]
+        else:
+            # Freeze SQLite once, and do not reconcile this historical copy.
+            frozen = directory / "workspace"
+            frozen.mkdir()
+            source = connect(root)
+            target = sqlite3.connect(str(frozen / "state.sqlite3"))
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+                source.close()
+            stage_private_audit(frozen, root, stage, include_artifacts, max_artifact_mb)
+            conn = connect(frozen)
+            try:
+                explanation = explain_state(conn)
+            finally:
+                conn.close()
+            (stage / "explanation.json").write_text(
+                json.dumps(explanation, indent=2) + "\n", encoding="utf-8"
+            )
+            manifest["source_root"] = str(root)
+            manifest["event_watermark"] = explanation["event_watermark"]
         files = []
         for path in sorted(stage.rglob("*")):
             if path.is_file():
@@ -277,102 +388,10 @@ def _export_audit(root, output, include_artifacts=False, max_artifact_mb=25):
         (stage / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        with zipfile.ZipFile(str(output), "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive_path = directory / "complete.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(stage.rglob("*")):
                 if path.is_file():
-                    archive.write(str(path), str(path.relative_to(stage.parent)))
+                    archive.write(path, str(path.relative_to(directory)))
+        os.replace(str(archive_path), str(output))
     return output
-
-
-def verify_audit(path):
-    problems = []
-    try:
-        with zipfile.ZipFile(path) as archive:
-            manifest = json.loads(archive.read("swarm-audit/manifest.json"))
-            expected = {"swarm-audit/manifest.json"}
-            for item in manifest["files"]:
-                name = "swarm-audit/" + item["path"]
-                expected.add(name)
-                try:
-                    data = archive.read(name)
-                except KeyError:
-                    problems.append("Missing " + name)
-                    continue
-                if (
-                    len(data) != item["size_bytes"]
-                    or hashlib.sha256(data).hexdigest() != item["sha256"]
-                ):
-                    problems.append("Integrity mismatch: " + name)
-            names = archive.namelist()
-            if len(names) != len(set(names)):
-                problems.append("Duplicate archive entries")
-            if set(names) != expected:
-                problems.append("Archive contains unmanifested or missing entries")
-    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
-        problems.append(str(exc))
-    return {"ok": not problems, "problems": problems}
-
-
-def export_audit(root, output, include_artifacts=False, max_artifact_mb=25, share_safe=False):
-    # Freeze SQLite once. All derived files are computed from this same snapshot.
-    with tempfile.TemporaryDirectory(prefix="swarm-snapshot-") as temp:
-        frozen = Path(temp) / "workspace"
-        frozen.mkdir()
-        source = connect(root)
-        target = sqlite3.connect(str(frozen / "state.sqlite3"))
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-            source.close()
-        for name in ("prompts", "runs", "outbox", "intake"):
-            if (root / name).exists():
-                shutil.copytree(root / name, frozen / name, ignore=shutil.ignore_patterns("*.lock"))
-        result = _export_audit(frozen, output, include_artifacts, max_artifact_mb)
-        # Add deterministic attempt-level diagnostics from the same frozen DB.
-        conn = connect(frozen)
-        try:
-            explanation = explain_state(conn)
-        finally:
-            conn.close()
-        with zipfile.ZipFile(result) as archive:
-            contents = {name: archive.read(name) for name in archive.namelist()}
-        manifest = json.loads(contents.pop("swarm-audit/manifest.json"))
-        manifest["source_root"] = str(root)
-        manifest["event_watermark"] = explanation["event_watermark"]
-        if share_safe:
-            # Allowlist structural telemetry. Free text, paths, prompts, payloads,
-            # receipts, and SQLite are deliberately excluded, not regex-redacted.
-            safe = {
-                "event_watermark": explanation["event_watermark"],
-                "desired_state": explanation["runtime"]["desired_state"],
-                "outcome": explanation["runtime"]["outcome"],
-                "task_counts": {},
-                "attempt_counts": {},
-            }
-            for task in explanation["tasks"]:
-                safe["task_counts"][task["status"]] = safe["task_counts"].get(task["status"], 0) + 1
-            for attempt in explanation["attempts"]:
-                safe["attempt_counts"][attempt["state"]] = (
-                    safe["attempt_counts"].get(attempt["state"], 0) + 1
-                )
-            contents = {"swarm-audit/telemetry.json": (json.dumps(safe, indent=2) + "\n").encode()}
-            manifest.pop("source_root", None)
-        else:
-            contents["swarm-audit/explanation.json"] = (
-                json.dumps(explanation, indent=2) + "\n"
-            ).encode()
-        manifest["privacy_mode"] = "structural-only" if share_safe else "private-full"
-        manifest["files"] = [
-            {
-                "path": name.removeprefix("swarm-audit/"),
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "size_bytes": len(data),
-            }
-            for name, data in sorted(contents.items())
-        ]
-        contents["swarm-audit/manifest.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
-        with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, data in sorted(contents.items()):
-                archive.writestr(name, data)
-        return result

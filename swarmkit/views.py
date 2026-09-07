@@ -104,10 +104,11 @@ def forecast_text(workstream):
     return "%s (%s confidence)" % (window, confidence or "unspecified")
 
 
-def render_board(root):
+def render_board(root, reconcile=True):
     conn = connect(root)
     try:
-        reconcile_conn(conn)
+        if reconcile:
+            reconcile_conn(conn)
         snapshot = mission_snapshot(conn)
     finally:
         conn.close()

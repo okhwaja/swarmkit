@@ -4,7 +4,7 @@
 New integrations should import the owning swarmkit module directly.
 """
 
-from swarmkit.audit import audit_summary, _export_audit, verify_audit, export_audit  # noqa: F401
+from swarmkit.audit import audit_summary, verify_audit, export_audit  # noqa: F401
 from swarmkit.cases import (
     snapshot_case_payload,
     link_case_task,
