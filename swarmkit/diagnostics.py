@@ -2,6 +2,7 @@
 
 import datetime as dt
 
+from .core import consistent_read
 from .core import (
     ACTIVE_TASK_STATES,
     SwarmError,
@@ -24,6 +25,7 @@ from .policies import validate_policy_manifest
 from .storage import mission, mission_mode, open_decision_count
 
 
+@consistent_read
 def doctor(conn):
     problems = []
     now = dt.datetime.now(dt.timezone.utc)

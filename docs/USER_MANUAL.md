@@ -312,6 +312,11 @@ that stay outside Swarmkit.
 
 For a pull-based UI, render `swarmctl status` JSON or serve the two generated Markdown files from an authenticated internal endpoint.
 
+Status, health, and related entity fields are read from one database snapshot.
+Entity `list`/`show` commands do not regenerate the full mission's Markdown files;
+use `board` or `report` to refresh those files explicitly. Brief status also
+identifies pending checkout recovery before suggesting another worker run.
+
 ## Journey: deliver a report through an extension
 
 Start from the bundled example. Copy it, replace its recipient allowlist, and

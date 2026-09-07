@@ -18,6 +18,9 @@
   observation, and shared result paths are hashed once per completion check.
 - Verify copied intake payloads against their recorded hashes and sizes; omit
   changed/missing payloads with explicit `intake-export.json` explanations.
+- Keep status, health, explanation, and entity reads in consistent SQLite
+  snapshots. Targeted list/show commands no longer regenerate whole-mission
+  reports. Brief status exposes pending checkout recovery directly.
 - Schema 11 adds the review-trigger identity index and review ordering index.
   Existing review payloads/order are preserved, including legacy oversized
   batches. New triggers spill into bounded batches; semantic commits still

@@ -64,3 +64,9 @@ ruff check swarmctl.py swarmkit scripts tests examples/demo_lifecycle.py
 These are development tools, not runtime dependencies. The compatibility entry
 point intentionally re-exports imports; Ruff's unused-import exemption is scoped
 to that file. Domain modules use ordinary explicit imports without that exemption.
+
+Multi-query projections use `consistent_read` / `read_snapshot` from `core.py`.
+They establish a stable read view and release only transactions they opened.
+Keep reconciliation outside a standalone read scope: it changes canonical state
+and belongs in a write transaction. Row projection helpers used after an external
+lookup rely on their caller to scope the row lookup and linked reads together.

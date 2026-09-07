@@ -302,3 +302,19 @@ bytes, with a new intake-export.json inclusion/omission report. Failure-in-copy
 and missing-file tests retain the source and distinguish archive integrity from
 evidence completeness. Documentation impact: evidence/runtime and audit contracts;
 no migration. Prior checkpoint abad367 passed all 195 source/extracted tests.
+
+## Continued pass: consistent, targeted operator reads
+
+Multi-query projections could observe tasks before a concurrent commit and cases
+after it. Added read_snapshot/consistent_read boundaries, preserving caller-owned
+transactions, and scoped status report snapshot/doctor/run queries together.
+Entity list/show commands begin one read snapshot after any reconciliation and
+return without regenerating full boards/reports. An agent retrieving one case no
+longer scans and writes the entire mission as a hidden side effect. Brief status
+now reports pending checkout recovery instead of encouraging repeated runs.
+Tests commit a case cancellation midway through snapshot assembly, verify nested
+transaction ownership/error cleanup, compare report health against a concurrent
+mutation, and reject unrequested report rendering across fourteen read commands.
+Documentation impact: architecture/contributor read contract, operator ergonomics,
+release metadata; no schema change. Prior evidence checkpoint b9ba821 passed all
+201 source/extracted tests.

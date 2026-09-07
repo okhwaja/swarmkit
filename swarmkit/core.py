@@ -132,6 +132,30 @@ def atomic_write(function):
     return wrapped
 
 
+@contextlib.contextmanager
+def read_snapshot(conn):
+    """Keep related reads at one database version without owning a caller's transaction."""
+    if conn.in_transaction:
+        yield conn
+        return
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    finally:
+        conn.rollback()  # Release a read snapshot on success or failure.
+
+
+def consistent_read(function):
+    """Give a connection-first projection one stable read snapshot."""
+
+    @functools.wraps(function)
+    def wrapped(conn, *args, **kwargs):
+        with read_snapshot(conn):
+            return function(conn, *args, **kwargs)
+
+    return wrapped
+
+
 def utcnow():
     return (
         dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

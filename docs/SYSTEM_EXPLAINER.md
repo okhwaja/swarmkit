@@ -256,3 +256,17 @@ as `command` for a repeatable internal CLI, or use `workspace register` for a
 harness-created checkout. The default is manual registration, with no VCS
 assumption. See the [workspace adapter contract](RUNTIME_SAFETY.md#isolate-files-and-scarce-resources)
 for argv placeholders, JSON receipts, ownership, failure handling, and migration.
+
+## Consistent operator reads
+
+A status snapshot, health check, or explanation uses one SQLite read transaction.
+Other processes may commit while it is being assembled; related task, case,
+workstream, decision, and run fields still describe the same database version.
+Read helpers reuse a caller's existing transaction and never commit or roll back
+that caller's pending writes. A report gathers its snapshot, health, and failed
+runs in the same read scope.
+
+Entity `list`/`show` commands retain their reconciliation behavior where applicable,
+then read one snapshot. They do not regenerate whole-mission boards or reports as
+a side effect. Use `board` or `report` to refresh those derived files explicitly.
+This keeps an agent's targeted retrieval inexpensive and avoids unrelated writes.

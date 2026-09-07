@@ -1,5 +1,6 @@
 """Read-only projections of durable state. SQLite remains the source of truth."""
 
+from .core import consistent_read
 from .core import (
     SwarmError,
     TERMINAL_TASK_STATES,
@@ -49,6 +50,7 @@ def policy_pack_summary(conn, row):
     }
 
 
+@consistent_read
 def policy_application_dict(conn, application_id, include_definition=False):
     row = conn.execute("SELECT * FROM policy_applications WHERE id=?", (application_id,)).fetchone()
     if not row:
@@ -153,6 +155,7 @@ def manager_review_dict(row):
     return data
 
 
+@consistent_read
 def review_details(conn, review_id):
     row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
     if not row:
@@ -399,6 +402,7 @@ def workstream_dict(conn, row):
     return data
 
 
+@consistent_read
 def mission_snapshot(conn):
     m = dict(mission(conn))
     m["mode"] = mission_mode(conn)
@@ -472,6 +476,7 @@ def mission_snapshot(conn):
     }
 
 
+@consistent_read
 def explain_state(conn):
     state = runtime_state(conn)
     tasks = []

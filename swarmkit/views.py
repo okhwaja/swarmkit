@@ -1,12 +1,14 @@
 """Render operator boards and status reports from durable state."""
 
 from .coordination import reconcile_conn
+from .core import consistent_read, read_snapshot
 from .core import ACTIVE_TASK_STATES, utcnow
 from .diagnostics import doctor
 from .queries import mission_snapshot
 from .storage import connect, mission, mission_mode, runtime_state
 
 
+@consistent_read
 def brief_status(conn):
     """Summarize current work without loading every task, event, or artifact."""
     current = mission(conn)
@@ -21,6 +23,12 @@ def brief_status(conn):
     unknown_deliveries = conn.execute(
         "SELECT COUNT(*) FROM deliveries WHERE status='UNKNOWN'"
     ).fetchone()[0]
+    checkouts = dict(
+        conn.execute(
+            "SELECT w.state,COUNT(*) FROM workspace_creations w JOIN tasks t ON t.id=w.task_id "
+            "WHERE w.state='UNKNOWN' OR (w.state='CREATED' AND t.status NOT IN ('DONE','CANCELLED')) GROUP BY w.state"
+        )
+    )
     outcome = control.get("outcome")
     state = current["status"] if control["desired_state"] == "ACTIVE" else control["desired_state"]
     lines = [
@@ -45,6 +53,11 @@ def brief_status(conn):
             "Needs provider reconciliation: %s effects, %s deliveries"
             % (unknown_effects, unknown_deliveries)
         )
+    if checkouts:
+        lines.append(
+            "Checkout recovery: %s uncertain, %s awaiting attachment"
+            % (checkouts.get("UNKNOWN", 0), checkouts.get("CREATED", 0))
+        )
     if control["desired_state"] in {"CANCELLED", "ABANDONED"}:
         next_step = "Review the final report with swarmctl report."
     elif control["desired_state"] != "ACTIVE":
@@ -56,9 +69,11 @@ def brief_status(conn):
         )
     elif unknown_effects or unknown_deliveries:
         next_step = "Inspect swarmctl why and verify provider state before retrying."
+    elif checkouts:
+        next_step = "Inspect swarmctl workspace attempts --pending, reconcile the provider, then attach with workspace create."
     elif current["status"] == "DONE":
         next_step = "Read the result with swarmctl report."
-    elif counts.get("RUNNING") or counts.get("CLAIMED"):
+    elif any(counts.get(state) for state in ("RUNNING", "CLAIMED", "VERIFYING")):
         next_step = "Workers are active; swarmctl report shows their latest progress."
     elif counts.get("WAITING_EXTERNAL"):
         next_step = (
@@ -434,14 +449,15 @@ def render_status_report(root):
     conn = connect(root)
     try:
         reconcile_conn(conn)
-        snapshot = mission_snapshot(conn)
-        health = doctor(conn)
-        failed_runs = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT * FROM agent_runs WHERE exit_code IS NOT NULL AND exit_code <> 0 ORDER BY ended_at DESC LIMIT 5"
-            )
-        ]
+        with read_snapshot(conn):
+            snapshot = mission_snapshot(conn)
+            health = doctor(conn)
+            failed_runs = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM agent_runs WHERE exit_code IS NOT NULL AND exit_code <> 0 ORDER BY ended_at DESC LIMIT 5"
+                )
+            ]
     finally:
         conn.close()
     m = snapshot["mission"]

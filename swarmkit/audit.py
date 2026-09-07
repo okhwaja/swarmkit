@@ -10,6 +10,7 @@ import tempfile
 import textwrap
 import zipfile
 
+from .core import consistent_read
 from .core import PACKAGE_ROOT, VERSION, hash_file, json_load, parse_time, utcnow, SwarmError
 from .diagnostics import doctor
 from .queries import explain_state, mission_snapshot
@@ -17,6 +18,7 @@ from .storage import connect, runtime_state
 from .views import render_board
 
 
+@consistent_read
 def audit_summary(conn, snapshot=None):
     snap = snapshot if snapshot is not None else mission_snapshot(conn)
     counts = {}

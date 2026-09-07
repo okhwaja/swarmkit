@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from .core import consistent_read
 from .core import (
     ACTIVE_TASK_STATES,
     SwarmError,
@@ -114,6 +115,7 @@ def record_evidence(
     return evidence_id
 
 
+@consistent_read
 def evidence_gaps(conn, task_id):
     task = task_row(conn, task_id)
     criteria = json_load(task["acceptance_json"], [])

@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from swarmkit import workspaces, runtime
+from swarmkit import workspaces, runtime, views
 
 import swarmctl as s
 
@@ -392,6 +392,9 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
         with mock.patch.object(runtime, "dispatch", return_value={"exit_code": 0}) as dispatch:
             result = s.run_loop(self.root, 2)
         self.assertEqual(result["state"], "WAITING_FOR_WORKSPACE")
+        brief = views.brief_status(self.conn)
+        self.assertIn("Checkout recovery: 1 uncertain", brief)
+        self.assertIn("workspace attempts --pending", brief)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0], 0)
         self.assertTrue(all(call.args[1] == "manager" for call in dispatch.call_args_list))
 

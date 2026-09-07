@@ -12,6 +12,9 @@ behavior. `docs/PRODUCT_ROADMAP.md` is direction, not a statement of shipped beh
 - Acquire a write transaction before reading state used to authorize a mutation.
   Keep state changes and their audit event in the same transaction. Watch for
   helpers that commit: they cannot be used inside a larger atomic plan casually.
+- Assemble multi-query operator views in one read snapshot. Preserve a caller's
+  existing transaction; reconcile canonical state before opening a standalone
+  read scope. Entity retrieval should not regenerate unrelated reports.
 - A task attempt has a unique generation and fresh agent identity. Stale owners
   may not checkpoint, publish evidence, start effects, or complete work.
 - Never infer an external action failed because a harness stopped. An uncertain

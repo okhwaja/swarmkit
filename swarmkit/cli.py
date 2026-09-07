@@ -995,6 +995,7 @@ def main(argv=None):
                     )
                 elif args.case_command == "list":
                     reconcile_conn(conn)
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     if args.status:
                         rows = conn.execute(
                             "SELECT * FROM cases WHERE status=? ORDER BY priority DESC, created_at",
@@ -1005,9 +1006,12 @@ def main(argv=None):
                             "SELECT * FROM cases ORDER BY priority DESC, created_at"
                         )
                     print_json([case_dict(conn, row) for row in rows])
+                    return 0
                 elif args.case_command == "show":
                     reconcile_conn(conn)
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(case_dict(conn, case_row(conn, args.case_id)))
+                    return 0
                 elif args.case_command == "apply-policy":
                     print_json(
                         apply_policy_to_case(
@@ -1076,19 +1080,23 @@ def main(argv=None):
                 if args.policy_command == "install":
                     print_json(install_policy(conn, args.source, args.actor, args.force))
                 elif args.policy_command == "list":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         [
                             policy_pack_summary(conn, row)
                             for row in conn.execute("SELECT * FROM policy_packs ORDER BY id")
                         ]
                     )
+                    return 0
                 elif args.policy_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     row = conn.execute(
                         "SELECT * FROM policy_packs WHERE id=?", (args.policy_id,)
                     ).fetchone()
                     if not row:
                         raise SwarmError("Unknown installed policy: %s" % args.policy_id)
                     print_json(policy_pack_dict(conn, row))
+                    return 0
                 elif args.policy_command == "apply":
                     print_json(
                         apply_policy(
@@ -1102,6 +1110,7 @@ def main(argv=None):
                         )
                     )
                 elif args.policy_command == "applications":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         [
                             policy_application_dict(conn, row["id"])
@@ -1110,10 +1119,13 @@ def main(argv=None):
                             )
                         ]
                     )
+                    return 0
                 elif args.policy_command == "application":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         policy_application_dict(conn, args.application_id, include_definition=True)
                     )
+                    return 0
             finally:
                 conn.close()
             if args.policy_command in {"install", "apply"}:
@@ -1141,19 +1153,23 @@ def main(argv=None):
                 if args.extension_command == "install":
                     print_json(install_extension(conn, args.source, args.actor, args.force))
                 elif args.extension_command == "list":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         [
                             extension_summary(row)
                             for row in conn.execute("SELECT * FROM extensions ORDER BY id")
                         ]
                     )
+                    return 0
                 elif args.extension_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     row = conn.execute(
                         "SELECT * FROM extensions WHERE id=?", (args.extension_id,)
                     ).fetchone()
                     if not row:
                         raise SwarmError("Unknown installed extension: %s" % args.extension_id)
                     print_json(extension_dict(row))
+                    return 0
             finally:
                 conn.close()
             if args.extension_command == "install":
@@ -1187,6 +1203,7 @@ def main(argv=None):
                         )
                     )
                 elif args.delivery_command == "list":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     reconcile_deliveries(conn)
                     if args.status:
                         rows = conn.execute(
@@ -1196,7 +1213,9 @@ def main(argv=None):
                     else:
                         rows = conn.execute("SELECT * FROM deliveries ORDER BY created_at")
                     print_json([delivery_dict(conn, row) for row in rows])
+                    return 0
                 elif args.delivery_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     reconcile_deliveries(conn)
                     row = conn.execute(
                         "SELECT * FROM deliveries WHERE id=?", (args.delivery_id,)
@@ -1204,6 +1223,7 @@ def main(argv=None):
                     if not row:
                         raise SwarmError("Unknown delivery: %s" % args.delivery_id)
                     print_json(delivery_dict(conn, row))
+                    return 0
                 elif args.delivery_command == "claim":
                     print_json(
                         claim_delivery(conn, args.delivery_id, args.agent, args.lease_seconds)
@@ -1262,14 +1282,18 @@ def main(argv=None):
                         }
                     )
                 elif args.workstream_command == "list":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         [
                             workstream_dict(conn, row)
                             for row in conn.execute("SELECT * FROM workstreams ORDER BY created_at")
                         ]
                     )
+                    return 0
                 elif args.workstream_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(workstream_dict(conn, workstream_row(conn, args.workstream_id)))
+                    return 0
             finally:
                 conn.close()
             render_board(root)
@@ -1353,6 +1377,7 @@ def main(argv=None):
                     )
                 elif args.task_command == "list":
                     reconcile_conn(conn)
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         [
                             task_dict(conn, r)
@@ -1361,9 +1386,12 @@ def main(argv=None):
                             )
                         ]
                     )
+                    return 0
                 elif args.task_command == "show":
                     reconcile_conn(conn)
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(task_dict(conn, task_row(conn, args.task_id)))
+                    return 0
             finally:
                 conn.close()
             render_board(root)
@@ -1385,6 +1413,7 @@ def main(argv=None):
                     )
                     print_json(finding_dict(conn, finding_row(conn, finding_id)))
                 elif args.finding_command == "list":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     clauses = []
                     values = []
                     if args.status:
@@ -1399,8 +1428,11 @@ def main(argv=None):
                         values,
                     )
                     print_json([finding_dict(conn, row) for row in rows])
+                    return 0
                 elif args.finding_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(finding_dict(conn, finding_row(conn, args.finding_id)))
+                    return 0
                 elif args.finding_command == "disposition":
                     print_json(
                         dispose_finding(
@@ -1424,6 +1456,7 @@ def main(argv=None):
             try:
                 reconcile_conn(conn)
                 if args.wait_command == "list":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     clauses = []
                     values = []
                     if args.status:
@@ -1435,8 +1468,11 @@ def main(argv=None):
                         values,
                     )
                     print_json([external_wait_dict(conn, row) for row in rows])
+                    return 0
                 elif args.wait_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(external_wait_dict(conn, external_wait_row(conn, args.wait_id)))
+                    return 0
                 elif args.wait_command == "signal":
                     print_json(
                         signal_external_wait(
@@ -1459,6 +1495,7 @@ def main(argv=None):
             try:
                 if args.decision_command == "list":
                     reconcile_conn(conn)
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(
                         [
                             decision_dict(conn, r)
@@ -1467,8 +1504,11 @@ def main(argv=None):
                             )
                         ]
                     )
+                    return 0
                 elif args.decision_command == "show":
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     print_json(decision_dict(conn, decision_row(conn, args.decision_id)))
+                    return 0
                 elif args.decision_command == "resolve":
                     version = resolve_decision(
                         conn,
@@ -1527,6 +1567,7 @@ def main(argv=None):
             try:
                 if args.fact_command == "list":
                     reconcile_conn(conn)
+                    conn.execute("BEGIN")  # One snapshot for the entity and its linked state.
                     if args.include_expired:
                         rows = conn.execute(
                             "SELECT * FROM facts ORDER BY subject, observed_at DESC"
@@ -1536,6 +1577,7 @@ def main(argv=None):
                             "SELECT * FROM facts WHERE status='CURRENT' ORDER BY subject"
                         )
                     print_json([dict(row) for row in rows])
+                    return 0
                 else:
                     fact_id = record_fact(
                         conn,
