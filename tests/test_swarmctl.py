@@ -10,6 +10,8 @@ import threading
 import time
 import unittest
 from unittest import mock
+
+from swarmkit import coordination, runtime, schema, workspaces
 import zipfile
 
 
@@ -859,7 +861,7 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn.close()
             return {"run_id": "fake-%s" % agent, "exit_code": 0}
 
-        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+        with mock.patch.object(runtime, "dispatch", side_effect=fake_dispatch):
             result = swarmctl.run_loop(self.root, 10)
         self.assertEqual(result["state"], "DONE")
         self.assertTrue(follow_started.is_set())
@@ -905,7 +907,7 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn.close()
             return {"run_id": "fake-%s" % agent, "exit_code": 0}
 
-        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+        with mock.patch.object(runtime, "dispatch", side_effect=fake_dispatch):
             result = swarmctl.run_loop(self.root, 8)
         self.assertEqual(result["state"], "DONE")
         self.assertEqual(observed_active_at_triage, [True])
@@ -1116,7 +1118,7 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn.close()
             return {"run_id": "fake-%s" % agent, "exit_code": 0}
 
-        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+        with mock.patch.object(runtime, "dispatch", side_effect=fake_dispatch):
             result = swarmctl.run_loop(self.root, 6)
         self.assertEqual(result["state"], "DONE")
         self.assertEqual(len(manager_calls), 2)
@@ -1197,7 +1199,7 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn.close()
             return {"run_id": "fake-%s" % agent, "exit_code": 0}
 
-        with mock.patch.object(swarmctl, "dispatch", side_effect=fake_dispatch):
+        with mock.patch.object(runtime, "dispatch", side_effect=fake_dispatch):
             result = swarmctl.run_loop(self.root, 4)
         self.assertEqual(result["state"], "WAITING_EXTERNAL")
         conn = self.connection()

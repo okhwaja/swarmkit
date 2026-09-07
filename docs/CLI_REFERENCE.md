@@ -9,7 +9,7 @@ usage: swarmctl [-h] [--root ROOT] [--version]
                 {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
-Durable, harness-neutral orchestration for ambiguous multi-agent work.
+Argument parsing and command routing. Domain rules live in the owning modules.
 
 positional arguments:
   {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}

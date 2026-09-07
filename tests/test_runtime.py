@@ -12,6 +12,8 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+
+from swarmkit import coordination, runtime, schema, workspaces
 import zipfile
 
 import swarmctl as s
@@ -220,7 +222,7 @@ class RuntimeTest(unittest.TestCase):
         self.conn.execute('DROP TABLE attempts')
         self.conn.execute("UPDATE meta SET value='6' WHERE key='schema_version'"); self.conn.commit()
         original = s.RUNTIME_SCHEMA
-        with mock.patch.object(s, 'RUNTIME_SCHEMA', original + ';INVALID SQL;'):
+        with mock.patch.object(schema, 'RUNTIME_SCHEMA', original + ';INVALID SQL;'):
             with self.assertRaises(sqlite3.Error):
                 s.ensure_schema(self.conn)
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name='attempts'").fetchone())
@@ -439,7 +441,7 @@ class RuntimeTest(unittest.TestCase):
             finally:
                 conn.close()
             return {'exit_code':0}
-        with mock.patch.object(s, 'dispatch', side_effect=dispatch):
+        with mock.patch.object(runtime, 'dispatch', side_effect=dispatch):
             result = s.run_loop(self.root, 5)
         self.assertEqual(s.task_row(self.conn, eligible)['status'], 'DONE')
         self.assertEqual(result['state'], 'ESCALATED')

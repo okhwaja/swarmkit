@@ -1,5 +1,7 @@
 # System explainer
 
+For implementation ownership and transaction boundaries, see the [code map](CODE_MAP.md).
+
 ## What problem does this solve?
 
 Suppose you tell a team of agents, “Our data pipeline is broken. Find out why and fix it.” You do not yet know whether the problem is in the source, queue, credentials, application code, destination, or monitoring. That means you cannot provide a detailed work plan.

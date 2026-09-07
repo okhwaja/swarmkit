@@ -12,10 +12,10 @@ EXCLUDED_PARTS = {"__pycache__", "dist", ".pytest_cache"}
 
 
 def package_version():
-    source = (PACKAGE_ROOT / "swarmctl.py").read_text(encoding="utf-8")
+    source = (PACKAGE_ROOT / "swarmkit" / "core.py").read_text(encoding="utf-8")
     match = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
     if not match:
-        raise RuntimeError("Could not read VERSION from swarmctl.py")
+        raise RuntimeError("Could not read VERSION from swarmkit/core.py")
     return match.group(1)
 
 

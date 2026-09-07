@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from swarmkit import coordination, runtime, schema, workspaces
+
 import swarmctl as s
 
 
@@ -46,7 +48,7 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
         self.configure({'provider':'command','command':[sys.executable, str(script), '{repository}', '{path}', '{base}', '{task_id}']})
 
     def test_no_implicit_git_and_manual_registration_dispatches_in_checkout(self):
-        with mock.patch.object(s.subprocess, 'Popen') as process, mock.patch.object(s.subprocess, 'run') as run:
+        with mock.patch.object(workspaces.subprocess, 'Popen') as process, mock.patch.object(workspaces.subprocess, 'run') as run:
             with self.assertRaisesRegex(s.SwarmError, 'No workspace creation provider'):
                 s.create_workspace(self.root, self.conn, self.task, self.source, 'trunk()')
             process.assert_not_called(); run.assert_not_called()
@@ -65,14 +67,14 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
     def test_command_receipt_and_opaque_revision_are_preserved_without_git(self):
         self.adapter()
         expression = 'trunk() & ancestors(@) $(touch never)'
-        with mock.patch.object(s.subprocess, 'run', side_effect=AssertionError('Git must not be invoked')):
+        with mock.patch.object(workspaces.subprocess, 'run', side_effect=AssertionError('Git must not be invoked')):
             row = s.create_workspace(self.root, self.conn, self.task, self.source, expression)
         self.assertEqual(row['base_revision'], 'internal-revision:42')
         self.assertEqual(row['provider'], 'command')
         self.assertEqual(row['requested_base'], expression)
         recorded = json.loads((Path(row['path']) / 'request.json').read_text())
         self.assertEqual(recorded, {'source':str(self.source), 'base':expression, 'task':self.task})
-        with mock.patch.object(s.subprocess, 'Popen', side_effect=AssertionError('Retry must not create again')):
+        with mock.patch.object(workspaces.subprocess, 'Popen', side_effect=AssertionError('Retry must not create again')):
             self.assertEqual(s.create_workspace(self.root, self.conn, self.task, self.source, expression), row)
         with self.assertRaisesRegex(s.SwarmError, 'different base'):
             s.create_workspace(self.root, self.conn, self.task, self.source, 'other()')
@@ -86,7 +88,7 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
                     s.create_workspace(self.root, self.conn, self.task, self.source, 'opaque')
                 self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM workspaces').fetchone()[0], 0)
         self.configure({'provider':'command','command':['tool','{unknown}']})
-        with mock.patch.object(s.subprocess, 'Popen') as process:
+        with mock.patch.object(workspaces.subprocess, 'Popen') as process:
             with self.assertRaisesRegex(s.SwarmError, 'placeholder'):
                 s.create_workspace(self.root, self.conn, self.task, self.source, 'opaque')
             process.assert_not_called()
