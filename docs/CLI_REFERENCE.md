@@ -6,13 +6,13 @@ Generated from `swarmctl.py` for version `0.7.1`. Do not edit by hand; run `pyth
 
 ```text
 usage: swarmctl [-h] [--root ROOT] [--version]
-                {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+                {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
                 ...
 
 Argument parsing and command routing. Domain rules live in the owning modules.
 
 positional arguments:
-  {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
+  {pause,drain,resume,cancel,abandon,recover,why,configure,amend,effect,resource,evidence,review-commit,workspace,serve,audit-verify,init,demo,status,board,report,reconcile,doctor,setup-check,ask,policy,case,extension,delivery,workstream,task,decision,finding,wait,fact,inbox,prompt,dispatch,run,mission,export}
     pause               Set durable mission lifecycle state
     drain               Set durable mission lifecycle state
     resume              Set durable mission lifecycle state
@@ -37,6 +37,7 @@ positional arguments:
                         scheduler runs
     audit-verify        Verify every manifest file in an audit ZIP
     init                Create a mission workspace
+    demo                Run a synthetic example without configuring a harness
     status              Show the current canonical snapshot
     board               Regenerate the Markdown board
     report              Generate the executive workstream and action report
@@ -292,10 +293,11 @@ optional arguments:
 
 ```text
 usage: swarmctl decision [-h]
-                         {list,resolve,revise,require-choice,link,ack} ...
+                         {list,show,resolve,revise,require-choice,link,ack}
+                         ...
 
 positional arguments:
-  {list,resolve,revise,require-choice,link,ack}
+  {list,show,resolve,revise,require-choice,link,ack}
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -383,6 +385,18 @@ optional arguments:
   --answer ANSWER
   --choice CHOICE  Exact machine-readable option from the decision
   --actor ACTOR
+```
+
+## `swarmctl decision show`
+
+```text
+usage: swarmctl decision show [-h] decision_id
+
+positional arguments:
+  decision_id
+
+optional arguments:
+  -h, --help   show this help message and exit
 ```
 
 ## `swarmctl delivery`
@@ -567,6 +581,16 @@ positional arguments:
 
 optional arguments:
   -h, --help   show this help message and exit
+```
+
+## `swarmctl demo`
+
+```text
+usage: swarmctl demo [-h] [--output OUTPUT]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --output OUTPUT  Audit ZIP (default: ROOT/../audit.zip)
 ```
 
 ## `swarmctl dispatch`
@@ -1320,10 +1344,11 @@ optional arguments:
 ## `swarmctl status`
 
 ```text
-usage: swarmctl status [-h]
+usage: swarmctl status [-h] [--brief]
 
 optional arguments:
   -h, --help  show this help message and exit
+  --brief     Show a short human-readable summary
 ```
 
 ## `swarmctl task`

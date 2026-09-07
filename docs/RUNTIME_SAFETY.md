@@ -381,3 +381,12 @@ evidence is rejected. Reports and scheduler results include the recorded outcome
 
 Cancellation withdraws open decisions only when none of their affected tasks remain
 active. It never answers the question on the human's behalf.
+
+## Initialization and local configuration
+
+`init` takes a process lock and constructs the mission database in a private
+staging directory. Schema, metadata, and the creation event commit together. The
+closed database is published atomically; a failed initializer leaves no partial
+canonical database that would prevent a retry. Existing `runner.json` is preserved.
+The `.init.lock` file is an ownership mechanism and must not be deleted to bypass
+a live initializer. Failed/crashed staging directories do not become missions.

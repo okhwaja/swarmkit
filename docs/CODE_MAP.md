@@ -10,6 +10,7 @@ Python dependencies. Start with the module that owns the behavior you want to ch
 | Persistence | `swarmkit/schema.py`, `swarmkit/storage.py`, `swarmkit/core.py` | Schema history, connections, state guards, transactions, IDs, and time. |
 | Work | `swarmkit/tasks.py`, `swarmkit/policies.py` | Missions, workstreams, task attempts, planning limits, and reusable workflows. |
 | Coordination | `swarmkit/coordination.py`, `swarmkit/decisions.py`, `swarmkit/cases.py` | Reconciliation, manager reviews, findings, external waits, decisions, and service intake. |
+| Demonstration | `swarmkit/demo.py`, `examples/demo_lifecycle.py` | A synthetic end-to-end recovery without a harness. |
 | Execution | `swarmkit/runtime.py`, `swarmkit/config.py`, `swarmkit/setup.py` | Runner configuration, setup checks, subprocess ownership, recovery, and scheduling. |
 | Workspaces | `swarmkit/workspaces.py` | Manual, configured-command, and explicitly selected Git checkout providers. |
 | Verification and actions | `swarmkit/evidence.py`, `swarmkit/effects.py`, `swarmkit/delivery.py` | Evidence contracts, external-action receipts, resource leases, and delivery adapters. |

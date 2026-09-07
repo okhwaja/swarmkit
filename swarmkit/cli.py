@@ -1,6 +1,7 @@
 """Argument parsing and command routing. Domain rules live in the owning modules."""
 
 import argparse
+from pathlib import Path
 import sqlite3
 import sys
 
@@ -52,6 +53,7 @@ from .delivery import (
     reconcile_delivery,
     retry_delivery,
 )
+from .demo import run_demo
 from .diagnostics import doctor
 from .effects import acquire_resource, prepare_effect, release_resource, transition_effect
 from .evidence import evidence_gaps, record_evidence, set_contract
@@ -80,6 +82,7 @@ from .setup import initialize, setup_check
 from .storage import (
     add_event,
     case_row,
+    decision_row,
     connect,
     external_wait_row,
     finding_row,
@@ -104,7 +107,7 @@ from .tasks import (
     set_mission_phase,
     update_workstream,
 )
-from .views import render_board, render_status_report
+from .views import brief_status, render_board, render_status_report
 from .workspaces import create_workspace, register_workspace
 
 
@@ -375,7 +378,10 @@ def parser():
         help="FINITE completes once; SERVICE remains available for durable cases",
     )
 
-    sub.add_parser("status", help="Show the current canonical snapshot")
+    demo = sub.add_parser("demo", help="Run a synthetic example without configuring a harness")
+    demo.add_argument("--output", help="Audit ZIP (default: ROOT/../audit.zip)")
+    status = sub.add_parser("status", help="Show the current canonical snapshot")
+    status.add_argument("--brief", action="store_true", help="Show a short human-readable summary")
     sub.add_parser("board", help="Regenerate the Markdown board")
     sub.add_parser("report", help="Generate the executive workstream and action report")
     sub.add_parser("reconcile", help="Apply deterministic readiness and lease transitions")
@@ -615,6 +621,8 @@ def parser():
     decision = sub.add_parser("decision", help="Manage durable decisions")
     decision_sub = decision.add_subparsers(dest="decision_command", required=True)
     decision_sub.add_parser("list")
+    decision_show = decision_sub.add_parser("show")
+    decision_show.add_argument("decision_id")
     resolve = decision_sub.add_parser("resolve")
     resolve.add_argument("decision_id")
     resolve.add_argument("--answer", required=True)
@@ -762,6 +770,21 @@ def main(argv=None):
     args = parser().parse_args(argv)
     root = root_path(args.root)
     try:
+        if args.command == "demo":
+            root = Path(args.root or "swarm-demo/.swarm").expanduser().resolve()
+            output = (
+                Path(args.output).expanduser().resolve()
+                if args.output
+                else root.parent / "audit.zip"
+            )
+            run_demo(root, output)
+            print(
+                "Synthetic pipeline recovery completed. No agent or external service was invoked."
+            )
+            print("Report: %s" % (root / "views" / "STATUS.md"))
+            print("Board:  %s" % (root / "views" / "BOARD.md"))
+            print("Audit:  %s" % output)
+            return 0
         if args.command == "audit-verify":
             result = verify_audit(args.archive)
             print_json(result)
@@ -801,7 +824,10 @@ def main(argv=None):
             conn = connect(root)
             try:
                 reconcile_conn(conn)
-                print_json(mission_snapshot(conn))
+                if args.brief:
+                    print(brief_status(conn))
+                else:
+                    print_json(mission_snapshot(conn))
             finally:
                 conn.close()
             return 0
@@ -1375,6 +1401,8 @@ def main(argv=None):
                             )
                         ]
                     )
+                elif args.decision_command == "show":
+                    print_json(decision_dict(conn, decision_row(conn, args.decision_id)))
                 elif args.decision_command == "resolve":
                     version = resolve_decision(
                         conn,

@@ -4,6 +4,23 @@ This manual is for the person who assigns a mission, follows its progress, answe
 
 In the commands below, replace `/work/my-run/.swarm` with your mission's state directory. Commands return IDs such as `C-...`, `WS-...`, `T-...`, and `D-...`; copy those IDs into later commands.
 
+## First look
+
+Run `python3 swarmctl.py demo` from the package directory for a complete synthetic
+pipeline-repair example. It creates a new `swarm-demo/` directory, report, and audit
+ZIP, without invoking an agent or provider. It does not use `SWARM_ROOT`; an explicit
+`--root` selects a different new demo mission. Existing demo state/output is preserved.
+
+For any mission, `swarmctl --root /work/my-run/.swarm status --brief` gives the
+objective, lifecycle state, task counts, outstanding questions, and a next action.
+Use `decision show D-ID` to inspect one question. The existing `status` command
+continues to return the full JSON snapshot.
+
+Initialization publishes a complete database under a process lock. If schema or
+initial state creation fails, you can retry `init`; no partial canonical database
+is left behind. Existing `runner.json` settings are preserved. A completed mission
+cannot be overwritten by another `init`.
+
 ## Common journeys
 
 | You want to… | What you do | What happens next |
@@ -21,7 +38,7 @@ In the commands below, replace `/work/my-run/.swarm` with your mission's state d
 | Inspect a standing agent's queue | Run `case list`, `report`, or open the generated board | You see active cases and those waiting for human or external input |
 | Get the executive view | Run `swarmctl report` and open `views/STATUS.md` | You see major workstreams, outcomes, progress, forecast ranges, confidence, and needs from you |
 | Receive the executive view by email | Install an allowlisted delivery extension, enqueue the report, and dispatch the returned job | Swarmkit snapshots the report and tracks the send until the provider returns a receipt |
-| Inspect delivery problems | Run `swarmctl delivery list` or open the report/board | You see pending, claimed, failed, sent, and cancelled jobs with attempt history |
+| Inspect delivery problems | Run `swarmctl delivery list` or open the report/board | You see pending, claimed, failed, unknown, sent, and cancelled jobs with attempt history |
 | Inspect all execution detail | Run `swarmctl board` and open `views/BOARD.md` | You see every task, workstream relationship, decision, fact, and recent event |
 | Inspect one workstream | Run `swarmctl workstream show WS-ID` | You get its narrative, forecast, tasks, and open decisions as JSON |
 | Apply an organization-specific workflow | Install a reviewed policy pack, then run `swarmctl policy apply` | Swarmkit creates and enforces the pack's ordered task graph and guidance |

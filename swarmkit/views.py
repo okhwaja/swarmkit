@@ -4,7 +4,76 @@ from .coordination import reconcile_conn
 from .core import ACTIVE_TASK_STATES, utcnow
 from .diagnostics import doctor
 from .queries import mission_snapshot
-from .storage import connect
+from .storage import connect, mission, mission_mode, runtime_state
+
+
+def brief_status(conn):
+    """Summarize current work without loading every task, event, or artifact."""
+    current = mission(conn)
+    control = runtime_state(conn)
+    counts = dict(conn.execute("SELECT status,COUNT(*) FROM tasks GROUP BY status"))
+    decisions = conn.execute(
+        "SELECT id,question FROM decisions WHERE status='OPEN' ORDER BY created_at LIMIT 6"
+    ).fetchall()
+    unknown_effects = conn.execute("SELECT COUNT(*) FROM effects WHERE state='UNKNOWN'").fetchone()[
+        0
+    ]
+    unknown_deliveries = conn.execute(
+        "SELECT COUNT(*) FROM deliveries WHERE status='UNKNOWN'"
+    ).fetchone()[0]
+    outcome = control.get("outcome")
+    state = current["status"] if control["desired_state"] == "ACTIVE" else control["desired_state"]
+    lines = [
+        current["objective"][:500],
+        "%s · %s%s" % (mission_mode(conn), state, " · " + outcome if outcome else ""),
+        "Tasks: "
+        + (
+            ", ".join("%s %s" % (count, status.lower()) for status, count in sorted(counts.items()))
+            or "none yet"
+        ),
+    ]
+    if decisions:
+        lines.append("Needs an answer:")
+        lines.extend(
+            "  %s: %s" % (row["id"], row["question"].replace("\n", " ")[:180])
+            for row in decisions[:5]
+        )
+        if len(decisions) > 5:
+            lines.append("  More questions: swarmctl decision list")
+    if unknown_effects or unknown_deliveries:
+        lines.append(
+            "Needs provider reconciliation: %s effects, %s deliveries"
+            % (unknown_effects, unknown_deliveries)
+        )
+    if control["desired_state"] in {"CANCELLED", "ABANDONED"}:
+        next_step = "Review the final report with swarmctl report."
+    elif control["desired_state"] != "ACTIVE":
+        next_step = "Inspect swarmctl why before deciding whether to resume."
+    elif decisions:
+        next_step = (
+            "Read swarmctl decision show %s, then record an answer with decision resolve."
+            % decisions[0]["id"]
+        )
+    elif unknown_effects or unknown_deliveries:
+        next_step = "Inspect swarmctl why and verify provider state before retrying."
+    elif current["status"] == "DONE":
+        next_step = "Read the result with swarmctl report."
+    elif counts.get("RUNNING") or counts.get("CLAIMED"):
+        next_step = "Workers are active; swarmctl report shows their latest progress."
+    elif counts.get("WAITING_EXTERNAL"):
+        next_step = (
+            "Inspect swarmctl wait list; the controller wakes work when a signal or check is due."
+        )
+    elif counts.get("READY"):
+        next_step = "Run swarmctl run to continue ready work with your configured harness."
+    elif not counts and mission_mode(conn) == "SERVICE":
+        next_step = (
+            "The service is idle. Submit a case through your ingress adapter or swarmctl case open."
+        )
+    else:
+        next_step = "Run swarmctl run for the manager to plan or review work."
+    lines.append("Next: " + next_step)
+    return "\n".join(lines)
 
 
 def md_escape(value):

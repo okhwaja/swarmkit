@@ -105,3 +105,14 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
 - Documentation checks now inspect shipped Markdown and generated CLI/contracts,
   without forcing an encyclopedic list of arbitrary phrases into the README.
   This prepares the shorter first-use documentation pass.
+
+- Saved local commit 409816f for packaging; 120 source/package tests passed.
+- Reproduced five initialization bugs, then added private database staging, atomic
+  schema/mission creation, initialization locking, objective validation, and runner
+  configuration preservation. Six initialization regressions now pass.
+- Added an isolated harness-free demo, bounded human-readable status, and decision
+  lookup. Preserved JSON status and the existing demo script. Three first-use tests
+  cover active-environment isolation, repeated demo refusal, bounded status, and
+  visible human decisions/pause.
+- Rewrote README around fit, a runnable demo, three real-work steps, core concepts,
+  VCS-neutral checkouts, and focused documentation links.

@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import tempfile
 
 from .core import (
     PACKAGE_ROOT,
@@ -15,6 +16,8 @@ from .core import (
     db_path,
     json_dump,
     make_id,
+    process_lock,
+    transaction,
     utcnow,
 )
 from .delivery import read_extension_source
@@ -37,40 +40,69 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
     mode = mode.upper()
     if mode not in VALID_MISSION_MODES:
         raise SwarmError("Invalid mission mode: %s" % mode)
-    if db_path(root).exists():
-        raise SwarmError("Workspace already exists at %s" % root)
+    if not objective.strip():
+        raise SwarmError("Mission objective must not be empty")
     root.mkdir(parents=True, exist_ok=True)
-    for name in ("prompts", "runs", "views", "outbox", "intake"):
-        (root / name).mkdir(exist_ok=True)
-    conn = connect(root, require=False)
-    try:
-        conn.executescript(SCHEMA)
-        execute_schema(conn, RUNTIME_SCHEMA)
-        migrate_workspace_schema(conn)
-        migrate_reliability_schema(conn)
-        now = utcnow()
-        mission_id = make_id("M")
-        conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
-        conn.execute("INSERT INTO meta(key, value) VALUES('swarmctl_version', ?)", (VERSION,))
-        conn.execute("INSERT INTO meta(key, value) VALUES('mission_mode', ?)", (mode,))
-        conn.execute(
-            "INSERT INTO missions(id, objective, success_json, constraints_json, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-            (mission_id, objective, json_dump(success), json_dump(constraints), now, now),
-        )
-        add_event(
-            conn,
-            mission_id,
-            "mission",
-            mission_id,
-            "MISSION_CREATED",
-            "human",
-            {"objective": objective, "success": success, "constraints": constraints},
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    with process_lock(root / ".init.lock"):
+        if db_path(root).exists():
+            raise SwarmError("Workspace already exists at %s" % root)
+        for name in ("prompts", "runs", "views", "outbox", "intake"):
+            (root / name).mkdir(exist_ok=True)
+        # Publish only a complete, closed database. A crash or failed transaction
+        # cannot leave a half-initialized mission at the canonical path.
+        with tempfile.TemporaryDirectory(prefix=".initialize-", dir=str(root)) as staging:
+            staging_root = Path(staging)
+            conn = connect(staging_root, require=False)
+            try:
+                with transaction(conn):
+                    execute_schema(conn, SCHEMA)
+                    execute_schema(conn, RUNTIME_SCHEMA)
+                    migrate_workspace_schema(conn)
+                    migrate_reliability_schema(conn)
+                    now = utcnow()
+                    mission_id = make_id("M")
+                    conn.execute(
+                        "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
+                        (SCHEMA_VERSION,),
+                    )
+                    conn.execute(
+                        "INSERT INTO meta(key, value) VALUES('swarmctl_version', ?)", (VERSION,)
+                    )
+                    conn.execute("INSERT INTO meta(key, value) VALUES('mission_mode', ?)", (mode,))
+                    conn.execute(
+                        "INSERT INTO missions(id, objective, success_json, constraints_json, created_at, updated_at) VALUES(?,?,?,?,?,?)",
+                        (
+                            mission_id,
+                            objective,
+                            json_dump(success),
+                            json_dump(constraints),
+                            now,
+                            now,
+                        ),
+                    )
+                    add_event(
+                        conn,
+                        mission_id,
+                        "mission",
+                        mission_id,
+                        "MISSION_CREATED",
+                        "human",
+                        {"objective": objective, "success": success, "constraints": constraints},
+                    )
+            finally:
+                conn.close()
+            config_path = root / "runner.json"
+            if not config_path.exists():
+                with config_path.open("x", encoding="utf-8") as handle:
+                    handle.write(json.dumps(default_runner(root), indent=2) + "\n")
+            os.replace(str(db_path(staging_root)), str(db_path(root)))
+    render_board(root)
+    return mission_id
 
-    runner = {
+
+def default_runner(root):
+    """A harness-neutral starting point; checkout creation is always explicit."""
+    return {
         "command": [],
         "working_directory": str(root.parent),
         "workspace": {"provider": "manual"},
@@ -87,9 +119,6 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
         },
         "notes": "Set command to an argv array accepted by your harness. Available placeholders: {prompt_file}, {role}, {task_id}, {agent_id}, {root}, {workdir}, {model}.",
     }
-    (root / "runner.json").write_text(json.dumps(runner, indent=2) + "\n", encoding="utf-8")
-    render_board(root)
-    return mission_id
 
 
 def setup_check(root):
