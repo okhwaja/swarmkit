@@ -402,3 +402,14 @@ No remote push, PR, merge, provider action, or OS service installation occurred.
   bin/swarmctl status --brief, and audit-verify successfully outside the source tree.
 - Documentation impact: audit/privacy contract, omission reports, release metadata
   and roadmap coverage. No source checkouts/providers were changed by the smoke run.
+
+## Continued-pass report checkpoint
+
+- Extended the full report to 23 change areas (about 5,800 words), retaining the
+  background, implementation, tests, limits, and full local commit navigation.
+- Final 0.11.2 medians: worker/manager context 2.089/2.139 ms at 25k events;
+  inbox50 0.822 ms; 1k-case reconciliation 10.596 ms; 1k-review burst 0.252 s;
+  full health 28.995 ms. No relative import cycles across 25 package modules.
+- All report links resolve. Distribution is built, source checks pass, schema8
+  migration and actual packaged CLI smoke pass. No push, remote merge, PR, provider
+  action, or installed OS service was performed. Owner questions remain in backlog.

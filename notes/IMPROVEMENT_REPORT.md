@@ -1,19 +1,19 @@
-# Swarmkit 0.10.0 — local improvement report
+# Swarmkit 0.11.2 — local improvement report
 
 The codebase is now on local branch **`codex/readable-reliable-swarmkit`**, with a
-verified 0.10.0 release candidate and schema 11. All changes are committed locally.
+verified 0.11.2 release candidate and schema 12. All changes are committed locally.
 **Nothing was pushed, published, or merged remotely.**
 
 The starting point was commit `9587139`: Swarmkit 0.7.1, schema 8, 71 tests, and a
 6,839-line file containing almost the entire engine. That version already had
 many roadmap foundations. This pass concentrated on making those foundations
 reliable, understandable, efficient, and usable through the expected journeys.
-The result has **206 passing tests**, a much shorter introduction, explicit module
+The result has **237 passing tests**, a much shorter introduction, explicit module
 ownership, and substantially lower history, active-service, and review-burst overhead.
-This report includes the continued pass requested after the initial 0.8.0 handoff;
-the detailed work log records each tested checkpoint.
+This report includes both continued passes requested after the 0.8.0 and 0.10.0
+handoffs; the detailed work log records each tested checkpoint.
 
-The distributable is [swarmkit-0.10.0.zip](/Users/osmankhwaja/Documents/swarmkit/dist/swarmkit-0.10.0.zip).
+The distributable is [swarmkit-0.11.2.zip](/Users/osmankhwaja/Documents/swarmkit/dist/swarmkit-0.11.2.zip).
 Start with the [README](/Users/osmankhwaja/Documents/swarmkit/README.md), the
 [code map](/Users/osmankhwaja/Documents/swarmkit/docs/CODE_MAP.md), or the
 [updated backlog](/Users/osmankhwaja/Documents/swarmkit/docs/ROADMAP_BACKLOG.md).
@@ -448,10 +448,162 @@ that every field still describes the earlier state. Other tests cover nested
 transaction ownership, error cleanup, report/health consistency, and absence of
 unrequested report writes across fourteen read commands.
 
+## 18. Made runner setup fail early and preserved uncertain process runs
+
+**Background.** A misspelled command placeholder could get as far as claiming work,
+then fail during dispatch. Model values and scheduling intervals also admitted
+malformed values, including non-finite numbers. A checkout registered between the
+initial lookup and launch changed the process directory while `{workdir}` in the
+already-rendered command still named the original directory.
+
+**Change.** Runner, checkout adapter, and delivery adapter templates share a small
+validator for their documented plain placeholders. It catches malformed braces,
+unknown fields, attribute/index access, NUL arguments, and invalid formatting.
+Literal braces use `{{` and `}}`. Runner model maps require strings; scheduler
+intervals must be finite. Setup checks use the runtime validator, and the controller
+checks configuration before allocating reviews or attempts. The final checkout
+lookup now supplies both the process directory and the rendered command.
+
+A deeper recovery audit found that a supervision exception could close a run's
+journal without proving its child stopped. Agent and sender runs now remain open
+on unexpected supervision errors. Recovery checks their inherited process locks,
+and the scheduler stops allocating new work until recovery is handled. Log paths
+are recorded before launch, so interrupted-run output can still be found.
+
+**Evidence.** Tests exercise invalid setup without task/review allocation, literal
+argument boundaries, the checkout-registration race, real children retaining locks
+after supervision failure, sender reconciliation refusal while alive, and scheduler
+stopping behavior. A normally completed timeout or proven launch failure retains
+its existing recorded result; an exception alone is no longer a liveness claim.
+
+## 19. Made cancellation and confirmed non-actions usable
+
+**Background.** Updating a workstream to `CANCELLED` only changed its label. Its
+unfinished tasks could still run. Separately, a worker that received provider proof
+that an effect was not applied could not explicitly prepare it again within the
+same attempt. Retrying a successful reconciliation acknowledgment also failed.
+
+**Change.** Workstream cancellation requires a summary explaining why and atomically
+cancels unfinished linked tasks and their unfinished dependents. It preserves
+completed results, fences active owners, and leaves uncertain external actions
+visible. Dependents outside the workstream are cancelled consistently with ordinary
+task cancellation. Case-owned workstreams direct users to `case cancel` so case and
+workstream state stay aligned. Cancellation does not kill harnesses or undo actions.
+
+After a provider-confirmed `NOT_APPLIED`, the current owner can explicitly call
+`effect prepare` with the original key before starting again. The previous receipt
+remains in history. Unknown or failed effects do not gain permission to replay.
+An identical reconciliation outcome and receipt can be retried without another
+event; conflicting terminal observations are rejected.
+
+**Evidence.** Tests cover late worker completion, dependency cancellation, retained
+completed work and unknown effects, late event failure rolling back the entire
+cancellation, case-command routing, same-attempt re-prepare, and inert receipt retries.
+
+## 20. Explained verification gaps and made result recording retriable
+
+**Background.** A criterion listed as missing did not tell the operator whether its
+check failed, the file disappeared, or the evidence belonged to an older target.
+Completion also scanned matching verification history. Retrying an old successful
+record after a lost acknowledgment could insert it after a newer failed check.
+
+**Change.** `evidence show --task TASK` explains the governing result for each
+criterion: missing, stale target/attempt, failed exit code, unavailable file,
+changed file, or passing. It shares its coverage logic with task completion.
+`evidence list` returns bounded pages with a stable insertion-order cursor.
+
+An optional `evidence record --idempotency-key CHECK_ID` returns the original record
+for an identical retry. It adds no artifact or event and does not move that record
+ahead of a later failure. A changed target, attempt, command, exit code, path, or
+file contents conflicts with the key. Each actual rerun needs a new key. Ownership
+and decision acknowledgments are still required. Unkeyed calls remain append-only.
+
+Schema 12 adds task-scoped evidence keys and three lookup indexes. Completion reads
+one indexed result per criterion rather than walking historical records. Existing
+evidence payloads and order are unchanged. The harness still attests that it ran
+the reported command; this is not a trusted command-execution service.
+
+**Evidence.** Tests cover every diagnosis, same-timestamp pagination during a new
+insertion, six concurrent recording retries, rollback of key/evidence/artifact,
+old-pass replay after a failure, and migration preserving old evidence. A 10,000-record
+fixture asserts bounded SQLite work for status and small history pages.
+
+## 21. Made health checks useful on damaged state and faster on large services
+
+**Background.** `doctor` could crash on the malformed timestamps or JSON it was
+supposed to diagnose, including a claimed sender with no lease. It also issued
+thousands of small queries for a large service and treated repeated task titles in
+independent cases as suspected duplicate work.
+
+**Change.** Health checks report malformed values and continue with other entities.
+Files that disappear during hashing produce integrity failures. Terminal workstreams
+with unfinished tasks are reported. Duplicate titles are compared inside their
+workstream. Repeated diagnostic-record boilerplate became one small reporting
+helper, while related task/wait, workstream-count, and case-link reads are batched.
+Task result bodies are not loaded for checks that only need state and counts.
+
+For 1,000 active cases and 5,000 tasks, read statements fell from **7,016 to 16**.
+The comparative benchmark's median fell from **72.207 ms to 28.354 ms**, and peak
+traced Python allocation from **36,570 to 6,458 bytes**. Full health checks still
+visit mission records and referenced payloads; these numbers do not include every
+possible workload. The service benchmark now includes a health-check measurement.
+
+**Evidence.** Tests combine malformed fields, confirm all expected problems are
+returned without writes, exercise broken policy snapshots and sender leases, check
+cross-workstream titles, and ensure query counts do not grow per task/case.
+
+## 22. Removed overfit assumptions from the example workflows
+
+**Background.** Generic performance and port workflows told independent verifiers
+to prepare PRs. Performance work implicitly demanded a code change even when no
+safe improvement was supported. Pipeline guidance asked for a confirmation before
+risky work without first recognizing authority already recorded in the mission.
+
+**Change.** The three generic packs are now version 1.1.0 and produce local review
+artifacts by default. Their handoffs use the target environment's VCS and exact
+revision identifiers. Verifiers measure and review; they do not modify the result
+under review or publish it. Publishing still depends on mission authority.
+
+The performance pack accepts a measured, reasoned no-change decision. The port pack
+separates required journeys from explicitly accepted exclusions, assigns distinct
+implementation scopes, and requires all agreed behavior to pass final verification.
+The pipeline pack reuses recorded authority, asks only for missing authority/scope,
+and distinguishes a provider signal from verified recovery. Discovery describes
+the input revision; implementation and verification describe the actual output.
+
+The separate PR/adversarial-review example remains explicitly a Git-backed PR
+workflow with a required harness skill. It is not the default integration contract.
+The retained responsive-orchestration product spec now clearly labels its old
+worker-wave problem statement as historical. All bundled manifests and packaged
+workflow tests pass with these revisions.
+
+## 23. Kept audit copying inside its intended file boundaries
+
+**Background.** Copying entire runtime directories followed symbolic links, which
+could pull unrelated files into a private audit. A log, intake payload, or registered
+artifact disappearing between inspection and copying could also abort the export.
+
+**Change.** Runtime copying omits symlinks and special files such as FIFOs and records
+omissions in `runtime-export.json`. A file replaced by a symlink during copying is
+removed from staging before archive enumeration can read it. Explicit registered
+artifacts remain governed separately by their recorded hashes and the export size
+limit. Locks are deliberately excluded because they are not portable evidence.
+
+Files that disappear or become unreadable during copying receive omission records.
+The canonical database remains in the archive, allowing a reviewer to distinguish
+recorded evidence from available bytes. `intake-export.json`, `artifact-export.json`,
+and `runtime-export.json` complement `audit-verify`; archive integrity does not prove
+that every source file was available. Other export failures still preserve the
+previous published archive through atomic replacement.
+
+**Evidence.** Tests cover directory/file symlinks, FIFOs, normal retained logs,
+links introduced during copying, disappearing files of each kind, canonical database
+retention, and manifest verification after omissions.
+
 ## Validation and release compatibility
 
-The final source and newly extracted distribution each pass **206 tests** on
-Python 3.9.6/macOS. The suite grew by 135 tests from the starting point. Coverage
+The final source and newly extracted distribution each pass **237 tests** on
+Python 3.9.6/macOS. The suite grew by 166 tests from the starting point. Coverage
 includes real controller kills, claim/ownership fencing, transaction and commit
 failure injection, timeout behavior, migration, evidence integrity, idempotency,
 privacy boundaries, bounded context, and non-Git checkout adapters.
@@ -466,25 +618,31 @@ python3 -m black --check swarmctl.py swarmkit scripts tests examples/demo_lifecy
 ruff check swarmctl.py swarmkit scripts tests examples/demo_lifecycle.py
 ```
 
-Black checked 56 Python files across source, examples, scripts, and tests.
+Black checked 57 Python files across source, examples, scripts, and tests.
 Ruff reported no configured F-class issues. A real
 schema 8 fixture created by the original 0.7.1 code upgraded successfully: it
 preserved an opaque checkout revision, reconstructed a signal link, backfilled
 partial completion, fenced an ambiguous delivery, passed `doctor`, and produced
-a verified audit. That same fixture was advanced through schema 11 during the
-continued pass; `doctor` and audit verification passed again.
+a verified audit. A second fixture was freshly generated by the original code and upgraded directly
+from schema 8 through schema 12 during this continuation. Its opaque jj revision,
+signal link, ambiguous delivery, and new evidence indexes were checked explicitly;
+`doctor` and audit verification passed. The actual ZIP was also extracted into a
+path with spaces: `python -m swarmkit demo`, the executable `bin/swarmctl` launcher,
+brief status, and audit verification all succeeded outside the source checkout.
 
-A final measurement at `c31d77d` reconfirmed the improvements: worker and manager
-prompts measured 2.154/2.152 ms with 25,000 historical events; active-service
-reconciliation measured 10.279 ms with 1,000 open cases; the 1,000-trigger review
-burst measured 0.252 seconds. These are medians of three disposable-fixture samples.
+Final 0.11.2 measurements reconfirmed bounded context and coordination overhead:
+worker/manager prompts **2.089/2.139 ms** with 25,000 historical events; leased inbox
+**0.822 ms**; 1,000-case reconciliation **10.596 ms**; 1,000-trigger review burst
+**0.252 seconds**; full health check **28.995 ms**. These are medians of three local
+disposable-fixture samples. The earlier before/after comparisons remain above.
 
 **Upgrade deliberately:** stop old controllers and keep a pre-upgrade backup.
-Opening an existing mission with 0.10.0 upgrades it sequentially to schema 11;
+Opening an existing mission with 0.11.2 upgrades it sequentially to schema 12;
 older releases cannot read that schema. Existing Git registrations remain intact,
 and no target checkout is converted or cleaned up. The command reference, runtime guide,
-changelog, examples, and package version agree on 0.10.0. Additional migration
-tests preserve schema-9 workspaces and schema-10 review payloads/identities.
+changelog, examples, and package version agree on 0.11.2. Additional migration
+tests preserve schema-9 workspaces, schema-10 review payloads/identities, and
+schema-11 verification records.
 
 ## What remains, and what needs your input
 
@@ -498,7 +656,8 @@ Engineering follow-ups include provider-verified receipts and cleanup tooling,
 finer lifecycle scopes, general cross-case plan replacement, explicit reducers/task
 groups, mission-wide criterion mapping, and complete causal/critical-path views.
 Durable checkout creation/attachment recovery, atomic case-local policy replacement,
-and active-service/review-burst benchmarks are now implemented. No production
+active-service/review-burst/health benchmarks, workstream cancellation, and
+indexed evidence diagnostics and recording keys are now implemented. No production
 provider integration, automatic approval policy, OS autostart service, or live AI
 quality evaluation was installed or claimed complete.
 
@@ -533,6 +692,11 @@ and honest command execution remain integration responsibilities.
 | `abad367` | Bounded review batches, review retrieval, and checkout dispatch fencing |
 | `b9ba821` | Latest verification results and copied-intake integrity |
 | `c31d77d` | Consistent operator snapshots and focused entity retrieval |
+| `57004e7` | Second full report and handoff |
+| `3e970cc` | Launch validation, workstream cancellation, and confirmed effect retries |
+| `54de0bf` | Evidence diagnostics, indexed history, and recording retry identity |
+| `c3b4a86` | Supervision recovery, robust/batched health, and generic workflow ergonomics |
+| `e3ef198` | Runtime export links, disappearing-file handling, and omission reports |
 
 This report covers the complete local improvement pass through the checkpoints above. The detailed
 [work log](/Users/osmankhwaja/Documents/swarmkit/notes/IMPROVEMENT_WORKLOG.md) preserves
