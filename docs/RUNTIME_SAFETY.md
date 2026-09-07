@@ -1,6 +1,6 @@
 # Durable runtime and recovery
 
-This is the normative contract for the runtime added in 0.7.0 and VCS-neutral workspace providers added in 0.7.1. Swarmkit supports
+This is the normative runtime contract, including the 0.8.0 reliability and usability changes. Swarmkit supports
 one user on one POSIX host (macOS or Linux). The harness and its tools enforce
 permissions and credentials. These commands coordinate work; they do not grant
 authority or intercept arbitrary tool calls.
@@ -387,6 +387,20 @@ evidence is rejected. Reports and scheduler results include the recorded outcome
 
 Cancellation withdraws open decisions only when none of their affected tasks remain
 active. It never answers the question on the human's behalf.
+
+## Schema 9 upgrade
+
+Version 0.8.0 upgrades schema 8 transactionally to schema 9. The migration adds
+bounded-context and unfinished-run indexes, case/workstream completion outcomes,
+policy application retry keys, and signal/task identity links. Existing links are
+recovered from structured wakeup events. Historical mixed completion becomes
+`PARTIAL`; explicit case cancellations remain permanent. Known old ambiguous
+delivery errors become `UNKNOWN` and require provider reconciliation.
+
+Stop older controllers and keep a pre-upgrade backup before opening a mission
+with 0.8.0. The prior binary cannot read the upgraded schema. Migration failure
+rolls back rather than relabeling a partially upgraded database. No Git migration
+or checkout conversion is involved.
 
 ## Initialization and local configuration
 

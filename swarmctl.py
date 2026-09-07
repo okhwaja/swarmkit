@@ -4,7 +4,7 @@
 New integrations should import the owning swarmkit module directly.
 """
 
-from swarmkit.audit import audit_summary, verify_audit, export_audit  # noqa: F401
+from swarmkit.audit import audit_summary, verify_audit, export_audit
 from swarmkit.cases import (
     snapshot_case_payload,
     link_case_task,
@@ -13,9 +13,9 @@ from swarmkit.cases import (
     wake_case_from_signal,
     add_case_signal,
     cancel_case,
-)  # noqa: F401
-from swarmkit.cli import add_runtime_cli, handle_runtime_cli, parser, main  # noqa: F401
-from swarmkit.config import runner_config  # noqa: F401
+)
+from swarmkit.cli import add_runtime_cli, handle_runtime_cli, parser, main
+from swarmkit.config import runner_config
 from swarmkit.coordination import (
     reconcile_deliveries,
     request_manager_review,
@@ -31,7 +31,7 @@ from swarmkit.coordination import (
     reconcile_conn,
     reconcile_cases,
     commit_review,
-)  # noqa: F401
+)
 from swarmkit.core import (
     VERSION,
     SCHEMA_VERSION,
@@ -67,7 +67,7 @@ from swarmkit.core import (
     print_json,
     future_time,
     process_lock,
-)  # noqa: F401
+)
 from swarmkit.decisions import (
     validate_decision_choice,
     require_decision_choice,
@@ -75,7 +75,7 @@ from swarmkit.decisions import (
     revise_decision,
     link_decision,
     acknowledge_decision,
-)  # noqa: F401
+)
 from swarmkit.delivery import (
     validate_extension_manifest,
     read_extension_source,
@@ -92,16 +92,16 @@ from swarmkit.delivery import (
     write_delivery_prompt,
     prepare_delivery_command,
     dispatch_delivery,
-)  # noqa: F401
-from swarmkit.diagnostics import doctor  # noqa: F401
+)
+from swarmkit.diagnostics import doctor
 from swarmkit.effects import (
     prepare_effect,
     transition_effect,
     acquire_resource,
     release_resource,
-)  # noqa: F401
-from swarmkit.evidence import set_contract, record_evidence, evidence_gaps  # noqa: F401
-from swarmkit.inbox import inbox, lease_inbox, ack_inbox  # noqa: F401
+)
+from swarmkit.evidence import set_contract, record_evidence, evidence_gaps
+from swarmkit.inbox import inbox, lease_inbox, ack_inbox
 from swarmkit.policies import (
     validate_policy_manifest,
     read_policy_source,
@@ -109,8 +109,8 @@ from swarmkit.policies import (
     parse_policy_variables,
     render_policy_text,
     apply_policy,
-)  # noqa: F401
-from swarmkit.prompts import guidance_path, role_for_task, build_prompt, write_prompt  # noqa: F401
+)
+from swarmkit.prompts import guidance_path, role_for_task, build_prompt, write_prompt
 from swarmkit.queries import (
     policy_pack_dict,
     policy_pack_summary,
@@ -131,7 +131,7 @@ from swarmkit.queries import (
     mission_snapshot,
     explain_state,
     workspace_dict,
-)  # noqa: F401
+)
 from swarmkit.runtime import (
     dispatch,
     external_wait_summary,
@@ -140,15 +140,15 @@ from swarmkit.runtime import (
     recover_runs,
     abandon_run,
     serve,
-)  # noqa: F401
+)
 from swarmkit.schema import (
     SCHEMA,
     RUNTIME_SCHEMA,
     execute_schema,
     migrate_workspace_schema,
     ensure_schema,
-)  # noqa: F401
-from swarmkit.setup import initialize, setup_check  # noqa: F401
+)
+from swarmkit.setup import initialize, setup_check
 from swarmkit.storage import (
     connect,
     mission,
@@ -173,7 +173,7 @@ from swarmkit.storage import (
     uncertain_effects,
     require_task_capacity,
     budget_reason,
-)  # noqa: F401
+)
 from swarmkit.tasks import (
     add_workstream,
     update_workstream,
@@ -192,20 +192,20 @@ from swarmkit.tasks import (
     control_mission,
     configure_runtime,
     amend_mission,
-)  # noqa: F401
+)
 from swarmkit.views import (
     md_escape,
     forecast_text,
     render_board,
     render_status_report,
-)  # noqa: F401
+)
 from swarmkit.workspaces import (
     workspace_config,
     workspace_task,
     register_workspace,
     run_workspace_command,
     create_workspace,
-)  # noqa: F401
+)
 
 if __name__ == "__main__":
     raise SystemExit(main())

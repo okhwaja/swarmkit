@@ -172,3 +172,26 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   IndexError exceptions; validation now returns domain errors. New tasks reject
   blank goals/criteria. Amendment also waits for sender runs and uncertain
   deliveries. All 164 source tests pass after these changes.
+
+- Formatting pass made older dense tests follow the same 100-column style as the
+  modules. Optional Black/Ruff configuration keeps runtime dependency-free and
+  exempts only the intentional compatibility re-exports from unused-import checks.
+- Final consistency review found the manager-review state validator missing the
+  new CANCELLED state; corrected it and asserted doctor health after cancellation.
+- Tested a real schema 8 database created with the archived baseline code. Upgrade
+  preserved jj/internal workspace identity, backfilled partial completion and
+  signal links, migrated ambiguous delivery state, passed doctor, and exported a
+  hash-verified audit.
+- Preparing version 0.8.0/schema 9 with synchronized changelog, generated CLI,
+  benchmark methodology, and a current backlog rather than overstating completion.
+
+- Final decision review reproduced empty blocker/answer acceptance and reuse of a
+  withdrawn question as a gate for new work. Those inputs are rejected without
+  mutation; historical idempotent links remain readable. Three regressions added.
+
+- Final source and extracted-package release checks pass 167 tests each on Python
+  3.9.6/macOS. Black checks all 51 Python files; Ruff finds no F-class issues.
+  Static module graph inspection finds no relative-import cycles across 25 modules.
+- Built the local dist/swarmkit-0.8.0.zip artifact. No remote operation was used.
+- Saved local commit 3fb2ea8 for empty/withdrawn decision validation. Preparing the
+  release/documentation/formatting commit, followed by the local handoff report.

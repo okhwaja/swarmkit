@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.8.0
+
+- Split the engine into explicit storage, domain, runtime, context, and presentation
+  modules. Retained the CLI and root Python compatibility imports; added a code map
+  and consistent optional development-tool configuration.
+- Made domain mutations atomic and composable with savepoints. Case intake,
+  signals, policy plans, and inquiries roll back together; failed intake cleans up
+  its new payload files and rejects payload fingerprint/copy races.
+- Bound prompt and inbox reads in SQL before JSON decoding. Added scoped indexes,
+  newest-first case context, explicit retrieval pages, and a repeatable history
+  benchmark. A 25,000-event fixture reduced measured Python allocation peaks from
+  about 55–58 MB to about 0.2 MB for prompts and inbox leases.
+- Bound decision acknowledgements to the current owner. Revised/linked decisions
+  retire obsolete attempts and waits; executing actions remain uncertain.
+- Added `UNKNOWN` delivery outcomes and `delivery reconcile`. Missing receipts,
+  timeouts, expired claims, and controller loss no longer permit blind replay.
+  Delivery logs stream to files; recovery uses inherited process locks.
+- Applied pause/cancel fencing to manager reviews. Drain includes workers,
+  manager reviews, delivery claims, and unclosed sender processes. Resume and
+  amendments require delivery recovery/reconciliation too.
+- Distinguished successful, partial, and cancelled completion. Cases/workstreams
+  expose completion outcomes; mission completion defaults to `PARTIAL` when work
+  was cancelled, with an explicit evidence-backed override. Cancel propagates to
+  descendants and withdraws obsolete questions. Follow-ups clear stale summaries.
+- Added whole-policy application retry keys and durable signal-to-task identity.
+  Identical retries return existing work; changed requests under a key are rejected.
+- Added an isolated harness-free `demo`, concise `status --brief`, and
+  `decision show`. Rewrote first-use documentation. Initialization stages a complete
+  database under a process lock and preserves existing runner configuration.
+- Allowed active owners to use `workspace create --agent`. Checkout children retain
+  creation locks after controller loss. Manual/internal/jj workflows remain the
+  default integration path; Git remains an explicit provider.
+- Allowed the current owner to bind an initially absent evidence contract to a
+  newly produced revision. Pinned targets cannot change during the attempt.
+  Rejected blank task goals/criteria, empty questions/answers, and malformed manifest
+  input without tracebacks. Withdrawn questions cannot gate new work.
+- Made audit publication atomic, streamed archive/event data, preserved the exact
+  recorded database snapshot, and added a counter-only share-safe path that never
+  stages private content. Manifest validation returns useful corruption errors.
+- Restricted distribution contents to source/documentation roots, excluded local
+  mission data and symlinks, normalized ZIP metadata, and preserved old output on
+  packaging failure. Added local-runtime Git ignores.
+- Schema 9 adds context/run indexes, completion outcomes, workflow retry keys, and
+  signal/task links. It backfills outcome/link history and fences known ambiguous
+  legacy deliveries as `UNKNOWN`. Stop old controllers before upgrade and keep a
+  pre-upgrade backup; older releases cannot read schema 9.
+- Expanded the suite from 71 to 167 tests, including real controller kills,
+  transaction/commit failure injection, migration, privacy, idempotency, and
+  VCS-neutral checkout tests. Runtime remains Python 3.9+ and standard-library only.
+
+
 ## 0.7.1
 
 - Removed the implicit Git assumption from workspace creation. Default to

@@ -68,9 +68,10 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
         )
 
     def test_no_implicit_git_and_manual_registration_dispatches_in_checkout(self):
-        with mock.patch.object(workspaces.subprocess, "Popen") as process, mock.patch.object(
-            workspaces.subprocess, "run"
-        ) as run:
+        with (
+            mock.patch.object(workspaces.subprocess, "Popen") as process,
+            mock.patch.object(workspaces.subprocess, "run") as run,
+        ):
             with self.assertRaisesRegex(s.SwarmError, "No workspace creation provider"):
                 s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")
             process.assert_not_called()

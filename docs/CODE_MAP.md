@@ -49,3 +49,18 @@ python3 -B scripts/release_check.py
 The last command also builds a distribution, extracts it, and repeats the checks.
 Use temporary mission directories in tests. Do not put live databases, run logs,
 provider credentials, or generated checkouts in the package.
+
+For repeatable long-history measurements, see [performance](PERFORMANCE.md) and
+`scripts/benchmark_context.py`. Avoid wall-clock assertions in unit tests; assert
+bounded reads and behavior, then use measurements to assess practical overhead.
+
+The checked-in `pyproject.toml` also configures optional Black and Ruff checks:
+
+```sh
+python3 -m black --check swarmctl.py swarmkit scripts tests examples/demo_lifecycle.py
+ruff check swarmctl.py swarmkit scripts tests examples/demo_lifecycle.py
+```
+
+These are development tools, not runtime dependencies. The compatibility entry
+point intentionally re-exports imports; Ruff's unused-import exemption is scoped
+to that file. Domain modules use ordinary explicit imports without that exemption.

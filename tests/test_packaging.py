@@ -52,8 +52,11 @@ class PackagingTest(unittest.TestCase):
         self.write("README.md")
         output = Path(self.temp.name) / "release.zip"
         output.write_bytes(b"previous release")
-        with mock.patch.object(package, "PACKAGE_ROOT", self.root), mock.patch.object(
-            package.shutil, "copyfileobj", side_effect=OSError("injected read failure")
+        with (
+            mock.patch.object(package, "PACKAGE_ROOT", self.root),
+            mock.patch.object(
+                package.shutil, "copyfileobj", side_effect=OSError("injected read failure")
+            ),
         ):
             with self.assertRaisesRegex(OSError, "injected"):
                 package.build_package(output)

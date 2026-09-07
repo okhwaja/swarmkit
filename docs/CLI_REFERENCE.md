@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.7.1`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.8.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 

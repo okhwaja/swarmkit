@@ -43,34 +43,65 @@ class SwarmLifecycleTest(unittest.TestCase):
         conn = self.connection()
         try:
             first = swarmctl.add_task(
-                conn, "Trace failure", "Find the failing stage", "discovery",
-                ["Failing boundary is supported by logs"], [], 80, "manager", True,
+                conn,
+                "Trace failure",
+                "Find the failing stage",
+                "discovery",
+                ["Failing boundary is supported by logs"],
+                [],
+                80,
+                "manager",
+                True,
             )
             second = swarmctl.add_task(
-                conn, "Repair pipeline", "Repair the supported cause", "implementation",
-                ["Live record reaches destination"], [first], 70, "manager", True,
+                conn,
+                "Repair pipeline",
+                "Repair the supported cause",
+                "implementation",
+                ["Live record reaches destination"],
+                [first],
+                70,
+                "manager",
+                True,
             )
             self.assertEqual(swarmctl.task_row(conn, first)["status"], "READY")
             self.assertEqual(swarmctl.task_row(conn, second)["status"], "PROPOSED")
 
             swarmctl.claim_task(conn, first, "worker-a", 1800)
-            swarmctl.checkpoint_task(conn, first, "worker-a", "Found failing boundary", "Verify logs", 1800)
+            swarmctl.checkpoint_task(
+                conn, first, "worker-a", "Found failing boundary", "Verify logs", 1800
+            )
             evidence = self.base / "trace.txt"
-            evidence.write_text("queue healthy; destination rejected credential\n", encoding="utf-8")
+            evidence.write_text(
+                "queue healthy; destination rejected credential\n", encoding="utf-8"
+            )
             swarmctl.complete_task(
-                conn, first, "worker-a", "Expired destination credential isolated",
-                ["Compared first failure with credential rotation"], [str(evidence)],
+                conn,
+                first,
+                "worker-a",
+                "Expired destination credential isolated",
+                ["Compared first failure with credential rotation"],
+                [str(evidence)],
             )
             self.assertEqual(swarmctl.task_row(conn, second)["status"], "READY")
 
             swarmctl.claim_task(conn, second, "worker-b", 1800)
             decision = swarmctl.block_task(
-                conn, second, "worker-b", "human_decision",
-                "May ingestion pause during repair?", "Pause for the controlled window",
+                conn,
+                second,
+                "worker-b",
+                "human_decision",
+                "May ingestion pause during repair?",
+                "Pause for the controlled window",
                 ["Pause", "Continue"],
             )
             version = swarmctl.resolve_decision(conn, decision, "Pause", "human", "Pause")
-            self.assertEqual(swarmctl.decision_dict(conn, swarmctl.decision_row(conn, decision))["selected_option"], "Pause")
+            self.assertEqual(
+                swarmctl.decision_dict(conn, swarmctl.decision_row(conn, decision))[
+                    "selected_option"
+                ],
+                "Pause",
+            )
             authorization = swarmctl.require_decision_choice(conn, decision, "Pause")
             self.assertTrue(authorization["authorized"])
             with self.assertRaises(swarmctl.SwarmError):
@@ -85,7 +116,9 @@ class SwarmLifecycleTest(unittest.TestCase):
                 (decision, second),
             ).fetchone()
             self.assertEqual(ack["version"], version)
-            swarmctl.checkpoint_task(conn, second, "worker-c", "Decision incorporated", "Repair", 1800)
+            swarmctl.checkpoint_task(
+                conn, second, "worker-c", "Decision incorporated", "Repair", 1800
+            )
             revised = swarmctl.revise_decision(
                 conn, decision, "Pause, but limit the window to ten minutes", "human", "Pause"
             )
@@ -95,17 +128,27 @@ class SwarmLifecycleTest(unittest.TestCase):
             self.assertEqual(swarmctl.task_row(conn, second)["status"], "READY")
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.complete_task(
-                    conn, second, "worker-c", "Stale completion",
-                    ["This should be fenced"], [],
+                    conn,
+                    second,
+                    "worker-c",
+                    "Stale completion",
+                    ["This should be fenced"],
+                    [],
                 )
             swarmctl.claim_task(conn, second, "worker-d", 1800)
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.checkpoint_task(conn, second, "worker-d", "Starting", "Repair", 1800)
             swarmctl.acknowledge_decision(conn, decision, second, "worker-d")
-            swarmctl.checkpoint_task(conn, second, "worker-d", "Revised decision incorporated", "Repair", 1800)
+            swarmctl.checkpoint_task(
+                conn, second, "worker-d", "Revised decision incorporated", "Repair", 1800
+            )
             swarmctl.complete_task(
-                conn, second, "worker-d", "Pipeline repaired",
-                ["Representative record reached destination"], [],
+                conn,
+                second,
+                "worker-d",
+                "Pipeline repaired",
+                ["Representative record reached destination"],
+                [],
             )
             swarmctl.complete_mission(conn, "Both success conditions verified", "manager")
             self.assertEqual(swarmctl.mission(conn)["status"], "DONE")
@@ -117,11 +160,20 @@ class SwarmLifecycleTest(unittest.TestCase):
         conn = self.connection()
         try:
             task = swarmctl.add_task(
-                conn, "Inspect queue", "Read queue state", "discovery",
-                ["Queue depth recorded"], [], 50, "manager", True,
+                conn,
+                "Inspect queue",
+                "Read queue state",
+                "discovery",
+                ["Queue depth recorded"],
+                [],
+                50,
+                "manager",
+                True,
             )
             swarmctl.claim_task(conn, task, "worker-old", 30)
-            conn.execute("UPDATE tasks SET lease_until=? WHERE id=?", ("2000-01-01T00:00:00Z", task))
+            conn.execute(
+                "UPDATE tasks SET lease_until=? WHERE id=?", ("2000-01-01T00:00:00Z", task)
+            )
             conn.commit()
             changed = swarmctl.reconcile_conn(conn)
             self.assertIn((task, "READY"), changed)
@@ -130,11 +182,19 @@ class SwarmLifecycleTest(unittest.TestCase):
             generation = swarmctl.claim_task(conn, task, "worker-new", 1800)
             self.assertEqual(generation, 2)
             fact = swarmctl.record_fact(
-                conn, "queue-health", "healthy", "queue probe", "worker-new", task,
-                observed_at="2020-01-01T00:00:00Z", ttl_seconds=60,
+                conn,
+                "queue-health",
+                "healthy",
+                "queue probe",
+                "worker-new",
+                task,
+                observed_at="2020-01-01T00:00:00Z",
+                ttl_seconds=60,
             )
             swarmctl.reconcile_conn(conn)
-            status = conn.execute("SELECT status FROM facts WHERE id=?", (fact,)).fetchone()["status"]
+            status = conn.execute("SELECT status FROM facts WHERE id=?", (fact,)).fetchone()[
+                "status"
+            ]
             self.assertEqual(status, "EXPIRED")
         finally:
             conn.close()
@@ -143,8 +203,15 @@ class SwarmLifecycleTest(unittest.TestCase):
         conn = self.connection()
         try:
             task = swarmctl.add_task(
-                conn, "Inspect logs", "Build a failure timeline", "discovery",
-                ["Timeline cites timestamps"], [], 50, "manager", True,
+                conn,
+                "Inspect logs",
+                "Build a failure timeline",
+                "discovery",
+                ["Timeline cites timestamps"],
+                [],
+                50,
+                "manager",
+                True,
             )
             unseen = swarmctl.inbox(conn, "worker-1", advance=True)
             self.assertGreaterEqual(len(unseen), 2)
@@ -178,7 +245,14 @@ class SwarmLifecycleTest(unittest.TestCase):
     def test_runner_dry_run_substitutes_without_shell(self):
         config_path = self.root / "runner.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["command"] = ["third-party-harness", "run", "--prompt", "{prompt_file}", "--role", "{role}"]
+        config["command"] = [
+            "third-party-harness",
+            "run",
+            "--prompt",
+            "{prompt_file}",
+            "--role",
+            "{role}",
+        ]
         config_path.write_text(json.dumps(config), encoding="utf-8")
         result = swarmctl.dispatch(self.root, "manager", "manager", dry_run=True)
         self.assertEqual(result["command"][0], "third-party-harness")
@@ -192,17 +266,38 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn, "Controlled repair", "Repair and replay safely", "manager", "ACTIVE"
             )
             first = swarmctl.add_task(
-                conn, "Repair", "Perform controlled repair", "implementation",
-                ["Repair verified"], [], 60, "manager", True, stream,
+                conn,
+                "Repair",
+                "Perform controlled repair",
+                "implementation",
+                ["Repair verified"],
+                [],
+                60,
+                "manager",
+                True,
+                stream,
             )
             second = swarmctl.add_task(
-                conn, "Replay", "Replay the backlog", "implementation",
-                ["Backlog verified"], [], 50, "manager", True, stream,
+                conn,
+                "Replay",
+                "Replay the backlog",
+                "implementation",
+                ["Backlog verified"],
+                [],
+                50,
+                "manager",
+                True,
+                stream,
             )
             swarmctl.claim_task(conn, first, "worker-a", 1800)
             decision = swarmctl.block_task(
-                conn, first, "worker-a", "human_decision", "May delivery pause?",
-                "Pause", ["Pause", "Continue"],
+                conn,
+                first,
+                "worker-a",
+                "human_decision",
+                "May delivery pause?",
+                "Pause",
+                ["Pause", "Continue"],
             )
             self.assertTrue(swarmctl.link_decision(conn, decision, second, "manager"))
             self.assertEqual(swarmctl.task_row(conn, second)["status"], "BLOCKED")
@@ -218,15 +313,27 @@ class SwarmLifecycleTest(unittest.TestCase):
         conn = self.connection()
         try:
             task = swarmctl.add_task(
-                conn, "Read destination", "Inspect destination state", "discovery",
-                ["State is recorded"], [], 50, "manager", True,
+                conn,
+                "Read destination",
+                "Inspect destination state",
+                "discovery",
+                ["State is recorded"],
+                [],
+                50,
+                "manager",
+                True,
             )
             swarmctl.claim_task(conn, task, "worker-short", 1800)
         finally:
             conn.close()
         config_path = self.root / "runner.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["command"] = [sys.executable, "-c", "print('agent exited without update')", "{prompt_file}"]
+        config["command"] = [
+            sys.executable,
+            "-c",
+            "print('agent exited without update')",
+            "{prompt_file}",
+        ]
         config_path.write_text(json.dumps(config), encoding="utf-8")
         result = swarmctl.dispatch(self.root, "worker", "worker-short", task_id=task)
         self.assertEqual(result["exit_code"], 0)
@@ -234,7 +341,8 @@ class SwarmLifecycleTest(unittest.TestCase):
         try:
             self.assertEqual(swarmctl.task_row(conn, task)["status"], "READY")
             event = conn.execute(
-                "SELECT 1 FROM events WHERE entity_id=? AND event_type='TASK_RUN_ENDED_INCOMPLETE'", (task,)
+                "SELECT 1 FROM events WHERE entity_id=? AND event_type='TASK_RUN_ENDED_INCOMPLETE'",
+                (task,),
             ).fetchone()
             self.assertIsNotNone(event)
         finally:
@@ -244,8 +352,15 @@ class SwarmLifecycleTest(unittest.TestCase):
         conn = self.connection()
         try:
             task = swarmctl.add_task(
-                conn, "Atomic claim", "Only one agent may own this", "discovery",
-                ["Exactly one claim succeeds"], [], 50, "manager", True,
+                conn,
+                "Atomic claim",
+                "Only one agent may own this",
+                "discovery",
+                ["Exactly one claim succeeds"],
+                [],
+                50,
+                "manager",
+                True,
             )
         finally:
             conn.close()
@@ -277,10 +392,14 @@ class SwarmLifecycleTest(unittest.TestCase):
                     conn, stream, "manager", forecast_latest="2030-01-01T00:00:00Z"
                 )
             swarmctl.update_workstream(
-                conn, stream, "manager", summary="Failure isolated; repair remains",
+                conn,
+                stream,
+                "manager",
+                summary="Failure isolated; repair remains",
                 forecast_earliest="2030-01-01T00:00:00Z",
                 forecast_latest="2030-01-01T02:00:00Z",
-                forecast_confidence="medium", forecast_basis="One repair and one validation remain",
+                forecast_confidence="medium",
+                forecast_basis="One repair and one validation remain",
             )
             active_stream = swarmctl.workstream_dict(conn, swarmctl.workstream_row(conn, stream))
             self.assertIn(
@@ -288,8 +407,16 @@ class SwarmLifecycleTest(unittest.TestCase):
                 swarmctl.forecast_text(active_stream),
             )
             task = swarmctl.add_task(
-                conn, "Repair", "Repair the failure", "implementation",
-                ["Live record arrives"], [], 60, "manager", True, stream,
+                conn,
+                "Repair",
+                "Repair the failure",
+                "implementation",
+                ["Live record arrives"],
+                [],
+                60,
+                "manager",
+                True,
+                stream,
             )
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.update_workstream(conn, stream, "manager", status="DONE")
@@ -322,7 +449,9 @@ class SwarmLifecycleTest(unittest.TestCase):
             conn.close()
         upgraded = self.connection()
         try:
-            version = upgraded.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()["value"]
+            version = upgraded.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()["value"]
             table = upgraded.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='workstreams'"
             ).fetchone()
@@ -370,11 +499,17 @@ class SwarmLifecycleTest(unittest.TestCase):
             conn.close()
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            exit_code = swarmctl.main([
-                "--root", str(self.root), "ask",
-                "--workstream", stream,
-                "--question", "Why does replay require deduplication?",
-            ])
+            exit_code = swarmctl.main(
+                [
+                    "--root",
+                    str(self.root),
+                    "ask",
+                    "--workstream",
+                    stream,
+                    "--question",
+                    "Why does replay require deduplication?",
+                ]
+            )
         self.assertEqual(exit_code, 0)
         inquiry_id = json.loads(output.getvalue())["inquiry_task_id"]
         conn = self.connection()
@@ -398,14 +533,21 @@ class SwarmLifecycleTest(unittest.TestCase):
                 conn, "Ship repair", "Deliver a reviewed pull request", "manager", "ACTIVE"
             )
             application = swarmctl.apply_policy(
-                conn, "pr-adversarial-review",
+                conn,
+                "pr-adversarial-review",
                 ["goal=repair queue handling", "test_command=python3 -m unittest"],
-                stream, "manager", True,
+                stream,
+                "manager",
+                True,
             )
             self.assertEqual(len(application["tasks"]), 5)
             stage_tasks = {item["stage_id"]: item["task_id"] for item in application["tasks"]}
-            self.assertEqual(swarmctl.task_row(conn, stage_tasks["implement-and-open-pr"])["status"], "READY")
-            self.assertEqual(swarmctl.task_row(conn, stage_tasks["adversarial-review-1"])["status"], "PROPOSED")
+            self.assertEqual(
+                swarmctl.task_row(conn, stage_tasks["implement-and-open-pr"])["status"], "READY"
+            )
+            self.assertEqual(
+                swarmctl.task_row(conn, stage_tasks["adversarial-review-1"])["status"], "PROPOSED"
+            )
 
             first = stage_tasks["implement-and-open-pr"]
             swarmctl.claim_task(conn, first, "implementer", 1800)
@@ -420,17 +562,27 @@ class SwarmLifecycleTest(unittest.TestCase):
             self.assertIn("untrusted data", prompt)
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.complete_task(
-                    conn, review_one, "reviewer-one", "Review claimed without evidence",
-                    ["adversarial-review completed against commit SHA abc123"], [],
+                    conn,
+                    review_one,
+                    "reviewer-one",
+                    "Review claimed without evidence",
+                    ["adversarial-review completed against commit SHA abc123"],
+                    [],
                 )
             swarmctl.complete_task(
-                conn, review_one, "reviewer-one", "Review recorded",
-                ["adversarial-review completed against commit SHA abc123"], [str(review_artifact)],
+                conn,
+                review_one,
+                "reviewer-one",
+                "Review recorded",
+                ["adversarial-review completed against commit SHA abc123"],
+                [str(review_artifact)],
             )
 
             remediation = stage_tasks["remediate-review-1"]
             swarmctl.claim_task(conn, remediation, "remediator", 1800)
-            swarmctl.complete_task(conn, remediation, "remediator", "Findings fixed", ["Tests passed"], [])
+            swarmctl.complete_task(
+                conn, remediation, "remediator", "Findings fixed", ["Tests passed"], []
+            )
 
             review_two = stage_tasks["adversarial-review-2"]
             with self.assertRaises(swarmctl.SwarmError):
@@ -439,13 +591,19 @@ class SwarmLifecycleTest(unittest.TestCase):
                 swarmctl.claim_task(conn, review_two, "remediator", 1800)
             swarmctl.claim_task(conn, review_two, "reviewer-two", 1800)
             swarmctl.complete_task(
-                conn, review_two, "reviewer-two", "Fresh review recorded",
-                ["Independent adversarial-review completed against commit SHA def456"], [str(review_artifact)],
+                conn,
+                review_two,
+                "reviewer-two",
+                "Fresh review recorded",
+                ["Independent adversarial-review completed against commit SHA def456"],
+                [str(review_artifact)],
             )
 
             final = stage_tasks["finalize-pr"]
             swarmctl.claim_task(conn, final, "finalizer", 1800)
-            swarmctl.complete_task(conn, final, "finalizer", "PR is green", ["Final tests passed"], [])
+            swarmctl.complete_task(
+                conn, final, "finalizer", "PR is green", ["Final tests passed"], []
+            )
             finished = swarmctl.policy_application_dict(conn, application["id"])
             self.assertEqual(finished["status"], "DONE")
         finally:
@@ -459,11 +617,16 @@ class SwarmLifecycleTest(unittest.TestCase):
             "name": "Bad",
             "description": "Invalid ordering",
             "when_to_use": "Never",
-            "stages": [{
-                "id": "first", "title": "First", "description": "Bad dependency",
-                "kind": "implementation", "acceptance": ["Done"],
-                "depends_on": ["later"],
-            }],
+            "stages": [
+                {
+                    "id": "first",
+                    "title": "First",
+                    "description": "Bad dependency",
+                    "kind": "implementation",
+                    "acceptance": ["Done"],
+                    "depends_on": ["later"],
+                }
+            ],
         }
         with self.assertRaises(swarmctl.SwarmError):
             swarmctl.validate_policy_manifest(manifest)
@@ -479,27 +642,57 @@ class SwarmLifecycleTest(unittest.TestCase):
             manager_prompt = swarmctl.build_prompt(self.root, "manager", "manager")
             self.assertIn("harness-email-example", manager_prompt)
             queued = swarmctl.enqueue_delivery(
-                self.root, conn, "harness-email-example", "email", "Pipeline status",
-                ["replace-me@example.com"], content, ["window=hour-22"],
-                "status-hour-22", "scheduler",
+                self.root,
+                conn,
+                "harness-email-example",
+                "email",
+                "Pipeline status",
+                ["replace-me@example.com"],
+                content,
+                ["window=hour-22"],
+                "status-hour-22",
+                "scheduler",
             )
             self.assertTrue(queued["created"])
             duplicate = swarmctl.enqueue_delivery(
-                self.root, conn, "harness-email-example", "email", "Pipeline status",
-                ["replace-me@example.com"], content, ["window=hour-22"],
-                "status-hour-22", "scheduler",
+                self.root,
+                conn,
+                "harness-email-example",
+                "email",
+                "Pipeline status",
+                ["replace-me@example.com"],
+                content,
+                ["window=hour-22"],
+                "status-hour-22",
+                "scheduler",
             )
             self.assertFalse(duplicate["created"])
             self.assertEqual(duplicate["id"], queued["id"])
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.enqueue_delivery(
-                    self.root, conn, "harness-email-example", "email", "Different",
-                    ["replace-me@example.com"], content, [], "status-hour-22", "scheduler",
+                    self.root,
+                    conn,
+                    "harness-email-example",
+                    "email",
+                    "Different",
+                    ["replace-me@example.com"],
+                    content,
+                    [],
+                    "status-hour-22",
+                    "scheduler",
                 )
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.enqueue_delivery(
-                    self.root, conn, "harness-email-example", "email", "Pipeline status",
-                    ["outside@example.net"], content, [], "outside", "scheduler",
+                    self.root,
+                    conn,
+                    "harness-email-example",
+                    "email",
+                    "Pipeline status",
+                    ["outside@example.net"],
+                    content,
+                    [],
+                    "outside",
+                    "scheduler",
                 )
             claimed = swarmctl.claim_delivery(conn, queued["id"], "emailer-one", 600)
             self.assertEqual(claimed["status"], "CLAIMED")
@@ -508,18 +701,30 @@ class SwarmLifecycleTest(unittest.TestCase):
             swarmctl.claim_delivery(conn, queued["id"], "emailer-two", 600)
             swarmctl.mark_delivery_sent(conn, queued["id"], "emailer-two", "provider-message-123")
             final = swarmctl.delivery_dict(
-                conn, conn.execute("SELECT * FROM deliveries WHERE id=?", (queued["id"],)).fetchone()
+                conn,
+                conn.execute("SELECT * FROM deliveries WHERE id=?", (queued["id"],)).fetchone(),
             )
             self.assertEqual(final["status"], "SENT")
             self.assertEqual(final["attempt_count"], 2)
             self.assertEqual(final["provider_receipt"], "provider-message-123")
             self.assertTrue(final["content_intact"])
             lease_job = swarmctl.enqueue_delivery(
-                self.root, conn, "harness-email-example", "email", "Lease test",
-                ["replace-me@example.com"], content, [], "lease-test", "test",
+                self.root,
+                conn,
+                "harness-email-example",
+                "email",
+                "Lease test",
+                ["replace-me@example.com"],
+                content,
+                [],
+                "lease-test",
+                "test",
             )
             swarmctl.claim_delivery(conn, lease_job["id"], "lost-emailer", 30)
-            conn.execute("UPDATE deliveries SET lease_until=? WHERE id=?", ("2000-01-01T00:00:00Z", lease_job["id"]))
+            conn.execute(
+                "UPDATE deliveries SET lease_until=? WHERE id=?",
+                ("2000-01-01T00:00:00Z", lease_job["id"]),
+            )
             conn.commit()
             self.assertIn((lease_job["id"], "UNKNOWN"), swarmctl.reconcile_conn(conn))
             self.assertTrue(swarmctl.doctor(conn)["ok"])
@@ -529,7 +734,9 @@ class SwarmLifecycleTest(unittest.TestCase):
         swarmctl.export_audit(self.root, audit_path)
         with zipfile.ZipFile(str(audit_path)) as archive:
             names = set(archive.namelist())
-            self.assertTrue(any(name.startswith("swarm-audit/outbox/%s/" % queued["id"]) for name in names))
+            self.assertTrue(
+                any(name.startswith("swarm-audit/outbox/%s/" % queued["id"]) for name in names)
+            )
             snapshot = json.loads(archive.read("swarm-audit/snapshot.json"))
             self.assertEqual(snapshot["deliveries"][0]["provider_receipt"], "provider-message-123")
 
@@ -554,8 +761,13 @@ class SwarmLifecycleTest(unittest.TestCase):
             "executor": {
                 "type": "command",
                 "command": [
-                    sys.executable, "-c", adapter_code, "{envelope_file}",
-                    str(PACKAGE_ROOT / "swarmctl.py"), "{root}", "{agent_id}",
+                    sys.executable,
+                    "-c",
+                    adapter_code,
+                    "{envelope_file}",
+                    str(PACKAGE_ROOT / "swarmctl.py"),
+                    "{root}",
+                    "{agent_id}",
                 ],
             },
             "recipient_policy": {
@@ -571,8 +783,16 @@ class SwarmLifecycleTest(unittest.TestCase):
         try:
             swarmctl.install_extension(conn, extension_dir, "test")
             queued = swarmctl.enqueue_delivery(
-                self.root, conn, "test-command-email", "email", "Test",
-                ["test@example.com"], content, [], "command-test-1", "test",
+                self.root,
+                conn,
+                "test-command-email",
+                "email",
+                "Test",
+                ["test@example.com"],
+                content,
+                [],
+                "command-test-1",
+                "test",
             )
         finally:
             conn.close()
@@ -591,15 +811,26 @@ class SwarmLifecycleTest(unittest.TestCase):
 
         manifest["id"] = "test-unacknowledged-email"
         manifest["executor"]["command"] = [
-            sys.executable, "-c", "print('no provider receipt')", "{envelope_file}",
+            sys.executable,
+            "-c",
+            "print('no provider receipt')",
+            "{envelope_file}",
         ]
         (extension_dir / "extension.json").write_text(json.dumps(manifest), encoding="utf-8")
         conn = self.connection()
         try:
             swarmctl.install_extension(conn, extension_dir, "test")
             unacknowledged = swarmctl.enqueue_delivery(
-                self.root, conn, "test-unacknowledged-email", "email", "Unacknowledged",
-                ["test@example.com"], content, [], "command-test-unack", "test",
+                self.root,
+                conn,
+                "test-unacknowledged-email",
+                "email",
+                "Unacknowledged",
+                ["test@example.com"],
+                content,
+                [],
+                "command-test-unack",
+                "test",
             )
         finally:
             conn.close()
@@ -617,9 +848,14 @@ class SwarmLifecycleTest(unittest.TestCase):
 
     def test_delivery_extension_manifest_rejects_shell_and_open_recipients(self):
         base = {
-            "schema_version": 1, "id": "bad-extension", "version": "1",
-            "name": "Bad", "kind": "delivery", "description": "Invalid",
-            "handles": ["email"], "guidance": "GUIDANCE.md",
+            "schema_version": 1,
+            "id": "bad-extension",
+            "version": "1",
+            "name": "Bad",
+            "kind": "delivery",
+            "description": "Invalid",
+            "handles": ["email"],
+            "guidance": "GUIDANCE.md",
             "executor": {"type": "command", "command": ["sh", "{envelope_file}"]},
             "recipient_policy": {"allowed_recipients": ["test@example.com"], "allowed_domains": []},
         }
@@ -647,48 +883,90 @@ class SwarmLifecycleTest(unittest.TestCase):
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.complete_mission(conn, "idle", "manager")
             opened = swarmctl.open_case(
-                service_root, conn, "review-provider", "change-123", "Review change 123",
-                "Produce an independent review and durable disposition", 70, "webhook",
-                ["Disposition is supported by evidence"], payload,
-                ["repository=example/service"], ready=True,
+                service_root,
+                conn,
+                "review-provider",
+                "change-123",
+                "Review change 123",
+                "Produce an independent review and durable disposition",
+                70,
+                "webhook",
+                ["Disposition is supported by evidence"],
+                payload,
+                ["repository=example/service"],
+                ready=True,
             )
             self.assertTrue(opened["created"])
             self.assertEqual(opened["status"], "ACTIVE")
             duplicate = swarmctl.open_case(
-                service_root, conn, "review-provider", "change-123", "Review change 123",
-                "Produce an independent review and durable disposition", 70, "webhook",
-                ["Disposition is supported by evidence"], payload,
-                ["repository=example/service"], ready=True,
+                service_root,
+                conn,
+                "review-provider",
+                "change-123",
+                "Review change 123",
+                "Produce an independent review and durable disposition",
+                70,
+                "webhook",
+                ["Disposition is supported by evidence"],
+                payload,
+                ["repository=example/service"],
+                ready=True,
             )
             self.assertFalse(duplicate["created"])
             self.assertEqual(duplicate["id"], opened["id"])
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.open_case(
-                    service_root, conn, "review-provider", "change-123", "Review change 123",
-                    "Produce an independent review and durable disposition", 70, "webhook",
-                    ["A different acceptance contract"], payload,
-                    ["repository=example/service"], ready=True,
+                    service_root,
+                    conn,
+                    "review-provider",
+                    "change-123",
+                    "Review change 123",
+                    "Produce an independent review and durable disposition",
+                    70,
+                    "webhook",
+                    ["A different acceptance contract"],
+                    payload,
+                    ["repository=example/service"],
+                    ready=True,
                 )
             task_id = opened["tasks"][0]["id"]
             swarmctl.claim_task(conn, task_id, "reviewer-one", 1800)
             decision_id = swarmctl.block_task(
-                conn, task_id, "reviewer-one", "external_dependency",
-                "Has the author addressed the requested change?", "Wait for a new revision",
+                conn,
+                task_id,
+                "reviewer-one",
+                "external_dependency",
+                "Has the author addressed the requested change?",
+                "Wait for a new revision",
                 ["Addressed", "Not addressed"],
             )
             swarmctl.reconcile_conn(conn)
             self.assertEqual(swarmctl.case_row(conn, opened["id"])["status"], "WAITING_EXTERNAL")
             response = swarmctl.add_case_signal(
-                service_root, conn, opened["id"], "review-provider", "event-9001",
-                "author_response", "author@example.com", "Revision def addresses the finding",
-                "webhook", decision_id=decision_id,
+                service_root,
+                conn,
+                opened["id"],
+                "review-provider",
+                "event-9001",
+                "author_response",
+                "author@example.com",
+                "Revision def addresses the finding",
+                "webhook",
+                decision_id=decision_id,
             )
             self.assertTrue(response["created"])
             self.assertEqual(swarmctl.task_row(conn, task_id)["status"], "READY")
             repeated = swarmctl.add_case_signal(
-                service_root, conn, opened["id"], "review-provider", "event-9001",
-                "author_response", "author@example.com", "Revision def addresses the finding",
-                "webhook", decision_id=decision_id,
+                service_root,
+                conn,
+                opened["id"],
+                "review-provider",
+                "event-9001",
+                "author_response",
+                "author@example.com",
+                "Revision def addresses the finding",
+                "webhook",
+                decision_id=decision_id,
             )
             self.assertFalse(repeated["created"])
             self.assertEqual(
@@ -700,14 +978,25 @@ class SwarmLifecycleTest(unittest.TestCase):
             self.assertIn("change-123", prompt)
             swarmctl.acknowledge_decision(conn, decision_id, task_id, "reviewer-two")
             swarmctl.complete_task(
-                conn, task_id, "reviewer-two", "Author response verified",
-                ["Revision def independently verified"], [],
+                conn,
+                task_id,
+                "reviewer-two",
+                "Author response verified",
+                ["Revision def independently verified"],
+                [],
             )
             self.assertEqual(swarmctl.case_row(conn, opened["id"])["status"], "DONE")
             wake = swarmctl.add_case_signal(
-                service_root, conn, opened["id"], "review-provider", "event-9002",
-                "new_revision", "author@example.com", "Revision ghi was uploaded",
-                "webhook", wake=True,
+                service_root,
+                conn,
+                opened["id"],
+                "review-provider",
+                "event-9002",
+                "new_revision",
+                "author@example.com",
+                "Revision ghi was uploaded",
+                "webhook",
+                wake=True,
             )
             self.assertTrue(wake["created"])
             self.assertIsNotNone(wake["wake_task_id"])
@@ -736,14 +1025,24 @@ class SwarmLifecycleTest(unittest.TestCase):
         try:
             swarmctl.install_policy(conn, policy_source, "human")
             opened = swarmctl.open_case(
-                self.root, conn, "review-provider", "42", "Review change 42",
-                "Reach a human-authorized disposition", 80, "webhook", [], payload, [],
+                self.root,
+                conn,
+                "review-provider",
+                "42",
+                "Review change 42",
+                "Reach a human-authorized disposition",
+                80,
+                "webhook",
+                [],
+                payload,
+                [],
                 "human-gated-change-review",
                 [
                     "change_ref=https://review.example/42",
                     "review_skill=adversarial-review",
                     "verification_command=python3 -m unittest",
-                ], True,
+                ],
+                True,
             )
             self.assertEqual(len(opened["tasks"]), 4)
             self.assertIsNotNone(opened["policy_application_id"])
@@ -759,21 +1058,39 @@ class SwarmLifecycleTest(unittest.TestCase):
     def test_case_cli_opens_and_reads_idempotent_request(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            exit_code = swarmctl.main([
-                "--root", str(self.root), "case", "open",
-                "--source", "manual", "--external-id", "request-1",
-                "--title", "Review request one",
-                "--objective", "Return an evidence-backed disposition",
-                "--acceptance", "Disposition is recorded", "--ready",
-            ])
+            exit_code = swarmctl.main(
+                [
+                    "--root",
+                    str(self.root),
+                    "case",
+                    "open",
+                    "--source",
+                    "manual",
+                    "--external-id",
+                    "request-1",
+                    "--title",
+                    "Review request one",
+                    "--objective",
+                    "Return an evidence-backed disposition",
+                    "--acceptance",
+                    "Disposition is recorded",
+                    "--ready",
+                ]
+            )
         self.assertEqual(exit_code, 0)
         opened = json.loads(output.getvalue())
         self.assertTrue(opened["created"])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            exit_code = swarmctl.main([
-                "--root", str(self.root), "case", "show", opened["id"],
-            ])
+            exit_code = swarmctl.main(
+                [
+                    "--root",
+                    str(self.root),
+                    "case",
+                    "show",
+                    opened["id"],
+                ]
+            )
         self.assertEqual(exit_code, 0)
         shown = json.loads(output.getvalue())
         self.assertEqual(shown["external_id"], "request-1")
@@ -788,7 +1105,10 @@ class SwarmLifecycleTest(unittest.TestCase):
         config_path = self.root / "runner.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
         config["command"] = [
-            sys.executable, "-c", "print('setup probe')", "{prompt_file}",
+            sys.executable,
+            "-c",
+            "print('setup probe')",
+            "{prompt_file}",
         ]
         config["working_directory"] = str(self.base)
         config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -798,9 +1118,7 @@ class SwarmLifecycleTest(unittest.TestCase):
         checks = {item["name"]: item for item in result["checks"]}
         self.assertTrue(checks["runner_executable"]["ok"])
         self.assertTrue(checks["prompt_dry_run"]["ok"])
-        self.assertEqual(
-            len(list((self.root / "prompts").glob("P-*-manager.md"))), 1
-        )
+        self.assertEqual(len(list((self.root / "prompts").glob("P-*-manager.md"))), 1)
 
     def configure_responsive_runner(self, max_parallel=2):
         config_path = self.root / "runner.json"
@@ -830,33 +1148,66 @@ class SwarmLifecycleTest(unittest.TestCase):
                     tasks = conn.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()
                     titles = {row["title"] for row in tasks}
                     if not tasks:
-                        swarmctl.add_task(conn, "Fast evidence", "Return quickly", "discovery",
-                                          ["Evidence recorded"], [], 80, "manager", True)
-                        swarmctl.add_task(conn, "Slow evidence", "Remain active", "discovery",
-                                          ["Evidence recorded"], [], 70, "manager", True)
+                        swarmctl.add_task(
+                            conn,
+                            "Fast evidence",
+                            "Return quickly",
+                            "discovery",
+                            ["Evidence recorded"],
+                            [],
+                            80,
+                            "manager",
+                            True,
+                        )
+                        swarmctl.add_task(
+                            conn,
+                            "Slow evidence",
+                            "Remain active",
+                            "discovery",
+                            ["Evidence recorded"],
+                            [],
+                            70,
+                            "manager",
+                            True,
+                        )
                     elif "Follow fast evidence" not in titles and any(
                         row["title"] == "Fast evidence" and row["status"] == "DONE" for row in tasks
                     ):
-                        swarmctl.add_task(conn, "Follow fast evidence", "Act on the quick result",
-                                          "discovery", ["Follow-up recorded"], [], 75,
-                                          "manager", True)
-                    elif tasks and all(row["status"] in swarmctl.TERMINAL_TASK_STATES for row in tasks):
+                        swarmctl.add_task(
+                            conn,
+                            "Follow fast evidence",
+                            "Act on the quick result",
+                            "discovery",
+                            ["Follow-up recorded"],
+                            [],
+                            75,
+                            "manager",
+                            True,
+                        )
+                    elif tasks and all(
+                        row["status"] in swarmctl.TERMINAL_TASK_STATES for row in tasks
+                    ):
                         swarmctl.complete_mission(conn, "All responsive work verified", "manager")
                 else:
                     task = swarmctl.task_row(conn, task_id)
                     if task["title"] == "Fast evidence":
-                        swarmctl.complete_task(conn, task_id, agent, "Fast result",
-                                               ["Fast evidence verified"], [])
+                        swarmctl.complete_task(
+                            conn, task_id, agent, "Fast result", ["Fast evidence verified"], []
+                        )
                     elif task["title"] == "Slow evidence":
-                        self.assertTrue(follow_started.wait(3), "follow-up did not start responsively")
+                        self.assertTrue(
+                            follow_started.wait(3), "follow-up did not start responsively"
+                        )
                         slow_finished.set()
-                        swarmctl.complete_task(conn, task_id, agent, "Slow result",
-                                               ["Slow evidence verified"], [])
+                        swarmctl.complete_task(
+                            conn, task_id, agent, "Slow result", ["Slow evidence verified"], []
+                        )
                     else:
                         self.assertFalse(slow_finished.is_set())
                         follow_started.set()
-                        swarmctl.complete_task(conn, task_id, agent, "Follow-up result",
-                                               ["Follow-up verified"], [])
+                        swarmctl.complete_task(
+                            conn, task_id, agent, "Follow-up result", ["Follow-up verified"], []
+                        )
             finally:
                 conn.close()
             return {"run_id": "fake-%s" % agent, "exit_code": 0}
@@ -880,28 +1231,54 @@ class SwarmLifecycleTest(unittest.TestCase):
                     task = conn.execute("SELECT * FROM tasks LIMIT 1").fetchone()
                     finding = conn.execute("SELECT * FROM findings LIMIT 1").fetchone()
                     if not task:
-                        swarmctl.add_task(conn, "Inspect retries", "Inspect replay behavior", "discovery",
-                                          ["Behavior explained"], [], 80, "manager", True)
+                        swarmctl.add_task(
+                            conn,
+                            "Inspect retries",
+                            "Inspect replay behavior",
+                            "discovery",
+                            ["Behavior explained"],
+                            [],
+                            80,
+                            "manager",
+                            True,
+                        )
                     elif finding and finding["status"] == "OPEN":
                         observed_active_at_triage.append(
-                            swarmctl.task_row(conn, task["id"])["status"] in swarmctl.ACTIVE_TASK_STATES
+                            swarmctl.task_row(conn, task["id"])["status"]
+                            in swarmctl.ACTIVE_TASK_STATES
                         )
                         swarmctl.dispose_finding(
-                            conn, finding["id"], "DEFERRED", "Bounded task should finish first",
+                            conn,
+                            finding["id"],
+                            "DEFERRED",
+                            "Bounded task should finish first",
                             "manager",
                         )
                         triaged.set()
                     elif task["status"] == "DONE":
-                        swarmctl.complete_mission(conn, "Finding triaged and task verified", "manager")
+                        swarmctl.complete_mission(
+                            conn, "Finding triaged and task verified", "manager"
+                        )
                 else:
                     swarmctl.raise_finding(
-                        conn, task_id, agent, "MATERIAL", "Retries may duplicate records",
+                        conn,
+                        task_id,
+                        agent,
+                        "MATERIAL",
+                        "Retries may duplicate records",
                         ["log:event-42", "src/retry.py:18"],
-                        "May require a replay-safety workstream", "Inspect idempotency boundaries",
+                        "May require a replay-safety workstream",
+                        "Inspect idempotency boundaries",
                     )
                     self.assertTrue(triaged.wait(3), "manager did not triage in-flight finding")
-                    swarmctl.complete_task(conn, task_id, agent, "Retry behavior explained",
-                                           ["Relevant retry path inspected"], [])
+                    swarmctl.complete_task(
+                        conn,
+                        task_id,
+                        agent,
+                        "Retry behavior explained",
+                        ["Relevant retry path inspected"],
+                        [],
+                    )
                     worker_finished.set()
             finally:
                 conn.close()
@@ -916,23 +1293,44 @@ class SwarmLifecycleTest(unittest.TestCase):
     def test_acceptance_3_external_polling_uses_fresh_short_checks(self):
         conn = self.connection()
         try:
-            task = swarmctl.add_task(conn, "Watch pipeline", "Verify provider job", "verification",
-                                     ["Provider result verified"], [], 80, "manager", True)
+            task = swarmctl.add_task(
+                conn,
+                "Watch pipeline",
+                "Verify provider job",
+                "verification",
+                ["Provider result verified"],
+                [],
+                80,
+                "manager",
+                True,
+            )
             deadline = self.future_time(8)
             for attempt in range(1, 4):
                 agent = "poller-%d" % attempt
                 swarmctl.claim_task(conn, task, agent, 1800)
                 wait = swarmctl.start_external_wait(
-                    conn, task, agent, "Pipeline job is terminal", "job-123", deadline,
-                    self.future_time(attempt), signal_expected=True,
+                    conn,
+                    task,
+                    agent,
+                    "Pipeline job is terminal",
+                    "job-123",
+                    deadline,
+                    self.future_time(attempt),
+                    signal_expected=True,
                 )
                 self.assertEqual(wait["status"], "WAITING")
                 self.assertIsNone(swarmctl.task_row(conn, task)["owner"])
                 swarmctl.reconcile_conn(conn, at=self.future_time(attempt))
                 self.assertEqual(swarmctl.task_row(conn, task)["status"], "READY")
             swarmctl.claim_task(conn, task, "poller-4", 1800)
-            swarmctl.complete_task(conn, task, "poller-4", "Pipeline succeeded",
-                                   ["Queried provider job-123 and verified terminal output"], [])
+            swarmctl.complete_task(
+                conn,
+                task,
+                "poller-4",
+                "Pipeline succeeded",
+                ["Queried provider job-123 and verified terminal output"],
+                [],
+            )
             waits = conn.execute("SELECT * FROM external_waits ORDER BY created_at").fetchall()
             self.assertEqual(len(waits), 3)
             self.assertTrue(all(row["status"] == "WOKEN" for row in waits))
@@ -944,12 +1342,26 @@ class SwarmLifecycleTest(unittest.TestCase):
     def test_acceptance_4_repeated_concurrent_signals_wake_once_and_require_verification(self):
         conn = self.connection()
         try:
-            task = swarmctl.add_task(conn, "Watch import", "Verify import completion", "verification",
-                                     ["Import verified"], [], 80, "manager", True)
+            task = swarmctl.add_task(
+                conn,
+                "Watch import",
+                "Verify import completion",
+                "verification",
+                ["Import verified"],
+                [],
+                80,
+                "manager",
+                True,
+            )
             swarmctl.claim_task(conn, task, "watcher", 1800)
             wait = swarmctl.start_external_wait(
-                conn, task, "watcher", "Import is terminal", "import-99",
-                self.future_time(4), signal_expected=True,
+                conn,
+                task,
+                "watcher",
+                "Import is terminal",
+                "import-99",
+                self.future_time(4),
+                signal_expected=True,
             )
         finally:
             conn.close()
@@ -958,8 +1370,12 @@ class SwarmLifecycleTest(unittest.TestCase):
             local = self.connection()
             try:
                 return swarmctl.signal_external_wait(
-                    local, wait["id"], "provider", "callback-%d" % index,
-                    "webhook", "provider reports completion",
+                    local,
+                    wait["id"],
+                    "provider",
+                    "callback-%d" % index,
+                    "webhook",
+                    "provider reports completion",
                 )
             finally:
                 local.close()
@@ -976,14 +1392,21 @@ class SwarmLifecycleTest(unittest.TestCase):
             self.assertEqual(task_row["status"], "READY")
             self.assertIn("Verify external condition", task_row["next_action"])
             self.assertIsNone(task_row["result"])
-            self.assertEqual(conn.execute(
-                "SELECT COUNT(*) AS n FROM external_waits WHERE id=? AND status='WOKEN'",
-                (wait["id"],),
-            ).fetchone()["n"], 1)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) AS n FROM external_waits WHERE id=? AND status='WOKEN'",
+                    (wait["id"],),
+                ).fetchone()["n"],
+                1,
+            )
             swarmctl.claim_task(conn, task, "verifier-after-signal", 1800)
             swarmctl.complete_task(
-                conn, task, "verifier-after-signal", "Import completed",
-                ["Queried import-99 after the callback and verified provider output"], [],
+                conn,
+                task,
+                "verifier-after-signal",
+                "Import completed",
+                ["Queried import-99 after the callback and verified provider output"],
+                [],
             )
             self.assertEqual(swarmctl.task_row(conn, task)["status"], "DONE")
         finally:
@@ -992,16 +1415,32 @@ class SwarmLifecycleTest(unittest.TestCase):
     def test_acceptance_5_deadline_wakes_for_attention_without_success(self):
         conn = self.connection()
         try:
-            task = swarmctl.add_task(conn, "Watch deployment", "Verify deployment", "verification",
-                                     ["Deployment verified"], [], 80, "manager", True)
+            task = swarmctl.add_task(
+                conn,
+                "Watch deployment",
+                "Verify deployment",
+                "verification",
+                ["Deployment verified"],
+                [],
+                80,
+                "manager",
+                True,
+            )
             swarmctl.claim_task(conn, task, "watcher", 1800)
             deadline = self.future_time(2)
             wait = swarmctl.start_external_wait(
-                conn, task, "watcher", "Deployment is terminal", "deploy-77",
-                deadline, signal_expected=True,
+                conn,
+                task,
+                "watcher",
+                "Deployment is terminal",
+                "deploy-77",
+                deadline,
+                signal_expected=True,
             )
             swarmctl.reconcile_conn(conn, at=self.future_time(3))
-            current_wait = swarmctl.external_wait_dict(conn, swarmctl.external_wait_row(conn, wait["id"]))
+            current_wait = swarmctl.external_wait_dict(
+                conn, swarmctl.external_wait_row(conn, wait["id"])
+            )
             self.assertEqual(current_wait["wake_reason"], "DEADLINE")
             self.assertTrue(current_wait["requires_attention"])
             self.assertEqual(swarmctl.task_row(conn, task)["status"], "READY")
@@ -1014,27 +1453,51 @@ class SwarmLifecycleTest(unittest.TestCase):
 
     def test_acceptance_6_restart_preserves_wait_finding_and_history(self):
         conn = self.connection()
-        task = swarmctl.add_task(conn, "Observe job", "Inspect an external job", "discovery",
-                                 ["Job state recorded"], [], 70, "manager", True)
+        task = swarmctl.add_task(
+            conn,
+            "Observe job",
+            "Inspect an external job",
+            "discovery",
+            ["Job state recorded"],
+            [],
+            70,
+            "manager",
+            True,
+        )
         swarmctl.claim_task(conn, task, "observer", 1800)
         finding = swarmctl.raise_finding(
-            conn, task, "observer", "MATERIAL", "Job metadata is inconsistent",
-            ["provider:job-5", "event:E-5"], "May invalidate the planned recovery",
+            conn,
+            task,
+            "observer",
+            "MATERIAL",
+            "Job metadata is inconsistent",
+            ["provider:job-5", "event:E-5"],
+            "May invalidate the planned recovery",
             "Compare provider and destination state",
         )
         wait = swarmctl.start_external_wait(
-            conn, task, "observer", "Job reaches a terminal state", "job-5",
-            self.future_time(5), self.future_time(2), True,
+            conn,
+            task,
+            "observer",
+            "Job reaches a terminal state",
+            "job-5",
+            self.future_time(5),
+            self.future_time(2),
+            True,
         )
         conn.close()
 
         restarted = self.connection()
         try:
             self.assertEqual(swarmctl.task_row(restarted, task)["status"], "WAITING_EXTERNAL")
-            self.assertEqual(swarmctl.external_wait_row(restarted, wait["id"])["condition"],
-                             "Job reaches a terminal state")
+            self.assertEqual(
+                swarmctl.external_wait_row(restarted, wait["id"])["condition"],
+                "Job reaches a terminal state",
+            )
             self.assertEqual(swarmctl.finding_row(restarted, finding)["status"], "OPEN")
-            events = [row["event_type"] for row in restarted.execute("SELECT * FROM events ORDER BY seq")]
+            events = [
+                row["event_type"] for row in restarted.execute("SELECT * FROM events ORDER BY seq")
+            ]
             self.assertIn("FINDING_RAISED", events)
             self.assertIn("EXTERNAL_WAIT_STARTED", events)
             self.assertTrue(swarmctl.doctor(restarted)["ok"])
@@ -1044,35 +1507,71 @@ class SwarmLifecycleTest(unittest.TestCase):
     def test_acceptance_7_findings_receive_all_dispositions_and_audit_links(self):
         conn = self.connection()
         try:
-            stream = swarmctl.add_workstream(conn, "Replay safety", "Prove replay is safe",
-                                             "manager", "ACTIVE")
+            stream = swarmctl.add_workstream(
+                conn, "Replay safety", "Prove replay is safe", "manager", "ACTIVE"
+            )
             source_tasks = []
             finding_ids = []
             for index in range(3):
                 task = swarmctl.add_task(
-                    conn, "Source %d" % index, "Gather evidence", "discovery",
-                    ["Evidence recorded"], [], 60 - index, "manager", True, stream,
+                    conn,
+                    "Source %d" % index,
+                    "Gather evidence",
+                    "discovery",
+                    ["Evidence recorded"],
+                    [],
+                    60 - index,
+                    "manager",
+                    True,
+                    stream,
                 )
                 source_tasks.append(task)
                 agent = "finder-%d" % index
                 swarmctl.claim_task(conn, task, agent, 1800)
-                finding_ids.append(swarmctl.raise_finding(
-                    conn, task, agent, "MATERIAL", "Finding %d" % index,
-                    ["artifact:%d" % index], "Could change replay planning", "Bounded follow-up",
-                ))
-                swarmctl.complete_task(conn, task, agent, "Evidence gathered",
-                                       ["Evidence %d verified" % index], [])
+                finding_ids.append(
+                    swarmctl.raise_finding(
+                        conn,
+                        task,
+                        agent,
+                        "MATERIAL",
+                        "Finding %d" % index,
+                        ["artifact:%d" % index],
+                        "Could change replay planning",
+                        "Bounded follow-up",
+                    )
+                )
+                swarmctl.complete_task(
+                    conn, task, agent, "Evidence gathered", ["Evidence %d verified" % index], []
+                )
             with self.assertRaises(swarmctl.SwarmError):
                 swarmctl.complete_mission(conn, "Too early", "manager")
-            follow = swarmctl.add_task(conn, "Investigate first finding", "Bounded follow-up",
-                                       "discovery", ["Finding resolved"], [], 55,
-                                       "manager", False, stream)
-            swarmctl.dispose_finding(conn, finding_ids[0], "INCORPORATED", "Creates bounded work",
-                                     "manager", [follow], [stream])
-            swarmctl.dispose_finding(conn, finding_ids[1], "DEFERRED", "Useful but not on critical path",
-                                     "manager")
-            swarmctl.dispose_finding(conn, finding_ids[2], "DISMISSED", "Evidence duplicates known behavior",
-                                     "manager")
+            follow = swarmctl.add_task(
+                conn,
+                "Investigate first finding",
+                "Bounded follow-up",
+                "discovery",
+                ["Finding resolved"],
+                [],
+                55,
+                "manager",
+                False,
+                stream,
+            )
+            swarmctl.dispose_finding(
+                conn,
+                finding_ids[0],
+                "INCORPORATED",
+                "Creates bounded work",
+                "manager",
+                [follow],
+                [stream],
+            )
+            swarmctl.dispose_finding(
+                conn, finding_ids[1], "DEFERRED", "Useful but not on critical path", "manager"
+            )
+            swarmctl.dispose_finding(
+                conn, finding_ids[2], "DISMISSED", "Evidence duplicates known behavior", "manager"
+            )
             states = [swarmctl.finding_row(conn, value)["status"] for value in finding_ids]
             self.assertEqual(states, ["INCORPORATED", "DEFERRED", "DISMISSED"])
         finally:
@@ -1081,10 +1580,17 @@ class SwarmLifecycleTest(unittest.TestCase):
         swarmctl.export_audit(self.root, audit)
         with zipfile.ZipFile(str(audit)) as archive:
             snapshot = json.loads(archive.read("swarm-audit/snapshot.json"))
-            incorporated = next(item for item in snapshot["findings"] if item["id"] == finding_ids[0])
+            incorporated = next(
+                item for item in snapshot["findings"] if item["id"] == finding_ids[0]
+            )
             self.assertEqual(incorporated["resulting_tasks"], [follow])
-            events = [json.loads(line) for line in archive.read("swarm-audit/events.jsonl").decode().splitlines()]
-            dispositions = [item for item in events if item["event_type"] == "FINDING_DISPOSITIONED"]
+            events = [
+                json.loads(line)
+                for line in archive.read("swarm-audit/events.jsonl").decode().splitlines()
+            ]
+            dispositions = [
+                item for item in events if item["event_type"] == "FINDING_DISPOSITIONED"
+            ]
             self.assertEqual(len(dispositions), 3)
 
     def test_acceptance_8_routine_checkpoints_do_not_churn_manager(self):
@@ -1098,22 +1604,39 @@ class SwarmLifecycleTest(unittest.TestCase):
                     manager_calls.append(time.monotonic())
                     task = conn.execute("SELECT * FROM tasks LIMIT 1").fetchone()
                     if not task:
-                        swarmctl.add_task(conn, "Routine work", "Checkpoint normally", "discovery",
-                                          ["Work verified"], [], 50, "manager", True)
+                        swarmctl.add_task(
+                            conn,
+                            "Routine work",
+                            "Checkpoint normally",
+                            "discovery",
+                            ["Work verified"],
+                            [],
+                            50,
+                            "manager",
+                            True,
+                        )
                     elif task["status"] == "DONE":
                         swarmctl.complete_mission(conn, "Routine work verified", "manager")
                 else:
                     for index in range(5):
                         swarmctl.checkpoint_task(
-                            conn, task_id, agent, "Routine checkpoint %d" % index,
-                            "Continue bounded work", 1800,
+                            conn,
+                            task_id,
+                            agent,
+                            "Routine checkpoint %d" % index,
+                            "Continue bounded work",
+                            1800,
                         )
                         time.sleep(0.02)
-                    self.assertEqual(conn.execute(
-                        "SELECT COUNT(*) AS n FROM manager_reviews WHERE status='PENDING'"
-                    ).fetchone()["n"], 0)
-                    swarmctl.complete_task(conn, task_id, agent, "Routine work done",
-                                           ["Final state verified"], [])
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT COUNT(*) AS n FROM manager_reviews WHERE status='PENDING'"
+                        ).fetchone()["n"],
+                        0,
+                    )
+                    swarmctl.complete_task(
+                        conn, task_id, agent, "Routine work done", ["Final state verified"], []
+                    )
             finally:
                 conn.close()
             return {"run_id": "fake-%s" % agent, "exit_code": 0}
@@ -1127,8 +1650,15 @@ class SwarmLifecycleTest(unittest.TestCase):
         conn = self.connection()
         try:
             task = swarmctl.add_task(
-                conn, "Inspect provider", "Inspect provider state", "discovery",
-                ["Provider state verified"], [], 70, "manager", True,
+                conn,
+                "Inspect provider",
+                "Inspect provider state",
+                "discovery",
+                ["Provider state verified"],
+                [],
+                70,
+                "manager",
+                True,
             )
             swarmctl.claim_task(conn, task, "worker-cli", 1800)
         finally:
@@ -1136,44 +1666,102 @@ class SwarmLifecycleTest(unittest.TestCase):
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(swarmctl.main([
-                "--root", str(self.root), "finding", "raise",
-                "--task", task, "--agent", "worker-cli", "--significance", "material",
-                "--summary", "Provider state contradicts the plan",
-                "--evidence", "provider:job-17", "--impact", "Recovery may need another step",
-                "--recommendation", "Inspect the provider result",
-            ]), 0)
+            self.assertEqual(
+                swarmctl.main(
+                    [
+                        "--root",
+                        str(self.root),
+                        "finding",
+                        "raise",
+                        "--task",
+                        task,
+                        "--agent",
+                        "worker-cli",
+                        "--significance",
+                        "material",
+                        "--summary",
+                        "Provider state contradicts the plan",
+                        "--evidence",
+                        "provider:job-17",
+                        "--impact",
+                        "Recovery may need another step",
+                        "--recommendation",
+                        "Inspect the provider result",
+                    ]
+                ),
+                0,
+            )
         finding = json.loads(output.getvalue())
         self.assertEqual(finding["status"], "OPEN")
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(swarmctl.main([
-                "--root", str(self.root), "task", "wait-external", task,
-                "--agent", "worker-cli", "--condition", "Provider job is terminal",
-                "--external-ref", "job-17", "--deadline", self.future_time(4),
-                "--signal-expected",
-            ]), 0)
+            self.assertEqual(
+                swarmctl.main(
+                    [
+                        "--root",
+                        str(self.root),
+                        "task",
+                        "wait-external",
+                        task,
+                        "--agent",
+                        "worker-cli",
+                        "--condition",
+                        "Provider job is terminal",
+                        "--external-ref",
+                        "job-17",
+                        "--deadline",
+                        self.future_time(4),
+                        "--signal-expected",
+                    ]
+                ),
+                0,
+            )
         wait = json.loads(output.getvalue())
         self.assertEqual(wait["status"], "WAITING")
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(swarmctl.main([
-                "--root", str(self.root), "wait", "signal", wait["id"],
-                "--source", "provider", "--external-id", "callback-17",
-                "--note", "Terminal notification",
-            ]), 0)
+            self.assertEqual(
+                swarmctl.main(
+                    [
+                        "--root",
+                        str(self.root),
+                        "wait",
+                        "signal",
+                        wait["id"],
+                        "--source",
+                        "provider",
+                        "--external-id",
+                        "callback-17",
+                        "--note",
+                        "Terminal notification",
+                    ]
+                ),
+                0,
+            )
         signal = json.loads(output.getvalue())
         self.assertTrue(signal["woke"])
         self.assertEqual(signal["wake_reason"], "EXTERNAL_SIGNAL")
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(swarmctl.main([
-                "--root", str(self.root), "finding", "disposition", finding["id"],
-                "--status", "deferred", "--rationale", "Verify the wake first",
-            ]), 0)
+            self.assertEqual(
+                swarmctl.main(
+                    [
+                        "--root",
+                        str(self.root),
+                        "finding",
+                        "disposition",
+                        finding["id"],
+                        "--status",
+                        "deferred",
+                        "--rationale",
+                        "Verify the wake first",
+                    ]
+                ),
+                0,
+            )
         disposition = json.loads(output.getvalue())
         self.assertEqual(disposition["status"], "DEFERRED")
 
@@ -1186,14 +1774,28 @@ class SwarmLifecycleTest(unittest.TestCase):
             try:
                 if role == "manager":
                     if not task_ids:
-                        task_ids.append(swarmctl.add_task(
-                            conn, "Wait for provider", "Verify provider completion", "verification",
-                            ["Provider completion verified"], [], 70, "manager", True,
-                        ))
+                        task_ids.append(
+                            swarmctl.add_task(
+                                conn,
+                                "Wait for provider",
+                                "Verify provider completion",
+                                "verification",
+                                ["Provider completion verified"],
+                                [],
+                                70,
+                                "manager",
+                                True,
+                            )
+                        )
                 else:
                     swarmctl.start_external_wait(
-                        conn, task_id, agent, "Provider job is terminal", "job-process-exit",
-                        self.future_time(4), signal_expected=True,
+                        conn,
+                        task_id,
+                        agent,
+                        "Provider job is terminal",
+                        "job-process-exit",
+                        self.future_time(4),
+                        signal_expected=True,
                     )
             finally:
                 conn.close()
@@ -1208,10 +1810,13 @@ class SwarmLifecycleTest(unittest.TestCase):
             self.assertEqual(row["status"], "WAITING_EXTERNAL")
             self.assertIsNone(row["owner"])
             self.assertIsNone(row["lease_until"])
-            self.assertEqual(conn.execute(
-                "SELECT COUNT(*) AS n FROM external_waits WHERE task_id=? AND status='WAITING'",
-                (task_ids[0],),
-            ).fetchone()["n"], 1)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) AS n FROM external_waits WHERE task_id=? AND status='WAITING'",
+                    (task_ids[0],),
+                ).fetchone()["n"],
+                1,
+            )
         finally:
             conn.close()
 

@@ -11,7 +11,9 @@ class DocumentationTest(unittest.TestCase):
     def test_documentation_contract(self):
         completed = subprocess.run(
             [sys.executable, "-B", str(PACKAGE_ROOT / "scripts" / "check_docs.py")],
-            cwd=str(PACKAGE_ROOT), text=True, capture_output=True,
+            cwd=str(PACKAGE_ROOT),
+            text=True,
+            capture_output=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 

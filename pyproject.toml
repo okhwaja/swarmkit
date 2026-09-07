@@ -1,0 +1,15 @@
+# Optional development tools; the Swarmkit runtime uses only the standard library.
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+# These imports are the compatibility API for older Python adapters.
+"swarmctl.py" = ["F401"]

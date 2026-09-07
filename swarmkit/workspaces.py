@@ -128,9 +128,10 @@ def run_workspace_command(command, repository, timeout, lock_handle=None):
     # A failed/timeout adapter may have created a checkout. Never retry automatically
     # or delete its output: the operator can inspect and register it explicitly.
     try:
-        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output, tempfile.TemporaryFile(
-            mode="w+", encoding="utf-8"
-        ) as errors:
+        with (
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output,
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as errors,
+        ):
             process = subprocess.Popen(
                 command,
                 cwd=str(repository),

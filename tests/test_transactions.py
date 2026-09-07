@@ -47,7 +47,7 @@ class TransactionTest(unittest.TestCase):
             "ingress",
             ["Checked"],
             ready=True,
-            **kwargs
+            **kwargs,
         )
 
     def count(self, table):

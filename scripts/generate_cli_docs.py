@@ -31,7 +31,9 @@ def render():
     def visit(parsed, path):
         parsed.prog = "swarmctl" + (" " + " ".join(path) if path else "")
         title = "swarmctl" + (" " + " ".join(path) if path else "")
-        sections.extend(["## `%s`" % title, "", "```text", parsed.format_help().rstrip(), "```", ""])
+        sections.extend(
+            ["## `%s`" % title, "", "```text", parsed.format_help().rstrip(), "```", ""]
+        )
         action = subparser_action(parsed)
         if action:
             for name in sorted(action.choices):

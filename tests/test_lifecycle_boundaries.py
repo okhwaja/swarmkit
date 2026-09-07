@@ -69,6 +69,8 @@ class LifecycleBoundaryTest(unittest.TestCase):
             "CANCELLED",
         )
 
+        self.assertTrue(s.doctor(self.conn)["ok"], s.doctor(self.conn)["problems"])
+
     def test_drain_waits_for_claimed_delivery_then_pauses(self):
         job = self.pending_delivery()
         delivery.claim_delivery(self.conn, job, "sender", 60)
