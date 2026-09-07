@@ -655,11 +655,16 @@ def reconcile_conn(conn, actor="reconciler", at=None):
     changed.extend(reconcile_external_waits(conn, actor, at=now))
 
     candidates = conn.execute(
-        "SELECT * FROM tasks WHERE authorized=1 AND status IN ('PROPOSED','BLOCKED')"
+        """SELECT t.id,t.mission_id,t.status,
+            NOT EXISTS (SELECT 1 FROM decision_tasks dt JOIN decisions d ON d.id=dt.decision_id
+                WHERE dt.task_id=t.id AND d.status='OPEN') AS decisions_clear,
+            NOT EXISTS (SELECT 1 FROM task_dependencies td JOIN tasks dependency ON dependency.id=td.depends_on
+                WHERE td.task_id=t.id AND dependency.status!='DONE') AS dependencies_clear
+            FROM tasks t WHERE t.authorized=1 AND t.status IN ('PROPOSED','BLOCKED')"""
     ).fetchall()
     for row in candidates:
-        no_open_decisions = open_decision_count(conn, row["id"]) == 0
-        dependencies_done = all_dependencies_done(conn, row["id"])
+        no_open_decisions = row["decisions_clear"]
+        dependencies_done = row["dependencies_clear"]
         if no_open_decisions and dependencies_done:
             updated = conn.execute(
                 "UPDATE tasks SET status='READY', updated_at=? WHERE id=? AND status=?",
@@ -720,47 +725,61 @@ def reconcile_conn(conn, actor="reconciler", at=None):
 def reconcile_cases(conn, actor="reconciler"):
     changed = []
     now = utcnow()
-    for case in conn.execute(
-        "SELECT * FROM cases WHERE status NOT IN ('DONE','CANCELLED')"
-    ).fetchall():
-        tasks = conn.execute(
-            """SELECT t.status, t.result FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
-               WHERE ct.case_id=?""",
-            (case["id"],),
-        ).fetchall()
-        decisions = conn.execute(
-            """SELECT DISTINCT d.kind FROM case_tasks ct
-               JOIN decision_tasks dt ON dt.task_id=ct.task_id
-               JOIN decisions d ON d.id=dt.decision_id
-               WHERE ct.case_id=? AND d.status='OPEN'""",
-            (case["id"],),
-        ).fetchall()
-        kinds = {row["kind"] for row in decisions}
-        outcome = completion_outcome(row["status"] for row in tasks) if tasks else None
-        if tasks and outcome:
+    # Read counts in one query. Active services should not decode every completed
+    # result or issue two additional reads per case on every scheduler poll.
+    cases = conn.execute(
+        """WITH active_cases AS (
+            SELECT id,mission_id,workstream_id,status,result_summary FROM cases
+            WHERE status NOT IN ('DONE','CANCELLED')),
+        task_counts AS (
+            SELECT ct.case_id,COUNT(*) AS total,
+                SUM(t.status NOT IN ('DONE','CANCELLED')) AS remaining,
+                SUM(t.status='DONE') AS done,SUM(t.status='CANCELLED') AS cancelled,
+                SUM(t.status='WAITING_EXTERNAL') AS waiting,SUM(t.status='VERIFYING') AS verifying
+            FROM active_cases c JOIN case_tasks ct ON ct.case_id=c.id JOIN tasks t ON t.id=ct.task_id
+            GROUP BY ct.case_id),
+        decision_counts AS (
+            SELECT ct.case_id,COUNT(*) AS open_questions,
+                MAX(d.kind IN ('human_decision','missing_access','safety_stop')) AS needs_human
+            FROM active_cases c JOIN case_tasks ct ON ct.case_id=c.id
+            JOIN decision_tasks dt ON dt.task_id=ct.task_id JOIN decisions d ON d.id=dt.decision_id
+            WHERE d.status='OPEN' GROUP BY ct.case_id)
+        SELECT c.*,COALESCE(t.total,0) AS total,t.remaining,t.done,t.cancelled,t.waiting,t.verifying,
+            d.open_questions,d.needs_human FROM active_cases c
+            LEFT JOIN task_counts t ON t.case_id=c.id LEFT JOIN decision_counts d ON d.case_id=c.id"""
+    ).fetchall()
+    for case in cases:
+        outcome = None
+        if case["total"] and not case["remaining"]:
+            terminal_states = {
+                state
+                for state, count in (("DONE", case["done"]), ("CANCELLED", case["cancelled"]))
+                if count
+            }
+            outcome = completion_outcome(terminal_states)
             status = "DONE"
-        elif kinds & {"human_decision", "missing_access", "safety_stop"}:
+        elif case["needs_human"]:
             status = "WAITING_HUMAN"
-        elif any(row["status"] == "WAITING_EXTERNAL" for row in tasks):
+        elif case["waiting"] or case["open_questions"]:
             status = "WAITING_EXTERNAL"
-        elif kinds:
-            status = "WAITING_EXTERNAL"
-        elif not tasks:
+        elif not case["total"]:
             status = "OPEN"
-        elif any(row["status"] == "VERIFYING" for row in tasks):
+        elif case["verifying"]:
             status = "VERIFYING"
         else:
             status = "ACTIVE"
         if status != case["status"]:
             result_summary = case["result_summary"]
             if status == "DONE":
-                results = [
-                    row["result"] for row in tasks if row["status"] == "DONE" and row["result"]
-                ]
-                result_summary = results[-1] if results else "No task result was delivered"
-                cancelled = sum(row["status"] == "CANCELLED" for row in tasks)
-                if cancelled:
-                    result_summary += "; %d task(s) cancelled" % cancelled
+                last_result = conn.execute(
+                    "SELECT t.result FROM tasks t JOIN case_tasks ct ON ct.task_id=t.id "
+                    "WHERE ct.case_id=? AND t.status='DONE' AND t.result IS NOT NULL AND t.result!='' "
+                    "ORDER BY t.rowid DESC LIMIT 1",
+                    (case["id"],),
+                ).fetchone()
+                result_summary = last_result[0] if last_result else "No task result was delivered"
+                if case["cancelled"]:
+                    result_summary += "; %d task(s) cancelled" % case["cancelled"]
             closed_at = now if status in {"DONE", "CANCELLED"} else None
             conn.execute(
                 """UPDATE cases SET status=?, result_summary=?, updated_at=?, closed_at=?, completion_outcome=?

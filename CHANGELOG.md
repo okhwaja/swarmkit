@@ -17,6 +17,11 @@
   cross-case cancellation and unrecovered harnesses/effects, and roll back fully
   if new planning fails. Existing policy-key storage is reused without migration.
 
+- Batch task eligibility and active-case reconciliation reads. A 1,000-case /
+  5,000-task fixture reduced unchanged-pass reads from 6,009 to 9 and measured
+  about 50 ms to 11 ms locally. Added an active-service benchmark and invariant
+  tests for query counts, human/wait precedence, and terminal outcomes.
+
 ## 0.8.0
 
 - Split the engine into explicit storage, domain, runtime, context, and presentation

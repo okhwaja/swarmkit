@@ -240,3 +240,17 @@ planners, injected failure after cancellation, validation/conflicting keys,
 decision inheritance, external dependencies, effect/run guards, and CLI usage.
 Documentation impact: planning/state/CLI and service user journey; no new schema.
 Checkout checkpoint 6de2fbc passed all 174 source/extracted-package tests.
+
+## Continued pass: active-service reconciliation
+
+Built a provider-free service fixture to measure 1,000 active cases / 5,000 tasks.
+The prior poll made 6,009 read statements by separately querying every candidate's
+dependencies/decisions and each case's tasks/decisions. Replaced these with SQL
+eligibility predicates and grouped case counts, projected only needed columns,
+and read a completed result only when the case closes. Read statements fell to 9,
+full median 50.095→10.576 ms, Python allocation peak 2.289→0.756 MB. Added semantic
+state-precedence tests and a hardware-independent constant-query-count test.
+Documentation impact: performance/architecture and release metadata; public
+state semantics retained, with deterministic most recently created delivered-task
+result selection at case closure. Case plan checkpoint d56d0c1 passed 183 tests
+in source and extracted distribution.

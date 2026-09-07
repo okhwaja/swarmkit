@@ -47,3 +47,30 @@ does not model thousands of simultaneously active cases, large provider files,
 slow disks, or live harness execution. Regression tests separately verify that
 inbox paging happens before JSON decoding and worker prompts do not load the
 full mission snapshot.
+
+## Many simultaneously active cases
+
+The service benchmark measures repeated reconciliation while cases are still
+open. Every case has five tasks: two completed with retained result text, one
+ready, and two awaiting that task. No provider or harness runs.
+
+```sh
+python3 -B scripts/benchmark_service.py
+python3 -B scripts/benchmark_service.py --source /path/to/older/swarmkit
+python3 -B scripts/benchmark_service.py --cases 5000
+```
+
+Measured on the same host on 2026-09-07, comparing local commit `d56d0c1` with
+the subsequent bulk-reconciliation change, using 1,000 open cases / 5,000 tasks:
+
+| Operation | Before median | After median | Before Python peak | After Python peak |
+|---|---:|---:|---:|---:|
+| Case reconciliation | 27.646 ms | 6.212 ms | 1.074 MB | 0.288 MB |
+| Full reconciliation | 50.095 ms | 10.576 ms | 2.289 MB | 0.756 MB |
+
+Read statements for an unchanged full pass fell from **6,009 to 9**. Task
+eligibility is computed together with its dependency and decision gates. Case
+classification uses grouped task/decision counts, and completed result text is
+read only when closing a case. Work still scales with the number of active rows;
+this is not a constant-time scheduler. The regression test checks query count and
+state precedence rather than imposing a hardware-dependent latency threshold.

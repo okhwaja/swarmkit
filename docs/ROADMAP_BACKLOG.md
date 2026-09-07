@@ -60,9 +60,9 @@ These are remaining implementation work, not decisions being pushed to the owner
   contracts. Mission/case/workstream completion now distinguishes partial results.
 - Semantic policy evaluation, general cross-case plan replacement,
   version-aware service supersession, and first-class reducer groups.
-- Complete causal graphs, critical paths, and performance evaluation with many
-  simultaneously active cases. Indexed bounded context/inbox reads and repeatable
-  inactive-history benchmarks are implemented.
+- Complete causal graphs and critical paths. Repeatable inactive-history and
+  active-service benchmarks are implemented, along with bounded context/inbox
+  reads and bulk reconciliation. Provider/harness load evaluation remains.
 - Conditional retry/backoff, shared resource locks, granular lifecycle scope, and
   explicit workspace cleanup tooling. Creation intents and attachment recovery are implemented.
 - Automatic verification of provider receipts and bounded trusted test execution.
