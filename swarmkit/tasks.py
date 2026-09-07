@@ -30,6 +30,8 @@ from .storage import (
     budget_reason,
     cancel_external_waits,
     end_attempt,
+    has_active_work,
+    has_unfinished_runs,
     mission,
     mission_mode,
     register_artifact,
@@ -747,23 +749,40 @@ def control_mission(conn, action, actor, reason):
         raise SwarmError("Lifecycle changes require a reason")
     if state["desired_state"] in {"CANCELLED", "ABANDONED"} or mission(conn)["status"] == "DONE":
         raise SwarmError("Terminal missions cannot resume; create a new mission")
-    if action == "resume" and uncertain_effects(conn):
-        raise SwarmError("Reconcile uncertain effects before resuming")
-    if (
-        action == "resume"
-        and conn.execute("SELECT 1 FROM agent_runs WHERE ended_at IS NULL").fetchone()
+    if action == "resume" and (
+        uncertain_effects(conn)
+        or conn.execute("SELECT 1 FROM deliveries WHERE status='UNKNOWN'").fetchone()
     ):
-        raise SwarmError("Wait for active harnesses or run recover before resuming")
+        raise SwarmError("Reconcile uncertain effects and deliveries before resuming")
+    if action == "resume" and (
+        has_unfinished_runs(conn)
+        or conn.execute("SELECT 1 FROM deliveries WHERE status='CLAIMED'").fetchone()
+    ):
+        raise SwarmError("Wait for active harnesses and deliveries or run recover before resuming")
     desired = transitions[action]
-    if (
-        action == "drain"
-        and not conn.execute(
-            "SELECT 1 FROM tasks WHERE status IN ('CLAIMED','RUNNING','VERIFYING')"
-        ).fetchone()
-        and not conn.execute("SELECT 1 FROM agent_runs WHERE ended_at IS NULL").fetchone()
-    ):
+    if action == "drain" and not has_active_work(conn):
         desired = "PAUSED"
     if action in {"pause", "cancel", "abandon"}:
+        for review in conn.execute(
+            "SELECT id,status FROM manager_reviews WHERE status IN ('PENDING','RUNNING')"
+        ).fetchall():
+            if action == "pause" and review["status"] == "PENDING":
+                continue
+            review_status = "PENDING" if action == "pause" else "CANCELLED"
+            conn.execute(
+                "UPDATE manager_reviews SET status=?,owner=NULL,lease_until=NULL,started_at=NULL,updated_at=? WHERE id=?",
+                (review_status, utcnow(), review["id"]),
+            )
+            conn.execute("DELETE FROM review_commits WHERE review_id=?", (review["id"],))
+            add_event(
+                conn,
+                mission(conn)["id"],
+                "manager_review",
+                review["id"],
+                "MANAGER_REVIEW_INTERRUPTED" if action == "pause" else "MANAGER_REVIEW_CANCELLED",
+                actor,
+                {"reason": reason, "status": review_status},
+            )
         for task in conn.execute(
             "SELECT * FROM tasks WHERE status NOT IN ('DONE','CANCELLED')"
         ).fetchall():

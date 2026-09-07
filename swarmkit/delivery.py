@@ -429,6 +429,12 @@ def cancel_delivery(conn, delivery_id, actor, reason):
         raise SwarmError("Unknown delivery: %s" % delivery_id)
     if row["status"] in {"SENT", "CANCELLED"}:
         raise SwarmError("Delivery is already terminal")
+    if not reason.strip():
+        raise SwarmError("Delivery cancellation requires a reason")
+    if row["status"] in {"CLAIMED", "UNKNOWN"}:
+        raise SwarmError(
+            "An in-flight or uncertain delivery needs a provider outcome before cancellation"
+        )
     conn.execute(
         """UPDATE deliveries SET status='CANCELLED', last_error=?, claimed_by=NULL,
            lease_until=NULL, updated_at=? WHERE id=?""",

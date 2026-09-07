@@ -131,3 +131,10 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   and malformed-manifest tracebacks. Exports now stage once, stream content, keep
   canonical history unchanged, and atomically publish. Share-safe queries only
   allowlisted counters. Five regressions pass; full source suite passes 140 tests.
+
+- Saved local commit 35b6319 for audit fixes; 140 source/package tests passed.
+- Lifecycle audit found unfenced manager commits after pause, cancelled reviews
+  completing as DONE, drain overlooking manager/delivery ownership, and delivery
+  cancellation hiding an in-flight/unknown outcome. Added unified active-run/work
+  queries, manager lease retirement, deterministic drain completion, and delivery
+  reconciliation guards. Six targeted regressions cover these boundaries.

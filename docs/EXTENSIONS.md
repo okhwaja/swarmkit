@@ -178,3 +178,8 @@ Use its examples for new integrations. The
 [roadmap backlog](ROADMAP_BACKLOG.md) distinguishes shipped slices from remaining
 engineering work and owner decisions. Permission enforcement stays with the
 harness and tools. Runtime process locking requires a single POSIX host.
+
+Cancellation applies to pending or definitively failed jobs. An in-flight claim or
+`UNKNOWN` job must first receive a provider outcome; cancellation cannot prove that
+an external send stopped. Mission drain includes claimed deliveries and unclosed
+sender processes, even after the provider receipt has been recorded.

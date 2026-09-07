@@ -399,3 +399,18 @@ prompts, logs, payloads, or the database. Verification validates manifest struct
 relative paths, duplicate entries, sizes, and streaming content hashes; malformed
 archives return problems rather than a Python traceback. Hash verification detects
 content changes, not the identity or trustworthiness of the archive's author.
+
+### Lifecycle across managers and delivery adapters
+
+Pause retires the current manager-review lease as well as active worker attempts.
+A late process exit cannot acknowledge the retired review; a fresh manager receives
+it after resume. Cancel/abandon withdraw pending and running reviews. Drain allows
+current workers, reviews, and claimed deliveries to finish and stays `DRAINING`
+until every tracked harness process has closed, including a sender that already
+recorded its receipt. Reconciliation then records `MISSION_DRAINED` and `PAUSED`.
+Resume requires delivery runs and claims to finish or be recovered, and uncertain
+deliveries to be reconciled, just as with uncertain effects.
+
+A claimed or `UNKNOWN` delivery cannot be cancelled into a misleading terminal
+state. Observe its provider outcome first; a live sender may still record its
+receipt. Confirmed not-sent work can subsequently be cancelled while pending.

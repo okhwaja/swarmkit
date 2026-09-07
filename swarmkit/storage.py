@@ -214,6 +214,25 @@ def runtime_state(conn):
     return data
 
 
+def has_unfinished_runs(conn):
+    """Unclosed run records require completion or process-lock recovery."""
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM agent_runs WHERE ended_at IS NULL UNION ALL SELECT 1 FROM delivery_runs WHERE ended_at IS NULL LIMIT 1"
+        ).fetchone()
+    )
+
+
+def has_active_work(conn):
+    return has_unfinished_runs(conn) or bool(
+        conn.execute(
+            """SELECT 1 FROM tasks WHERE status IN ('CLAIMED','RUNNING','VERIFYING')
+           UNION ALL SELECT 1 FROM manager_reviews WHERE status='RUNNING'
+           UNION ALL SELECT 1 FROM deliveries WHERE status='CLAIMED' LIMIT 1"""
+        ).fetchone()
+    )
+
+
 def require_active_mission(conn):
     state = runtime_state(conn)
     if state["desired_state"] != "ACTIVE" or mission(conn)["status"] != "ACTIVE":

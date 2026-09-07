@@ -24,6 +24,7 @@ from .storage import (
     end_attempt,
     external_wait_row,
     finding_row,
+    has_active_work,
     mission,
     open_decision_count,
     require_active_mission,
@@ -204,9 +205,15 @@ def finish_manager_review(conn, review_id, agent, succeeded):
     if not row:
         raise SwarmError("Unknown manager review: %s" % review_id)
     if row["status"] != "RUNNING" or row["owner"] != agent:
-        raise SwarmError("Manager review %s is not owned by %s" % (review_id, agent))
+        # A controller may receive a late process exit after pause or recovery.
+        # That notification cannot acknowledge a different review lease.
+        return False
     now = utcnow()
-    if row["lease_until"] and row["lease_until"] <= now:
+    if (
+        runtime_state(conn)["desired_state"] not in {"ACTIVE", "DRAINING"}
+        or row["lease_until"]
+        and row["lease_until"] <= now
+    ):
         succeeded = False
     if (
         runtime_state(conn)["strict_evidence"]
@@ -693,6 +700,19 @@ def reconcile_conn(conn, actor="reconciler", at=None):
         )
         changed.append((decision["id"], "CANCELLED"))
     changed.extend(reconcile_cases(conn, actor))
+    if runtime_state(conn)["desired_state"] == "DRAINING" and not has_active_work(conn):
+        conn.execute("UPDATE runtime_state SET desired_state='PAUSED' WHERE id=1")
+        mission_id = mission(conn)["id"]
+        add_event(
+            conn,
+            mission_id,
+            "mission",
+            mission_id,
+            "MISSION_DRAINED",
+            actor,
+            {"desired_state": "PAUSED"},
+        )
+        changed.append((mission_id, "PAUSED"))
     return changed
 
 
@@ -792,6 +812,8 @@ def reconcile_cases(conn, actor="reconciler"):
 
 @atomic_write
 def commit_review(conn, review_id, agent, dispositions, summary):
+    if runtime_state(conn)["desired_state"] not in {"ACTIVE", "DRAINING"}:
+        raise SwarmError("Paused or terminal missions cannot accept a manager review commit")
     row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
     if (
         not row

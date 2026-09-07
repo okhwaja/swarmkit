@@ -354,10 +354,6 @@ def _run_loop(root, max_cycles, dry_run=False):
                 desired = runtime_state(conn)["desired_state"]
                 exhausted = budget_reason(conn)
                 if (desired != "ACTIVE" or exhausted) and not active:
-                    if desired == "DRAINING":
-                        conn.execute("UPDATE runtime_state SET desired_state='PAUSED' WHERE id=1")
-                        conn.commit()
-                        desired = "PAUSED"
                     if exhausted:
                         conn.execute(
                             "UPDATE runtime_state SET outcome='BUDGET_EXHAUSTED',reason=? WHERE id=1",

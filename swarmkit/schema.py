@@ -450,6 +450,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
 
 
 CONTEXT_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_agent_runs_unfinished ON agent_runs(id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_delivery_runs_unfinished ON delivery_runs(id) WHERE ended_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS policy_application_keys (
     key TEXT PRIMARY KEY,
     specification TEXT NOT NULL,
