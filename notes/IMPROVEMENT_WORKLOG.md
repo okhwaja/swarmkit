@@ -348,3 +348,18 @@ No remote push, PR, merge, provider action, or OS service installation occurred.
 - Source and extracted-package release checks pass: 215 tests in each, doc checks
   and Ruff pass. No schema change from 11. Documentation impact: harness, setup,
   runtime recovery, workstream user journey, generated help/version metadata.
+
+## Evidence diagnosis and retry identity (0.11.0/schema 12)
+
+- Added evidence show and bounded cursor-based list retrieval. Completion and
+  diagnostics share the exact newest matching result, with explicit failure,
+  stale target/attempt, missing/unreadable file, and changed-file explanations.
+- Added optional task-scoped evidence idempotency keys. Retrying an old passing
+  record does not move it after a newer failure; conflicting content/targets fail.
+  Concurrent retries produce one record/artifact, and late failures roll back all.
+- Three indexes keep target/criterion/history selection bounded. A 10,000-record
+  regression fixture verifies low SQLite VM work instead of timing thresholds.
+- Sequential schema-11 upgrade preserves evidence and adds keys/indexes. Release
+  checks pass with 223 tests in both source and extracted ZIP; docs are aligned.
+- Documentation impact: CLI/evidence contract, worker/verifier guidance, migration,
+  release metadata and engineering backlog. Evidence remains a harness attestation.

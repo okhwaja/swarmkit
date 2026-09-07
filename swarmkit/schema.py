@@ -502,6 +502,19 @@ CREATE INDEX IF NOT EXISTS idx_review_requested ON manager_reviews(status,reques
 """
 
 
+EVIDENCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS evidence_record_keys (
+    task_id TEXT NOT NULL REFERENCES tasks(id), key TEXT NOT NULL,
+    evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+    PRIMARY KEY(task_id,key)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_target
+    ON evidence(task_id,criterion,generation,mission_revision,revision,environment);
+CREATE INDEX IF NOT EXISTS idx_evidence_criterion ON evidence(task_id,criterion);
+CREATE INDEX IF NOT EXISTS idx_evidence_task ON evidence(task_id);
+"""
+
+
 def migrate_review_batches(conn):
     execute_schema(conn, REVIEW_BATCH_SCHEMA)
     # Keep legacy review payloads/order intact. The table is an identity index;
@@ -618,7 +631,9 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            if target == 11:
+            if target == 12:
+                execute_schema(conn, EVIDENCE_SCHEMA)
+            elif target == 11:
                 migrate_review_batches(conn)
             elif target == 10:
                 execute_schema(conn, WORKSPACE_CREATION_SCHEMA)

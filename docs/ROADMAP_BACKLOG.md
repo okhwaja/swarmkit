@@ -1,6 +1,6 @@
 # Roadmap implementation status and backlog
 
-Reviewed against the approved P0/P1 roadmap, with the 0.10.0 local improvement pass
+Reviewed against the approved P0/P1 roadmap, with the 0.11.0 local improvement pass
 on 2026-09-07 UTC. P2 remains deferred. Releases 0.7–0.10 add tested runtime
 slices across most of the active roadmap; this
 is not a claim that every capability or persistent-coworker release gate is done.
@@ -9,7 +9,7 @@ The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
 ## Questions for the owner
 
 These questions block the follow-on integrations below, not the changes shipped
-through 0.10.0. No answer or permission is inferred while you are away.
+through 0.11.0. No answer or permission is inferred while you are away.
 
 | Decision | Needed before | Suggested starting point |
 |---|---|---|
@@ -69,3 +69,9 @@ These are remaining implementation work, not decisions being pushed to the owner
 
 Do not call the persistent-coworker release gate complete until its remaining
 provider and lifecycle invariants have end-to-end fault-injection coverage.
+
+
+The 0.11.0 continuation adds explicit workstream cancellation, shared runner/adapter
+preflight validation, indexed evidence diagnostics/history, and stable evidence
+recording keys. Granular pause/resume scopes and trusted verification execution
+remain separate engineering work; recorded command results are still harness attestations.

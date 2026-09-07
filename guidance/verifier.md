@@ -46,3 +46,9 @@ checkouts with `workspace register`, including the actual opaque base revision.
 Select `--provider git` only for a Git workflow. Do not substitute a Git SHA or
 branch name for a provider-specific revision/reference. Register before dispatch;
 an active harness that registers a checkout must use that directory itself.
+
+Use `evidence show --task <task_id>` to diagnose missing coverage and
+`evidence list --task <task_id>` to retrieve older records. Give each actual check
+record a stable `--idempotency-key` when its recording command may be retried;
+use a new key for a real rerun. Replaying an old passing record must not supersede
+a newer failed check.

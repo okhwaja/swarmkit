@@ -1,6 +1,6 @@
 # Durable runtime and recovery
 
-This is the normative runtime contract, including the 0.10.0 bounded-review changes. Swarmkit supports
+This is the normative runtime contract, including the 0.11.0 evidence diagnostics and retry contract. Swarmkit supports
 one user on one POSIX host (macOS or Linux). The harness and its tools enforce
 permissions and credentials. These commands coordinate work; they do not grant
 authority or intercept arbitrary tool calls.
@@ -289,7 +289,25 @@ python3 swarmctl.py evidence record --task TASK --agent ATTEMPT_AGENT \
   --criterion 'Exact acceptance criterion' --revision EXACT_REVISION --environment ENV \
   --command 'actual test command' --exit-code 0 --path /path/to/result.log
 python3 swarmctl.py evidence gaps --task TASK
+python3 swarmctl.py evidence show --task TASK
+python3 swarmctl.py evidence list --task TASK --limit 20
 ```
+
+`evidence show` explains each criterion using the record that actually governs
+completion: `MISSING`, `STALE` (with the mismatched target/attempt fields), `FAILED`
+(with the exit code), `FILE_UNAVAILABLE`, `FILE_CHANGED`, or `PASSED`. A missing
+contract or invalid criteria appear in `gaps`. `evidence list` returns newest-first
+`records` and `next_before`; pass that ID to `--before` for the next page. Its default
+limit is 50 and maximum is 500. History ordering uses insertion order, including
+records made in the same second; concurrent new records do not shift older pages.
+
+Use `evidence record --idempotency-key CHECK_ID` when retrying a recording command
+after a lost acknowledgment. Keep that key stable for that exact task attempt,
+criterion, target, command, exit code, and result path/contents. An exact retry
+returns the original evidence ID without changing its insertion order or adding
+artifacts/events. A real rerun needs a new key. Changed requests are rejected,
+and current ownership and decision acknowledgments are still required on retries.
+Without a key, each call intentionally appends a new result.
 
 A task with an evidence contract, or any task in strict mode, cannot complete
 until every criterion has successful evidence for the exact contracted revision,
@@ -404,7 +422,7 @@ and the database. It is deliberately less useful for detailed postmortems.
 
 ## Upgrade
 
-Known schema versions 1–10 upgrade transactionally to schema 11. Versions 2–6 were
+Known schema versions 1–11 upgrade transactionally to schema 12. Versions 2–6 were
 additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
 metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
@@ -525,3 +543,12 @@ payloads and those omitted because they were missing, outside intake, or changed
 Copied bytes are checked against the recorded intake hash and size after copying.
 An archive can pass `audit-verify` while reporting missing source evidence: archive
 integrity is separate from completeness of the original mission's evidence.
+
+
+## Schema 12 upgrade
+
+Version 0.11.0 adds an optional task-scoped evidence key table and indexes for the
+latest criterion/target result and task history. No existing evidence payload,
+hash, result order, or artifact is rewritten. Completion reads one indexed result
+per criterion instead of scanning verification history. Stop older controllers
+and back up before upgrading; older binaries cannot read schema 12.

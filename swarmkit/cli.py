@@ -62,7 +62,13 @@ from .delivery import (
 from .demo import run_demo
 from .diagnostics import doctor
 from .effects import acquire_resource, prepare_effect, release_resource, transition_effect
-from .evidence import evidence_gaps, record_evidence, set_contract
+from .evidence import (
+    evidence_gaps,
+    evidence_history,
+    evidence_status,
+    record_evidence,
+    set_contract,
+)
 from .inbox import ack_inbox, inbox, lease_inbox
 from .policies import apply_policy, install_policy, read_policy_source
 from .prompts import build_prompt, write_prompt
@@ -177,8 +183,19 @@ def add_runtime_cli(sub):
             "--" + name, required=True, dest="evidence_command_text" if name == "command" else name
         )
     vr.add_argument("--exit-code", type=int, required=True)
+    vr.add_argument(
+        "--idempotency-key", help="Stable key for retrying this exact verification record"
+    )
     vg = vs.add_parser("gaps")
     vg.add_argument("--task", required=True)
+    show = vs.add_parser(
+        "show", help="Explain current coverage and the result behind each criterion"
+    )
+    show.add_argument("--task", required=True)
+    history = vs.add_parser("list", help="Page through one task's verification records")
+    history.add_argument("--task", required=True)
+    history.add_argument("--limit", type=int, default=50)
+    history.add_argument("--before", help="Continue with records older than this evidence ID")
     review = sub.add_parser(
         "review-commit", help="Record a semantic disposition for every manager trigger"
     )
@@ -360,8 +377,13 @@ def handle_runtime_cli(root, args):
                         args.evidence_command_text,
                         args.exit_code,
                         args.path,
+                        args.idempotency_key,
                     )
                 }
+            elif args.evidence_command == "show":
+                result = evidence_status(conn, args.task)
+            elif args.evidence_command == "list":
+                result = evidence_history(conn, args.task, args.limit, args.before)
             else:
                 result = {"gaps": evidence_gaps(conn, args.task)}
         elif args.command == "review-commit":

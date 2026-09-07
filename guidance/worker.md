@@ -108,3 +108,9 @@ revision becomes known during the task, bind its first contract with
 `evidence contract --actor <agent_id>` before recording final evidence. You cannot
 replace a pinned contract during the attempt. Ask for fresh verification work if
 the required target changes; every criterion must still match the final contract.
+
+Use `evidence show --task <task_id>` to diagnose missing coverage and
+`evidence list --task <task_id>` to retrieve older records. Give each actual check
+record a stable `--idempotency-key` when its recording command may be retried;
+use a new key for a real rerun. Replaying an old passing record must not supersede
+a newer failed check.

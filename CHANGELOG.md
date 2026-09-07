@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+- Added `evidence show --task` with specific missing, stale, failed, unavailable,
+  changed-file, and passing statuses. It uses the same current result as completion.
+- Added bounded `evidence list --task --limit --before` history with a stable cursor.
+- Added optional `evidence record --idempotency-key`. Exact retries return the
+  original record without new evidence, artifacts, or events; retrying an old pass
+  cannot overtake a later failed rerun. Changed targets or result contents fail.
+- Schema 12 adds task-scoped evidence keys and indexes for current-result and
+  history lookups. Existing evidence records remain unchanged.
+
 ## 0.10.1
 
 - Validate runner and adapter argv templates before allocating work; reject

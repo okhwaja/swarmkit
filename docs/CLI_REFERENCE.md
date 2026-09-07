@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.10.1`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.11.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
@@ -752,10 +752,13 @@ optional arguments:
 ## `swarmctl evidence`
 
 ```text
-usage: swarmctl evidence [-h] {contract,record,gaps} ...
+usage: swarmctl evidence [-h] {contract,record,gaps,show,list} ...
 
 positional arguments:
-  {contract,record,gaps}
+  {contract,record,gaps,show,list}
+    show                Explain current coverage and the result behind each
+                        criterion
+    list                Page through one task's verification records
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -785,6 +788,19 @@ optional arguments:
   --task TASK
 ```
 
+## `swarmctl evidence list`
+
+```text
+usage: swarmctl evidence list [-h] --task TASK [--limit LIMIT]
+                              [--before BEFORE]
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --task TASK
+  --limit LIMIT
+  --before BEFORE  Continue with records older than this evidence ID
+```
+
 ## `swarmctl evidence record`
 
 ```text
@@ -792,6 +808,7 @@ usage: swarmctl evidence record [-h] --task TASK --agent AGENT --criterion
                                 CRITERION --revision REVISION --environment
                                 ENVIRONMENT --command EVIDENCE_COMMAND_TEXT
                                 --path PATH --exit-code EXIT_CODE
+                                [--idempotency-key IDEMPOTENCY_KEY]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -803,6 +820,18 @@ optional arguments:
   --command EVIDENCE_COMMAND_TEXT
   --path PATH
   --exit-code EXIT_CODE
+  --idempotency-key IDEMPOTENCY_KEY
+                        Stable key for retrying this exact verification record
+```
+
+## `swarmctl evidence show`
+
+```text
+usage: swarmctl evidence show [-h] --task TASK
+
+optional arguments:
+  -h, --help   show this help message and exit
+  --task TASK
 ```
 
 ## `swarmctl export`
