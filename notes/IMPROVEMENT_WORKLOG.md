@@ -318,3 +318,15 @@ mutation, and reject unrequested report rendering across fourteen read commands.
 Documentation impact: architecture/contributor read contract, operator ergonomics,
 release metadata; no schema change. Prior evidence checkpoint b9ba821 passed all
 201 source/extracted tests.
+
+## Continued-pass verification and handoff
+
+Checkpoint c31d77d passes 206 tests in source and freshly extracted distribution,
+plus generated CLI/docs checks, Black on 56 Python files, and configured Ruff
+checks. The actual original schema-8 fixture, previously upgraded to 9, now advances
+through 11; doctor and a newly generated audit both pass. All 25 package modules
+remain free of relative-import cycles. Built the local distributable at
+dist/swarmkit-0.10.0.zip and updated the full report for all seventeen change themes.
+Final benchmarks reconfirmed 2.154/2.152 ms worker/manager context, 10.279 ms active
+service reconciliation (1,000 cases), and 0.252 s for a 1,000-trigger review burst.
+No remote push, PR, merge, provider action, or OS service installation occurred.
