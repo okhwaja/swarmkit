@@ -4,7 +4,7 @@ from pathlib import Path
 import concurrent.futures
 import time
 
-from .config import runner_config
+from .config import render_command, runner_config
 from .coordination import (
     claim_manager_review,
     finish_manager_review,
@@ -85,8 +85,8 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
         "workdir": str(workdir),
         "model": model,
     }
-    command = [str(part).format(**values) for part in config["command"]]
     if dry_run:
+        command = render_command(config["command"], values, "Runner command")
         return {"command": command, "prompt_path": str(prompt_path), "model": model}
     run_id = make_id("R")
     run_dir = root / "runs" / run_id
@@ -99,6 +99,10 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
             # Re-read checkout authorization under the same write lock as the run
             # record. Registration/recovery may have changed since prompt creation.
             workdir = task_working_directory(conn, task_id, workdir)
+            values["workdir"] = str(workdir)
+            command = render_command(config["command"], values, "Runner command")
+            if not workdir.is_dir():
+                raise SwarmError("Runner working directory does not exist: %s" % workdir)
             if conn.execute("SELECT COUNT(*) FROM agent_runs WHERE ended_at IS NULL").fetchone()[
                 0
             ] >= int(config.get("max_parallel", 3)):

@@ -16,7 +16,7 @@ import subprocess
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CLI_PATH = PACKAGE_ROOT / "swarmctl.py"
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 
 
 SCHEMA_VERSION = "11"

@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import tempfile
 
+from .config import runner_config
 from .core import (
     PACKAGE_ROOT,
     SCHEMA_VERSION,
@@ -197,6 +198,11 @@ def setup_check(root):
             record("runner_config", False, "Runner config is invalid: %s" % exc)
 
     command = config.get("command") if config else None
+    try:
+        runner_config(root)
+        record("runner_contract", True, "Runner templates, models, and limits are valid")
+    except (SwarmError, ValueError, OSError) as exc:
+        record("runner_contract", False, str(exc))
     command_valid = (
         isinstance(command, list)
         and bool(command)

@@ -19,8 +19,15 @@ The `.swarm/runner.json` `command` field is an argv array. Swarmkit substitutes 
 | `{task_id}` | Assigned task ID, empty for role-wide invocations |
 | `{agent_id}` | Durable agent cursor and ownership identity |
 | `{root}` | Absolute orchestration state directory |
-| `{workdir}` | Configured target working directory |
+| `{workdir}` | Registered task checkout, or the configured target working directory |
 | `{model}` | Optional role-specific model name from `runner.json` |
+
+Templates accept only the plain named placeholders above. Use `{{` and `}}`
+for literal braces, such as JSON in a fixed argument. Attribute/index access,
+format specifiers, conversions, malformed braces, and NUL characters are rejected.
+`setup-check` and `run` validate templates, model strings, and finite scheduling
+intervals before allocating work. Command and workspace adapters use the same
+validation with their own documented placeholder names.
 
 Swarmkit calls the process without a shell and captures stdout, stderr, exit code, start time, and end time. The child inherits the environment, so use your harness's secret store or environment injection rather than putting credentials in command arguments.
 

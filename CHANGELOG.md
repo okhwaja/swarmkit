@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.1
+
+- Validate runner and adapter argv templates before allocating work; reject
+  unknown or malformed placeholders, NUL arguments, non-string model values,
+  and non-finite scheduling intervals. Setup checks use the runtime validator.
+- Render `{workdir}` from the final checkout lookup used as the process directory.
+- Allow an explicit same-attempt re-prepare after provider-confirmed `NOT_APPLIED`;
+  retry identical reconciliation acknowledgments without duplicate events.
+- Make workstream cancellation retire unfinished tasks and dependents atomically,
+  with a required summary. Case workstreams use `case cancel` to preserve lifecycle
+  consistency. Completed results and uncertain external actions remain recorded.
+- No schema change; schema 11 remains compatible.
+
 ## 0.10.0
 
 - Bound newly coalesced manager reviews to 50 triggers each. A burst creates

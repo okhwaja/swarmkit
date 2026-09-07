@@ -377,6 +377,37 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
             process.assert_not_called()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 0)
 
+    def test_dispatch_command_uses_checkout_registered_between_reads(self):
+        config_path = self.root / "runner.json"
+        config = json.loads(config_path.read_text())
+        config["command"] = [sys.executable, "adapter.py", "--cwd", "{workdir}"]
+        config_path.write_text(json.dumps(config))
+        checkout = self.base / "allocated checkout"
+        checkout.mkdir()
+        s.claim_task(self.conn, self.task, "owner", 600)
+        real_lock = runtime.process_lock
+
+        @contextlib.contextmanager
+        def register_between_reads(path):
+            with real_lock(path) as handle:
+                s.register_workspace(
+                    self.conn, self.task, self.source, checkout, "jj:42", agent="owner"
+                )
+                yield handle
+
+        with (
+            mock.patch.object(runtime, "process_lock", register_between_reads),
+            mock.patch.object(runtime, "run_logged_process", return_value=(0, True)) as process,
+        ):
+            result = s.dispatch(self.root, "worker", "owner", self.task)
+        command, cwd = process.call_args.args[:2]
+        self.assertEqual(command[-1], str(checkout))
+        self.assertEqual(cwd, checkout)
+        recorded = self.conn.execute(
+            "SELECT command_json FROM agent_runs WHERE id=?", (result["run_id"],)
+        ).fetchone()[0]
+        self.assertEqual(json.loads(recorded), command)
+
     def test_scheduler_waits_for_checkout_without_consuming_attempts(self):
         config_path = self.root / "runner.json"
         config = json.loads(config_path.read_text())

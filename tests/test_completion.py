@@ -3,8 +3,10 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import swarmctl as s
+from swarmkit import tasks
 
 
 class CompletionTest(unittest.TestCase):
@@ -141,6 +143,63 @@ class CompletionTest(unittest.TestCase):
         )
         self.assertEqual(s.workstream_row(self.conn, stream)["completion_outcome"], "PARTIAL")
         self.assertIn("DONE / PARTIAL", s.render_status_report(self.root).read_text())
+
+    def test_workstream_cancellation_fences_attempts_and_dependent_work(self):
+        stream = s.add_workstream(self.conn, "Investigate", "Find cause", "manager", "ACTIVE")
+        done, active, ready = self.task(stream), self.task(stream), self.task(stream)
+        dependent = self.task(depends_on=[active])
+        unrelated = self.task()
+        self.finish(done)
+        s.claim_task(self.conn, active, "worker", 600)
+        effect = s.prepare_effect(self.conn, active, "worker", "repair", "pipeline", "jj:42", {})
+        s.transition_effect(self.conn, effect["id"], "start", "worker")
+        s.update_workstream(
+            self.conn, stream, "operator", status="CANCELLED", summary="Approach superseded"
+        )
+        self.assertEqual(s.task_row(self.conn, done)["status"], "DONE")
+        self.assertEqual(s.task_row(self.conn, unrelated)["status"], "READY")
+        for task in (active, ready, dependent):
+            self.assertEqual(s.task_row(self.conn, task)["status"], "CANCELLED")
+            with self.assertRaises(s.SwarmError):
+                s.claim_task(self.conn, task, "fresh", 600)
+        with self.assertRaises(s.SwarmError):
+            s.complete_task(self.conn, active, "worker", "Late result", ["Checked"], [])
+        self.assertEqual(s.uncertain_effects(self.conn, active)[0]["state"], "UNKNOWN")
+        self.assertEqual(s.workstream_row(self.conn, stream)["completion_outcome"], "CANCELLED")
+
+    def test_workstream_cancellation_is_atomic_and_requires_a_reason(self):
+        stream = s.add_workstream(self.conn, "Investigate", "Find cause", "manager", "ACTIVE")
+        task = self.task(stream)
+        with self.assertRaises(s.SwarmError):
+            s.update_workstream(self.conn, stream, "operator", status="CANCELLED")
+        original_event = tasks.add_event
+
+        def fail_final_event(*args, **kwargs):
+            if args[4] == "WORKSTREAM_UPDATED":
+                raise RuntimeError("event persistence failed")
+            return original_event(*args, **kwargs)
+
+        with mock.patch.object(tasks, "add_event", side_effect=fail_final_event):
+            with self.assertRaises(RuntimeError):
+                s.update_workstream(
+                    self.conn, stream, "operator", status="CANCELLED", summary="Superseded"
+                )
+        self.assertEqual(s.task_row(self.conn, task)["status"], "READY")
+        self.assertEqual(s.workstream_row(self.conn, stream)["status"], "ACTIVE")
+
+    def test_case_workstream_cancellation_requires_case_command(self):
+        case = self.case()
+        with self.assertRaisesRegex(s.SwarmError, "case cancel " + case["id"]):
+            s.update_workstream(
+                self.conn,
+                case["workstream_id"],
+                "operator",
+                status="CANCELLED",
+                summary="Superseded",
+            )
+        self.assertEqual(s.case_row(self.conn, case["id"])["status"], "ACTIVE")
+        s.cancel_case(self.conn, case["id"], "operator", "Superseded")
+        self.assertEqual(s.workstream_row(self.conn, case["workstream_id"])["status"], "CANCELLED")
 
     def test_manager_can_explicitly_accept_cancelled_obsolete_work(self):
         done, obsolete = self.task(), self.task()

@@ -99,6 +99,17 @@ def update_workstream(
         raise SwarmError("Invalid workstream status: %s" % next_status)
     if row["status"] in {"DONE", "CANCELLED"} and next_status != row["status"]:
         raise SwarmError("Terminal workstream %s cannot be reopened" % workstream_id)
+    if next_status == "CANCELLED" and row["status"] != "CANCELLED":
+        if not summary or not summary.strip():
+            raise SwarmError("Workstream cancellation requires --summary explaining why")
+        case = conn.execute(
+            "SELECT id FROM cases WHERE workstream_id=?", (workstream_id,)
+        ).fetchone()
+        if case:
+            raise SwarmError(
+                "Use case cancel %s --reason to cancel its workstream and case together"
+                % case["id"]
+            )
     confidence = forecast_confidence.lower() if forecast_confidence else row["forecast_confidence"]
     if confidence and confidence not in VALID_FORECAST_CONFIDENCE:
         raise SwarmError("Invalid forecast confidence: %s" % confidence)
@@ -144,6 +155,15 @@ def update_workstream(
     next_summary = summary if summary is not None else row["progress_summary"]
     next_basis = forecast_basis if forecast_basis is not None else row["forecast_basis"]
     now = utcnow()
+    cancelled_tasks = []
+    if next_status == "CANCELLED":
+        linked = conn.execute(
+            "SELECT task_id FROM task_workstreams WHERE workstream_id=?", (workstream_id,)
+        ).fetchall()
+        for item in linked:
+            if task_row(conn, item["task_id"])["status"] not in TERMINAL_TASK_STATES:
+                cancel_task(conn, item["task_id"], actor, summary)
+                cancelled_tasks.append(item["task_id"])
     conn.execute(
         """UPDATE workstreams SET status=?, progress_summary=?, forecast_earliest=?,
            forecast_latest=?, forecast_confidence=?, forecast_basis=?, updated_at=?, completion_outcome=? WHERE id=?""",
@@ -174,6 +194,7 @@ def update_workstream(
             "forecast_latest": latest,
             "forecast_confidence": confidence,
             "forecast_basis": next_basis,
+            "cancelled_tasks": cancelled_tasks,
         },
     )
 

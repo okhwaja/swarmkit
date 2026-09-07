@@ -160,6 +160,54 @@ class RuntimeTest(unittest.TestCase):
             s.lease_inbox(self.conn, "recipient")["events"][0]["seq"], first["events"][-1]["seq"]
         )
 
+    def test_confirmed_non_action_can_be_explicitly_reprepared_by_same_owner(self):
+        task = self.task()
+        self.claim(task)
+        effect = s.prepare_effect(self.conn, task, "worker", "retry", "pipeline", "jj:42", {})
+        s.transition_effect(self.conn, effect["id"], "start", "worker")
+        s.transition_effect(self.conn, effect["id"], "not-applied", "operator", "Provider: no run")
+        with self.assertRaises(s.SwarmError):
+            s.transition_effect(self.conn, effect["id"], "start", "worker")
+        prepared = s.prepare_effect(self.conn, task, "worker", "retry", "pipeline", "jj:42", {})
+        self.assertEqual(prepared["id"], effect["id"])
+        self.assertEqual(prepared["state"], "PREPARED")
+        self.assertIsNone(prepared["receipt"])
+        self.assertEqual(prepared["generation"], 1)
+        self.assertEqual(
+            prepared, s.prepare_effect(self.conn, task, "worker", "retry", "pipeline", "jj:42", {})
+        )
+        s.transition_effect(self.conn, effect["id"], "start", "worker")
+        s.transition_effect(
+            self.conn, effect["id"], "failed", "operator", "Provider: partial failure"
+        )
+        self.assertEqual(
+            s.prepare_effect(self.conn, task, "worker", "retry", "pipeline", "jj:42", {})["state"],
+            "FAILED",
+        )
+        with self.assertRaises(s.SwarmError):
+            s.transition_effect(self.conn, effect["id"], "start", "worker")
+
+    def test_reconciliation_acknowledgment_can_be_retried_without_rewriting_history(self):
+        task = self.task()
+        self.claim(task)
+        effect = s.prepare_effect(self.conn, task, "worker", "action", "pipeline", "jj:42", {})
+        s.transition_effect(self.conn, effect["id"], "start", "worker")
+        recorded = s.transition_effect(
+            self.conn, effect["id"], "succeeded", "operator", "receipt 42"
+        )
+        events = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        self.assertEqual(
+            recorded,
+            s.transition_effect(self.conn, effect["id"], "succeeded", "operator", "receipt 42"),
+        )
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], events)
+        with self.assertRaises(s.SwarmError):
+            s.transition_effect(
+                self.conn, effect["id"], "succeeded", "operator", "different receipt"
+            )
+        with self.assertRaises(s.SwarmError):
+            s.transition_effect(self.conn, effect["id"], "not-applied", "operator", "contradiction")
+
     def test_scoped_inbox_does_not_consume_other_task_events(self):
         a, b = self.task(), self.task()
         first = s.lease_inbox(self.conn, "reader", task_id=a)

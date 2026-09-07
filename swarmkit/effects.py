@@ -31,12 +31,11 @@ def prepare_effect(conn, task_id, agent, key, target, revision, parameters):
             existing["parameters_json"],
         ) != (task_id, target, revision, encoded):
             raise SwarmError("Idempotency key reused with different action parameters")
-        if (
-            existing["state"] in {"PREPARED", "NOT_APPLIED"}
-            and existing["generation"] != task["generation"]
+        if existing["state"] == "NOT_APPLIED" or (
+            existing["state"] == "PREPARED" and existing["generation"] != task["generation"]
         ):
             conn.execute(
-                "UPDATE effects SET generation=?,state='PREPARED',updated_at=? WHERE id=?",
+                "UPDATE effects SET generation=?,state='PREPARED',receipt=NULL,updated_at=? WHERE id=?",
                 (task["generation"], utcnow(), existing["id"]),
             )
             add_event(
@@ -44,7 +43,11 @@ def prepare_effect(conn, task_id, agent, key, target, revision, parameters):
                 task["mission_id"],
                 "effect",
                 existing["id"],
-                "EFFECT_ADOPTED",
+                (
+                    "EFFECT_ADOPTED"
+                    if existing["generation"] != task["generation"]
+                    else "EFFECT_REPREPARED"
+                ),
                 agent,
                 {
                     "task_id": task_id,
@@ -108,8 +111,6 @@ def transition_effect(conn, effect_id, action, actor, receipt=None):
     else:
         if action not in {"succeeded", "failed", "unknown", "not-applied"}:
             raise SwarmError("Unknown effect transition")
-        if row["state"] not in {"EXECUTING", "UNKNOWN"}:
-            raise SwarmError("Only executing or uncertain effects can be reconciled")
         if not receipt or not receipt.strip():
             raise SwarmError("Reconciliation requires a provider receipt or observation")
         state = {
@@ -118,6 +119,10 @@ def transition_effect(conn, effect_id, action, actor, receipt=None):
             "unknown": "UNKNOWN",
             "not-applied": "NOT_APPLIED",
         }[action]
+        if row["state"] == state and row["receipt"] == receipt:
+            return dict(row)
+        if row["state"] not in {"EXECUTING", "UNKNOWN"}:
+            raise SwarmError("Only executing or uncertain effects can be reconciled")
     conn.execute(
         "UPDATE effects SET state=?,receipt=?,updated_at=? WHERE id=?",
         (state, receipt, utcnow(), effect_id),

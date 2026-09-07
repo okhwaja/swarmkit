@@ -6,7 +6,7 @@ import json
 import shlex
 import shutil
 
-from .config import runner_config
+from .config import DELIVERY_FIELDS, render_command, runner_config, validate_command
 from .coordination import reconcile_deliveries
 from .core import (
     CLI_PATH,
@@ -54,12 +54,7 @@ def validate_extension_manifest(manifest):
         raise SwarmError("Extension executor.type must be agent or command")
     if executor["type"] == "command":
         command = executor.get("command")
-        if (
-            not isinstance(command, list)
-            or not command
-            or any(not isinstance(part, str) or not part for part in command)
-        ):
-            raise SwarmError("Command extension requires a non-empty argv array")
+        validate_command(command, DELIVERY_FIELDS, "Command extension")
         if not any("{envelope_file}" in part for part in command):
             raise SwarmError("Command extension argv must include {envelope_file}")
         shell_names = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
@@ -545,7 +540,7 @@ def prepare_delivery_command(root, conn, delivery_id, agent):
             "workdir": str(workdir),
             "model": model,
         }
-        command = [str(part).format(**values) for part in config["command"]]
+        command = render_command(config["command"], values, "Runner command")
         timeout = int(config.get("timeout_seconds", 3600))
     else:
         workdir = Path(executor.get("working_directory") or root.parent).expanduser().resolve()
@@ -562,7 +557,7 @@ def prepare_delivery_command(root, conn, delivery_id, agent):
             "swarmctl": str(CLI_PATH),
             "prompt_file": str(prompt_path),
         }
-        command = [str(part).format(**values) for part in executor["command"]]
+        command = render_command(executor["command"], values, "Command extension")
         timeout = int(executor.get("timeout_seconds", 300))
     if not workdir.is_dir():
         raise SwarmError("Extension working directory does not exist: %s" % workdir)

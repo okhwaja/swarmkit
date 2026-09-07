@@ -82,7 +82,12 @@ be repeated. A crash after `start` makes the result uncertain. Query the provide
 then use `succeeded`, `failed`, `unknown`, or `not-applied` with a receipt or
 observation. Failure alone never enables automatic replay. `not-applied` must be
 supported by provider evidence that no action happened. A fresh attempt may adopt
-a `PREPARED` or `NOT_APPLIED` intent by calling `prepare` with its original key.
+a `PREPARED` intent by calling `prepare` with its original key. After confirmed
+`NOT_APPLIED`, the current owner (including the same attempt) may explicitly call
+`prepare` with that key to authorize another start. This clears the old receipt
+from the current intent while preserving it in events. Identical reconciliation
+retries return the recorded result without another event; a conflicting terminal
+receipt or outcome is rejected.
 A `SUCCEEDED` intent is returned as completed and must not be executed again.
 
 `complete`, reclaim, and mission resume refuse unresolved executing/unknown

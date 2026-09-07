@@ -390,6 +390,21 @@ Workstream statuses mean:
 | `DONE` | The intended outcome is verified and linked tasks are terminal |
 | `CANCELLED` | Evidence or changed priorities made the workstream unnecessary |
 
+To stop an obsolete workstream, supply the reason as its summary:
+
+```bash
+swarmctl --root /work/my-run/.swarm workstream update WS-ID \
+  --status CANCELLED --summary 'Replaced by the verified recovery approach'
+```
+
+Cancellation retires its unfinished tasks and their unfinished dependents,
+including dependents in other workstreams. Completed results remain intact.
+Active attempts lose ownership; uncertain provider actions remain visible for
+reconciliation. This does not kill harnesses or undo external actions. For a
+case-owned workstream, use `case cancel CASE-ID --reason '...'` so the case and
+its workstream close together. Other workstream states describe progress; they
+do not pause or resume workers.
+
 ## Journey: apply a reusable workflow policy
 
 Use policy packs for organization- or project-specific best practices that have

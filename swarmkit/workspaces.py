@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 
+from .config import WORKSPACE_FIELDS, render_command, validate_command
 from .core import (
     ACTIVE_TASK_STATES,
     SwarmError,
@@ -38,13 +39,7 @@ def workspace_config(root, provider=None):
         raise SwarmError("Workspace timeout_seconds must be a positive integer")
     value["timeout_seconds"] = timeout
     if selected == "command":
-        command = value.get("command")
-        if (
-            not isinstance(command, list)
-            or not command
-            or not all(isinstance(x, str) and x for x in command)
-        ):
-            raise SwarmError("Workspace command provider requires a nonempty argv array")
+        validate_command(value.get("command"), WORKSPACE_FIELDS, "Workspace command")
     return value
 
 
@@ -375,10 +370,7 @@ def create_workspace(root, conn, task_id, repository, base, provider=None, agent
                 "path": str(path),
                 "task_id": task_id,
             }
-            try:
-                command = [part.format(**values) for part in config["command"]]
-            except (KeyError, ValueError, IndexError) as exc:
-                raise SwarmError("Invalid workspace command placeholder: %s" % exc)
+            command = render_command(config["command"], values, "Workspace command")
         creation_id = make_id("WC")
         log_dir = root / "runs" / "workspaces" / creation_id
         log_dir.mkdir(parents=True)

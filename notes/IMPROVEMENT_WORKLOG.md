@@ -330,3 +330,21 @@ dist/swarmkit-0.10.0.zip and updated the full report for all seventeen change th
 Final benchmarks reconfirmed 2.154/2.152 ms worker/manager context, 10.279 ms active
 service reconciliation (1,000 cases), and 0.252 s for a 1,000-trigger review burst.
 No remote push, PR, merge, provider action, or OS service installation occurred.
+
+## Continued pass: launch and cancellation boundaries (0.10.1)
+
+- Reproduced a checkout handoff where process cwd changed at final registration
+  but the already-rendered `{workdir}` argument retained the source directory.
+  Final command rendering now shares the final workspace lookup and run journal.
+- Shared plain-placeholder validation catches invalid runner and adapter templates
+  before work allocation; setup uses the same runtime validator. NaN/infinite
+  scheduler values and malformed model values now fail without review/attempt churn.
+- Provider-confirmed NOT_APPLIED can be explicitly re-prepared by the same current
+  owner. The previous observation remains in events; terminal acknowledgment retry
+  is inert only for the same outcome and receipt.
+- Workstream CANCELLED was previously a label while workers continued. It now
+  cancels unfinished linked work and dependents with atomic attempt fencing and a
+  required reason. Case-backed streams direct cancellation through case cancel.
+- Source and extracted-package release checks pass: 215 tests in each, doc checks
+  and Ruff pass. No schema change from 11. Documentation impact: harness, setup,
+  runtime recovery, workstream user journey, generated help/version metadata.
