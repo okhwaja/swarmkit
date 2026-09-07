@@ -17,9 +17,9 @@ from .core import (
     transaction,
     utcnow,
 )
-from .decisions import resolve_decision
+from .decisions import resolve_decision, link_decision
 from .delivery import parse_metadata
-from .policies import apply_policy, parse_policy_variables
+from .policies import apply_policy, parse_policy_variables, prepare_policy
 from .queries import case_dict, signal_dict
 from .storage import (
     add_event,
@@ -332,45 +332,119 @@ def open_case(
         return result
 
 
+def replacement_tasks(conn, case_id):
+    """Refuse a case-local replacement that would silently retire unrelated work."""
+    affected = conn.execute(
+        """WITH RECURSIVE affected(id) AS (
+            SELECT t.id FROM tasks t JOIN case_tasks ct ON ct.task_id=t.id
+            WHERE ct.case_id=? AND t.status NOT IN ('DONE','CANCELLED')
+            UNION SELECT d.task_id FROM task_dependencies d JOIN affected a ON d.depends_on=a.id)
+            SELECT t.id,ct.case_id FROM tasks t JOIN affected a ON a.id=t.id
+            LEFT JOIN case_tasks ct ON ct.task_id=t.id WHERE t.status NOT IN ('DONE','CANCELLED')""",
+        (case_id,),
+    ).fetchall()
+    for task in affected:
+        if task["case_id"] != case_id:
+            raise SwarmError("Case replacement would cancel work outside this case: " + task["id"])
+    if conn.execute(
+        "SELECT 1 FROM agent_runs r JOIN case_tasks ct ON ct.task_id=r.task_id "
+        "WHERE ct.case_id=? AND r.ended_at IS NULL LIMIT 1",
+        (case_id,),
+    ).fetchone():
+        raise SwarmError("Drain or recover the old case harnesses before replacing its plan")
+    if conn.execute(
+        "SELECT 1 FROM effects e JOIN case_tasks ct ON ct.task_id=e.task_id "
+        "WHERE ct.case_id=? AND e.state IN ('EXECUTING','UNKNOWN') "
+        "UNION ALL SELECT 1 FROM workspace_creations w JOIN case_tasks ct ON ct.task_id=w.task_id "
+        "WHERE ct.case_id=? AND w.state='UNKNOWN' LIMIT 1",
+        (case_id, case_id),
+    ).fetchone():
+        raise SwarmError(
+            "Reconcile the old case's effects and checkout creation before replacing its plan"
+        )
+    return [task["id"] for task in affected]
+
+
 @atomic_write
-def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, ready=False):
+def apply_policy_to_case(
+    conn,
+    case_id,
+    policy_id,
+    policy_variables,
+    actor,
+    ready=False,
+    idempotency_key=None,
+    replace=False,
+    reason=None,
+):
+    """Install or replace one case plan atomically, retaining superseded work and decisions."""
+    if idempotency_key is not None and not idempotency_key.strip():
+        raise SwarmError("Case planning key must not be empty")
+    if replace and (not idempotency_key or not isinstance(reason, str) or not reason.strip()):
+        raise SwarmError("Case plan replacement requires --idempotency-key and --reason")
+    if not replace and reason is not None:
+        raise SwarmError("A replacement reason requires --replace")
     case = case_row(conn, case_id)
+    _, _, policy_specification = prepare_policy(
+        conn, policy_id, policy_variables or [], case["workstream_id"], ready
+    )
+    # A typed namespace prevents accidental overlap with ordinary policy keys.
+    key = json_dump(["case-policy", case_id, idempotency_key])
+    specification = hashlib.sha256(
+        json_dump([policy_specification, replace, reason]).encode("utf-8")
+    ).hexdigest()
+    prior = conn.execute("SELECT * FROM policy_application_keys WHERE key=?", (key,)).fetchone()
+    if prior:
+        if prior["specification"] != specification:
+            raise SwarmError("Case planning key already belongs to different work")
+        result = case_dict(conn, case)
+        result.update(applied_policy_application_id=prior["application_id"], replayed=True)
+        return result
     if case["status"] == "CANCELLED":
         raise SwarmError("Cancelled cases cannot accept a policy")
-    if case["policy_application_id"]:
-        raise SwarmError(
-            "Case %s already has policy application %s"
-            % (
-                case_id,
-                case["policy_application_id"],
-            )
-        )
-    active_existing = conn.execute(
-        """SELECT COUNT(*) AS n FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id
-           WHERE ct.case_id=? AND t.status NOT IN ('DONE','CANCELLED')""",
-        (case_id,),
-    ).fetchone()["n"]
-    if active_existing:
-        raise SwarmError(
-            "Complete or cancel the case's existing intake work before applying a policy"
-        )
+    if case["policy_application_id"] and not replace:
+        raise SwarmError("Case already has a policy application; use --replace for a new plan")
+    old_tasks = replacement_tasks(conn, case_id) if replace else []
+    if (
+        not replace
+        and conn.execute(
+            "SELECT 1 FROM case_tasks ct JOIN tasks t ON t.id=ct.task_id "
+            "WHERE ct.case_id=? AND t.status NOT IN ('DONE','CANCELLED')",
+            (case_id,),
+        ).fetchone()
+    ):
+        raise SwarmError("Complete or cancel the case's existing intake work, or use --replace")
+    decisions = (
+        conn.execute(
+            "SELECT DISTINCT d.id FROM decisions d JOIN decision_tasks dt ON dt.decision_id=d.id "
+            "JOIN case_tasks ct ON ct.task_id=dt.task_id WHERE ct.case_id=? AND d.status!='CANCELLED'",
+            (case_id,),
+        ).fetchall()
+        if replace
+        else []
+    )
     conn.execute(
         "UPDATE workstreams SET status='ACTIVE',completion_outcome=NULL,progress_summary=NULL WHERE id=?",
         (case["workstream_id"],),
     )
     application = apply_policy(
-        conn,
-        policy_id,
-        policy_variables or [],
-        case["workstream_id"],
-        actor,
-        ready,
+        conn, policy_id, policy_variables or [], case["workstream_id"], actor, ready
+    )
+    conn.execute(
+        "INSERT INTO policy_application_keys(key,specification,application_id) VALUES(?,?,?)",
+        (key, specification, application["id"]),
     )
     for item in application["tasks"]:
         conn.execute(
-            "INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)",
-            (case_id, item["task_id"]),
+            "INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, item["task_id"])
         )
+        # Link before cancellation so a still-relevant question is never withdrawn
+        # just because the old tasks have become terminal.
+        for decision in decisions:
+            link_decision(conn, decision["id"], item["task_id"], actor)
+    for task_id in old_tasks:
+        if task_row(conn, task_id)["status"] not in TERMINAL_TASK_STATES:
+            cancel_task(conn, task_id, actor, reason)
     conn.execute(
         "UPDATE cases SET policy_application_id=?, status='ACTIVE', completion_outcome=NULL, result_summary=NULL, closed_at=NULL, updated_at=? WHERE id=?",
         (application["id"], utcnow(), case_id),
@@ -385,11 +459,18 @@ def apply_policy_to_case(conn, case_id, policy_id, policy_variables, actor, read
         {
             "policy_application_id": application["id"],
             "policy_id": policy_id,
+            "previous_policy_application_id": case["policy_application_id"],
             "tasks": [item["task_id"] for item in application["tasks"]],
+            "replaced_tasks": old_tasks,
+            "inherited_decisions": [d["id"] for d in decisions],
+            "idempotency_key": idempotency_key,
+            "reason": reason,
         },
     )
     reconcile_conn(conn)
-    return case_dict(conn, case_row(conn, case_id))
+    result = case_dict(conn, case_row(conn, case_id))
+    result.update(applied_policy_application_id=application["id"], replayed=False)
+    return result
 
 
 @atomic_write

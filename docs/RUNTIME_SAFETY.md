@@ -319,6 +319,10 @@ Use `task add --idempotency-key KEY` for retriable planning. An identical retry
 returns the same task; a conflicting specification fails. Existing policy stage
 dependencies provide fan-out and a fan-in barrier. The reducer's acceptance
 criteria must require reconciling all inputs and contradictions.
+For one case, `case apply-policy --replace --idempotency-key KEY --reason TEXT`
+atomically retires unfinished work and installs a reviewed workflow. Its
+[case planning contract](PERSISTENT_SERVICES.md#adopt-or-replace-a-case-plan)
+defines retry identity, retained decisions, and live-work guards.
 
 In strict mode, a successful manager process does not complete its review until
 it calls `review-commit REVIEW --agent AGENT --summary ... --dispositions JSON`.

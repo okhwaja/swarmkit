@@ -34,7 +34,7 @@ explicit. “Existing” identifies foundations present before this release.
 | 6 | Workspaces and locks | Added VCS-neutral registered checkouts, configurable internal CLI adapters, opt-in Git worktrees, automatic dispatch cwd selection, and exclusive resource leases. Durable creation intents, retained receipts/logs, inherited locks, and explicit outcome reconciliation prevent ambiguous creation replay. Shared locks, provider-verified receipts, and explicit cleanup tooling remain. |
 | 7 | Completion evidence | Added exact criterion/revision/environment/attempt evidence coverage and file integrity checks, including first contract binding for newly produced revisions. Opt-in for old workflows. Trusted command execution and mission-wide criterion-to-result mapping remain. |
 | 8 | Bounded invocation context | Added snapshot watermarks, unique immutable prompt paths, prompt digests, bounded lists/text, and an explicit overflow retrieval packet. Invocation context now uses bounded SQL pages and scoped indexes; inbox pagination occurs before decoding. Full audit and explicit entity-history queries remain deliberately complete. |
-| 9 | Safe planning/review commits | Added task planning keys and strict semantic manager review commits. Whole-policy-application retry keys are now supported; atomic multi-task plan replacement remains. |
+| 9 | Safe planning/review commits | Added task planning keys and strict semantic manager review commits. Whole-policy and case-policy retry keys are supported. Case-local policy replacement is atomic, retains decisions/history, and refuses unresolved or cross-case work. General cross-case plan replacement remains. |
 | 10 | Causal attempt audit | Added generation/revision/model/prompt provenance, attempt dispositions, resource/effect events, and recovery history. A complete causal graph and critical-path computation remain. |
 | 11 | Consistent/private exports | Added one unchanged SQLite snapshot for derived views, atomic streaming publication, manifest verification, changed-artifact rejection, and a separate structural-only sharing path. Fine-grained redaction of useful full exports remains. |
 | 12 | Migrations | Added transactional sequential upgrades and rollback/future-version rejection tests. New migrations must follow the contributor contract. |
@@ -58,7 +58,7 @@ These are remaining implementation work, not decisions being pushed to the owner
 
 - Mission-wide criterion-to-result mapping, task-group outcomes, and cleanup
   contracts. Mission/case/workstream completion now distinguishes partial results.
-- Semantic policy evaluation, whole-plan replacement,
+- Semantic policy evaluation, general cross-case plan replacement,
   version-aware service supersession, and first-class reducer groups.
 - Complete causal graphs, critical paths, and performance evaluation with many
   simultaneously active cases. Indexed bounded context/inbox reads and repeatable

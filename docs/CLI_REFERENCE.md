@@ -162,6 +162,8 @@ optional arguments:
 
 ```text
 usage: swarmctl case apply-policy [-h] [--var VAR] [--ready] [--actor ACTOR]
+                                  [--idempotency-key IDEMPOTENCY_KEY]
+                                  [--replace] [--reason REASON]
                                   case_id policy_id
 
 positional arguments:
@@ -169,10 +171,15 @@ positional arguments:
   policy_id
 
 optional arguments:
-  -h, --help     show this help message and exit
+  -h, --help            show this help message and exit
   --var VAR
   --ready
   --actor ACTOR
+  --idempotency-key IDEMPOTENCY_KEY
+                        Stable key for this case planning request
+  --replace             Atomically retire unfinished case work and install
+                        this policy
+  --reason REASON       Required rationale when replacing a case plan
 ```
 
 ## `swarmctl case cancel`

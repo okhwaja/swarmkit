@@ -498,6 +498,13 @@ def parser():
     case_apply.add_argument("--var", action="append", default=[])
     case_apply.add_argument("--ready", action="store_true")
     case_apply.add_argument("--actor", default="manager")
+    case_apply.add_argument("--idempotency-key", help="Stable key for this case planning request")
+    case_apply.add_argument(
+        "--replace",
+        action="store_true",
+        help="Atomically retire unfinished case work and install this policy",
+    )
+    case_apply.add_argument("--reason", help="Required rationale when replacing a case plan")
     case_link = case_sub.add_parser("link-task")
     case_link.add_argument("case_id")
     case_link.add_argument("--task", required=True)
@@ -961,6 +968,9 @@ def main(argv=None):
                             args.var,
                             args.actor,
                             args.ready,
+                            idempotency_key=args.idempotency_key,
+                            replace=args.replace,
+                            reason=args.reason,
                         )
                     )
                 elif args.case_command == "link-task":

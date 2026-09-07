@@ -12,6 +12,10 @@
   an unresolved creation would hide live or uncertain work. Reconciliation uses
   inherited process locks and remains available during pause/cancellation.
 - Schema 10 adds the creation journal; existing workspace registrations remain.
+- Added retriable `case apply-policy` and atomic `--replace` with an explicit key
+  and rationale. Replacements preserve completed work and human decisions, refuse
+  cross-case cancellation and unrecovered harnesses/effects, and roll back fully
+  if new planning fails. Existing policy-key storage is reused without migration.
 
 ## 0.8.0
 

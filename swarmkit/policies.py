@@ -223,13 +223,8 @@ def render_policy_text(value, variables, location):
         raise SwarmError("Could not render policy %s: %s" % (location, exc))
 
 
-@atomic_write
-def apply_policy(
-    conn, policy_id, variable_items, workstream_id, actor, ready, idempotency_key=None
-):
-    """Create one atomic task graph, optionally deduplicated by a stable request key."""
-    if idempotency_key is not None and not idempotency_key.strip():
-        raise SwarmError("Policy idempotency key must not be empty")
+def prepare_policy(conn, policy_id, variable_items, workstream_id, ready):
+    """Resolve one reviewed policy definition and canonical request fingerprint."""
     row = conn.execute("SELECT * FROM policy_packs WHERE id=?", (policy_id,)).fetchone()
     if not row:
         raise SwarmError("Unknown installed policy: %s" % policy_id)
@@ -257,6 +252,20 @@ def apply_policy(
             }
         ).encode("utf-8")
     ).hexdigest()
+    return pack, values, specification
+
+
+@atomic_write
+def apply_policy(
+    conn, policy_id, variable_items, workstream_id, actor, ready, idempotency_key=None
+):
+    """Create one atomic task graph, optionally deduplicated by a stable request key."""
+    if idempotency_key is not None and not idempotency_key.strip():
+        raise SwarmError("Policy idempotency key must not be empty")
+    pack, values, specification = prepare_policy(
+        conn, policy_id, variable_items, workstream_id, ready
+    )
+    manifest = pack["manifest"]
     if idempotency_key is not None:
         existing = conn.execute(
             "SELECT specification,application_id FROM policy_application_keys WHERE key=?",

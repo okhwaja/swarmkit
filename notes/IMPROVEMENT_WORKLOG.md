@@ -224,3 +224,19 @@ architecture, migration/release. Schema 10 is additive. Initial full source chec
 174 tests passed, including seven additional recovery/failure/lifecycle tests;
 source formatting, Ruff, generated CLI and docs checks passed. Full extracted
 release verification follows before the local checkpoint.
+
+## Continued pass: atomic, retriable case plans
+
+The case-policy path rejected a retry after successful application and required
+separate cancellation/apply commands when replacing intake. A crash or invalid
+replacement could strand a case between plans. Added explicit case planning keys
+using existing policy-key storage, shared canonical policy request preparation,
+and atomic `case apply-policy --replace --idempotency-key --reason`. Replacements
+retain completed work, carry open/resolved decisions to new tasks, and refuse
+external dependency cancellation or unclosed case harness/effect/checkout work.
+Older request retries report their application alongside current case state;
+they cannot reinstall superseded work. Nine focused tests cover concurrent
+planners, injected failure after cancellation, validation/conflicting keys,
+decision inheritance, external dependencies, effect/run guards, and CLI usage.
+Documentation impact: planning/state/CLI and service user journey; no new schema.
+Checkout checkpoint 6de2fbc passed all 174 source/extracted-package tests.

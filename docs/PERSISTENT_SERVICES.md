@@ -114,6 +114,48 @@ webhook servers and credentials in Swarmkit. The adapter must validate provider
 signatures, restrict the mission root, write payloads outside the repository,
 and pass them as data. Never interpolate webhook text into a shell command.
 
+## Adopt or replace a case plan
+
+After an intake investigation, apply a reviewed policy with `case apply-policy`.
+By default, unfinished intake work must be completed or cancelled first. Repeating
+the identical initial request returns its original application. Use
+`--idempotency-key` for an explicitly named planning request. The key binds the
+reviewed policy definition/guidance, resolved variables, readiness, and replacement
+rationale. Changed work under the same key is rejected.
+
+When new evidence makes the current plan obsolete, replace it in one transaction:
+
+```bash
+swarmctl case apply-policy C-ID pipeline-repair \
+  --var 'goal=Restore delivery and verify backlog recovery' \
+  --var 'test_command=repository-approved-check' --ready \
+  --replace --idempotency-key incident-42-plan-v2 \
+  --reason 'Diagnosis isolated the destination failure'
+```
+
+The command creates the new policy graph and retires unfinished case tasks
+atomically. Invalid input, exhausted quotas, or a database failure leave the old
+plan intact. Completed tasks, old policy snapshots, and cancellation reasons remain
+in history. A retry returns `replayed: true` and
+`applied_policy_application_id` for that request. The ordinary case
+`policy_application_id` always identifies its current plan, which may have changed
+since an older request. Retrying an older key never reinstalls an obsolete plan.
+
+Replacement refuses to cancel dependency descendants outside the case. It also
+requires old case harnesses to finish or be recovered, and external effects or
+checkout creation to be reconciled. A cancelled case cannot receive a new plan.
+
+Open questions and resolved answers are linked to every new task before old work
+is retired. Open questions keep gating work; fresh owners must acknowledge current
+answers. These links preserve the human context; they do not grant permission for
+a different provider action or revision. The harness still checks actual authority.
+If a question's scope has changed, revise it explicitly before proceeding.
+
+Applications created by an older release have no new retry record. Inspect them
+with `case show`/`policy application`; an unkeyed call will not silently adopt a
+legacy application or create a duplicate. General cross-case plan replacement
+remains outside this command.
+
 ## Human and external waits
 
 When a worker needs human authority, it creates a `human_decision` blocker. The
