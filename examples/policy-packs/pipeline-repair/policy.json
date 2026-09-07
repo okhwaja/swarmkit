@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "id": "pipeline-repair",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Pipeline Repair",
-  "description": "Bounded pipeline repair using durable tasks, evidence, waits, and effects.",
-  "when_to_use": "Use for pipeline repair.",
+  "description": "Diagnose an incident, perform an authorized bounded repair, wait durably for the provider, and verify recovery with an incident report.",
+  "when_to_use": "Use when a data pipeline or external processing job needs evidence-based diagnosis, controlled repair, and verification of live operation and backlog.",
   "guidance": "GUIDANCE.md",
   "variables": {
     "goal": {
@@ -20,7 +20,7 @@
     {
       "id": "diagnose",
       "title": "Capture incident and diagnose: {goal}",
-      "description": "Capture incident state and diagnose {goal}. Separate symptoms, root cause, mitigation, and repair. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Capture incident state and diagnose {goal}. Separate symptoms, supported root causes, mitigation, and repair options. Record the observed configuration or deployment revision and environment. Gather evidence before proposing an external action; use `{test_command}` where it helps reproduce the failing boundary.",
       "kind": "discovery",
       "priority": 70,
       "acceptance": [
@@ -35,7 +35,7 @@
     {
       "id": "repair",
       "title": "Perform bounded repair: {goal}",
-      "description": "Before risky actions create a durable confirmation blocker. Use effect prepare/start and reconcile receipts. Represent pipeline observation as a durable external wait. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Perform the bounded repair within the mission's recorded authority. Request a durable confirmation only when required authority or scope is missing; honor answers already given. Before an external change use effect prepare/start with the exact target and provider key, then record or reconcile the provider receipt. Represent long provider jobs with a durable external wait. Register a checkout only if source edits are needed. Record the resulting configuration revision, verification command `{test_command}`, and rollback instructions.",
       "kind": "implementation",
       "priority": 70,
       "acceptance": [
@@ -52,11 +52,11 @@
     {
       "id": "verify",
       "title": "Observe healthy operation: {goal}",
-      "description": "After the external wait, independently observe healthy runs and run `{test_command}`. Distinguish restored, mitigated, and still blocked outcomes. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Independently observe the resulting configuration and enough completed provider runs to verify recovery, then run `{test_command}`. Use a new durable wait if more observations are needed. Verify both live operation and the disposition of the backlog. Do not edit the repair. Distinguish restored, mitigated, and still blocked outcomes; a signal or elapsed wait is not proof of success.",
       "kind": "verification",
       "priority": 70,
       "acceptance": [
-        "Healthy runs and backlog disposition are verified on the resulting configuration"
+        "Healthy runs and backlog disposition are verified on the exact resulting configuration"
       ],
       "depends_on": [
         "repair"

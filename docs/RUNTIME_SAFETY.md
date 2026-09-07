@@ -53,6 +53,10 @@ but the child retains its run lock until it exits. `recover` covers both worker 
 unfinished run automatically when that lock is free. It records interruption and
 requeues eligible work; uncertain external effects still block a new claim.
 `run` returns `RECOVERY_WAIT` while an earlier live or unverified run remains.
+An unexpected supervision error leaves the run unfinished: an exception is not
+proof that its child stopped. The controller stops allocating more work, lets
+other supervised runs finish, and directs the operator to `recover`. Log paths
+are recorded before launch and remain discoverable even when supervision fails.
 Do not delete lock files. The dispatcher owns its subprocess group and terminates
 remaining group members when a run ends or times out. Harnesses must not detach
 background work into unrelated process groups.

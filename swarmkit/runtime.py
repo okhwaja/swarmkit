@@ -91,6 +91,7 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
     run_id = make_id("R")
     run_dir = root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path, stderr_path = run_dir / "stdout.txt", run_dir / "stderr.txt"
     with process_lock(run_dir / "process.lock") as run_lock:
         conn = connect(root)
         try:
@@ -122,8 +123,8 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
                 generation = None
             m = mission(conn)
             conn.execute(
-                """INSERT INTO agent_runs(id,mission_id,role,task_id,agent_id,prompt_path,command_json,started_at)
-                            VALUES(?,?,?,?,?,?,?,?)""",
+                """INSERT INTO agent_runs(id,mission_id,role,task_id,agent_id,prompt_path,command_json,started_at,stdout_path,stderr_path)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (
                     run_id,
                     m["id"],
@@ -133,6 +134,8 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
                     str(prompt_path),
                     json_dump(command),
                     utcnow(),
+                    str(stdout_path),
+                    str(stderr_path),
                 ),
             )
             add_event(
@@ -156,68 +159,66 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
         finally:
             conn.close()
         timeout = int(config.get("timeout_seconds", 3600))
-        stdout_path, stderr_path = run_dir / "stdout.txt", run_dir / "stderr.txt"
-        exit_code = 126
+        # Only a normal runner return proves that process supervision completed.
+        # Unexpected errors leave the durable run open for lock-based recovery.
+        exit_code, _ = run_logged_process(
+            command, workdir, timeout, stdout_path, stderr_path, run_lock
+        )
+        conn = connect(root)
         try:
-            exit_code, _ = run_logged_process(
-                command, workdir, timeout, stdout_path, stderr_path, run_lock
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE agent_runs SET ended_at=?,exit_code=?,stdout_path=?,stderr_path=? WHERE id=?",
+                (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
             )
+            add_event(
+                conn,
+                mission(conn)["id"],
+                "agent_run",
+                run_id,
+                "AGENT_RUN_FINISHED",
+                "dispatcher",
+                {
+                    "exit_code": exit_code,
+                    "role": role,
+                    "task_id": task_id,
+                    "generation": generation,
+                    "model": model,
+                },
+            )
+            if task_id:
+                current = task_row(conn, task_id)
+                if (
+                    current["owner"] == agent
+                    and current["generation"] == generation
+                    and current["status"] in ACTIVE_TASK_STATES
+                ):
+                    end_attempt(
+                        conn,
+                        task_id,
+                        "INCOMPLETE",
+                        "Harness exited without completing or waiting",
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET status='READY',owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                        (utcnow(), task_id),
+                    )
+                    conn.execute(
+                        "UPDATE effects SET state='UNKNOWN',updated_at=? WHERE task_id=? AND generation=? AND state='EXECUTING'",
+                        (utcnow(), task_id, generation),
+                    )
+                    add_event(
+                        conn,
+                        mission(conn)["id"],
+                        "task",
+                        task_id,
+                        "TASK_RUN_ENDED_INCOMPLETE",
+                        "dispatcher",
+                        {"agent_id": agent, "generation": generation, "exit_code": exit_code},
+                    )
+            conn.commit()
         finally:
-            conn = connect(root)
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "UPDATE agent_runs SET ended_at=?,exit_code=?,stdout_path=?,stderr_path=? WHERE id=?",
-                    (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
-                )
-                add_event(
-                    conn,
-                    mission(conn)["id"],
-                    "agent_run",
-                    run_id,
-                    "AGENT_RUN_FINISHED",
-                    "dispatcher",
-                    {
-                        "exit_code": exit_code,
-                        "role": role,
-                        "task_id": task_id,
-                        "generation": generation,
-                        "model": model,
-                    },
-                )
-                if task_id:
-                    current = task_row(conn, task_id)
-                    if (
-                        current["owner"] == agent
-                        and current["generation"] == generation
-                        and current["status"] in ACTIVE_TASK_STATES
-                    ):
-                        end_attempt(
-                            conn,
-                            task_id,
-                            "INCOMPLETE",
-                            "Harness exited without completing or waiting",
-                        )
-                        conn.execute(
-                            "UPDATE tasks SET status='READY',owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",
-                            (utcnow(), task_id),
-                        )
-                        conn.execute(
-                            "UPDATE effects SET state='UNKNOWN',updated_at=? WHERE task_id=? AND generation=? AND state='EXECUTING'",
-                            (utcnow(), task_id, generation),
-                        )
-                        add_event(
-                            conn,
-                            mission(conn)["id"],
-                            "task",
-                            task_id,
-                            "TASK_RUN_ENDED_INCOMPLETE",
-                            "dispatcher",
-                            {"agent_id": agent, "generation": generation, "exit_code": exit_code},
-                        )
-                conn.commit()
-            finally:
-                conn.close()
+            conn.close()
     return {
         "run_id": run_id,
         "exit_code": exit_code,
@@ -308,6 +309,7 @@ def _run_loop(root, max_cycles, dry_run=False):
         }
 
     active = {}
+    recovery_required = False
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel)
     try:
         while True:
@@ -345,6 +347,11 @@ def _run_loop(root, max_cycles, dry_run=False):
                                 "reason": str(exc),
                             },
                         )
+                        if conn.execute(
+                            "SELECT 1 FROM agent_runs WHERE agent_id=? AND ended_at IS NULL",
+                            (metadata["agent"],),
+                        ).fetchone():
+                            recovery_required = True
                         conn.commit()
                     finally:
                         conn.close()
@@ -365,6 +372,13 @@ def _run_loop(root, max_cycles, dry_run=False):
             try:
                 reconcile_conn(conn)
                 current_mission = mission(conn)
+                if recovery_required and not active:
+                    return {
+                        "state": "RECOVERY_WAIT",
+                        "cycles": cycles,
+                        "runs": results,
+                        "next_action": "Run recover to prove interrupted harnesses stopped before launching more work",
+                    }
                 if current_mission["status"] == "DONE" and not active:
                     return {
                         "state": "DONE",
@@ -388,7 +402,7 @@ def _run_loop(root, max_cycles, dry_run=False):
                         "cycles": cycles,
                         "runs": results,
                     }
-                if cycles >= max_cycles or desired != "ACTIVE" or exhausted:
+                if cycles >= max_cycles or desired != "ACTIVE" or exhausted or recovery_required:
                     if not active:
                         return {"state": "MAX_CYCLES", "cycles": cycles, "runs": results}
                     should_launch = False

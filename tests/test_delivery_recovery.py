@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import swarmctl as s
 from swarmkit import delivery
@@ -71,6 +72,52 @@ class DeliveryRecoveryTest(unittest.TestCase):
             s.claim_delivery(self.conn, item, "another-adapter")
         with self.assertRaises(s.SwarmError):
             s.retry_delivery(self.conn, item, "operator")
+
+    def test_supervision_error_cannot_hide_live_sender_from_recovery(self):
+        item = self.enqueue("import time; time.sleep(30)")
+        children = []
+
+        def lose_supervision(command, workdir, timeout, stdout, stderr, lock):
+            children.append(
+                subprocess.Popen(
+                    command,
+                    cwd=workdir,
+                    pass_fds=(lock.fileno(),),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            )
+            raise OSError("Could not verify sender cleanup")
+
+        try:
+            with mock.patch.object(delivery, "run_logged_process", side_effect=lose_supervision):
+                with self.assertRaises(OSError):
+                    s.dispatch_delivery(self.root, item, "adapter")
+            run = self.conn.execute("SELECT * FROM delivery_runs").fetchone()
+            self.assertIsNone(run["ended_at"])
+            self.assertIsNotNone(run["stdout_path"])
+            self.assertTrue(s.recover_runs(self.root)["live_or_unverified"])
+            self.conn.execute(
+                "UPDATE deliveries SET lease_until='2000-01-01T00:00:00Z' WHERE id=?", (item,)
+            )
+            self.conn.commit()
+            s.reconcile_conn(self.conn)
+            with self.assertRaises(s.SwarmError):
+                delivery.reconcile_delivery(self.conn, item, "not-sent", "Observation", "operator")
+            children[0].kill()
+            children[0].wait(timeout=5)
+            self.assertEqual(s.recover_runs(self.root)["recovered"], [run["id"]])
+            self.assertEqual(
+                self.conn.execute("SELECT status FROM deliveries WHERE id=?", (item,)).fetchone()[
+                    0
+                ],
+                "UNKNOWN",
+            )
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
 
     def test_expired_claim_requires_provider_reconciliation(self):
         item = self.enqueue("pass")

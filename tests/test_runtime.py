@@ -80,6 +80,65 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(sum(outcomes), 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0], 1)
 
+    def test_supervision_error_keeps_harness_open_until_child_releases_lock(self):
+        task = self.task()
+        self.claim(task)
+        self.config([sys.executable, "-c", "import time; time.sleep(30)"])
+        children = []
+
+        def lose_supervision(command, workdir, timeout, stdout, stderr, lock):
+            child = subprocess.Popen(
+                command,
+                cwd=workdir,
+                pass_fds=(lock.fileno(),),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            children.append(child)
+            raise OSError("Process cleanup could not be verified")
+
+        try:
+            with mock.patch.object(runtime, "run_logged_process", side_effect=lose_supervision):
+                with self.assertRaises(OSError):
+                    s.dispatch(self.root, "worker", "worker", task)
+            run = self.conn.execute("SELECT * FROM agent_runs").fetchone()
+            self.assertIsNone(run["ended_at"])
+            self.assertIsNone(run["exit_code"])
+            self.assertEqual(
+                Path(run["stdout_path"]), self.root / "runs" / run["id"] / "stdout.txt"
+            )
+            self.assertTrue(s.recover_runs(self.root)["live_or_unverified"])
+            self.expire(task)
+            with self.assertRaises(s.SwarmError):
+                self.claim(task, "fresh")
+            children[0].kill()
+            children[0].wait(timeout=5)
+            self.assertEqual(s.recover_runs(self.root)["recovered"], [run["id"]])
+            self.claim(task, "fresh")
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+
+    def test_scheduler_stops_allocating_after_unfinished_dispatch_error(self):
+        task = self.task()
+        self.config([sys.executable, "-c", "pass"])
+        with mock.patch.object(
+            runtime, "run_logged_process", side_effect=OSError("Lost supervisor")
+        ) as runner:
+            result = s.run_loop(self.root, 10)
+        self.assertEqual(result["state"], "RECOVERY_WAIT")
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(s.task_row(self.conn, task)["generation"], 0)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM agent_runs WHERE ended_at IS NULL").fetchone()[
+                0
+            ],
+            1,
+        )
+        self.assertEqual(len(s.recover_runs(self.root)["recovered"]), 1)
+
     def test_pause_fences_old_attempt_resume_needs_new_identity(self):
         task = self.task()
         self.claim(task)

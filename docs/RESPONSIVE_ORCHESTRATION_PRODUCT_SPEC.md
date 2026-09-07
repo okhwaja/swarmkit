@@ -1,7 +1,13 @@
 # Product spec: responsive, evolving swarm execution
 
-Status: proposed
+Status: implemented foundation; retained product rationale
 Audience: Swarmkit maintainers and implementation owner
+
+The implemented commands and current runtime behavior are specified in
+[Responsive orchestration](RESPONSIVE_ORCHESTRATION.md) and
+[Runtime safety](RUNTIME_SAFETY.md). This document preserves the motivating
+experience and acceptance scenarios; its historical problem statement does not
+describe the current scheduler.
 
 ## Product summary
 
@@ -19,9 +25,9 @@ information. A useful discovery may justify a follow-up question, invalidate
 planned work, or reveal an entirely new outcome that deserves its own
 workstream.
 
-Swarmkit's current execution model responds at worker-wave boundaries. The
-manager launches before a group of tasks, then does not run again until every
-agent in that group exits. This produces two user-visible problems:
+Before responsive orchestration, Swarmkit responded at worker-wave boundaries.
+The manager launched before a group of tasks and did not run again until every
+agent in that group exited. This produced two user-visible problems:
 
 1. A fast, important result can sit unreviewed while an unrelated task continues
    for a long time.

@@ -100,6 +100,23 @@ def main():
 
             result["review_triggers"] = args.review_triggers
             result["review_burst"] = measure(review_burst, args.repeats)
+            # Keep the health workload valid and avoid measuring thousands of
+            # deliberately absent fixture summaries as reported problems.
+            conn.execute("UPDATE tasks SET verification_json='[\"Verified\"]',title=id")
+            conn.execute("UPDATE workstreams SET progress_summary='Investigation in progress'")
+            conn.commit()
+            reads.clear()
+            conn.set_trace_callback(
+                lambda sql: (
+                    reads.append(sql)
+                    if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+                    else None
+                )
+            )
+            swarm.doctor(conn)
+            conn.set_trace_callback(None)
+            result["health_read_statements"] = len(reads)
+            result["health_check"] = measure(lambda _: swarm.doctor(conn), args.repeats)
         finally:
             conn.close()
     print(json.dumps(result, indent=2))

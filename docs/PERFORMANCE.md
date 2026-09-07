@@ -82,3 +82,22 @@ single growing review measured **2.328 seconds / 1.415 MB** Python peak. Bounded
 50-trigger batches with indexed pending identity lookup measured **0.251 seconds /
 0.126 MB**. Median of three samples on the same host; these are enqueueing costs,
 not model review latency. The resulting 20 reviews retain all 1,000 triggers.
+
+
+## Health checks at service scale
+
+The service benchmark also measures `doctor` after giving its disposable tasks
+valid verification text and workstream summaries. On the same local Python 3.9.6
+macOS host, three-sample medians for 1,000 active cases / 5,000 tasks were:
+
+| Health check | Before (0.11.0) | After (0.11.1) |
+|---|---:|---:|
+| Read statements | 7,016 | 16 |
+| Median time | 72.207 ms | 28.354 ms |
+| Peak traced Python allocation | 36,570 bytes | 6,458 bytes |
+
+Task/wait and workstream counts are projected in batches; case-link mismatches
+use indexed existence checks. Full health checking still visits the mission's
+records and hashes referenced intake/delivery files. Payload hashing and policy
+validation can dominate workloads unlike this fixture. These measurements are
+local comparisons, not deployment latency guarantees.

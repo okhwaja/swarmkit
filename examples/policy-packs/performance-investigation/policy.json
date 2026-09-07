@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "id": "performance-investigation",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Performance Investigation",
-  "description": "Bounded performance investigation using durable tasks, evidence, waits, and effects.",
-  "when_to_use": "Use for performance investigation.",
+  "description": "Investigate a performance complaint, compare explanations, and independently verify an improvement or an evidence-based no-change decision.",
+  "when_to_use": "Use when a reported latency, throughput, or resource problem needs reproducible measurements before choosing a code change.",
   "guidance": "GUIDANCE.md",
   "variables": {
     "goal": {
@@ -20,11 +20,11 @@
     {
       "id": "baseline",
       "title": "Reproduce and benchmark: {goal}",
-      "description": "Reproduce {goal}. Capture representative workload, repeats, variance, and baseline commands. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Reproduce {goal}. Record the exact input revision, environment, representative workload, repeated measurements, and variance in a baseline artifact. Run `{test_command}` as appropriate. If the complaint cannot be reproduced with available data, state the gap and request the missing workload rather than inventing a baseline.",
       "kind": "discovery",
       "priority": 70,
       "acceptance": [
-        "Baseline includes workload, environment, revision, and repeatable measurements"
+        "Baseline includes workload, environment, exact input revision, and repeatable measurements"
       ],
       "depends_on": [],
       "completion": {
@@ -69,11 +69,11 @@
     {
       "id": "integrate",
       "title": "Choose and implement improvement: {goal}",
-      "description": "Act as the integration owner. Compare both findings, explain contradictions, implement a bounded candidate, and benchmark it. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Act as the sole implementation owner. Compare the profile and alternative hypotheses, explain contradictions, and choose a bounded candidate only when the evidence justifies one. Edit only in a registered isolated workspace. Compare the candidate against the baseline and run `{test_command}`. Bind evidence to the exact resulting revision. If no safe improvement is supported, retain the input revision and record a reasoned no-change decision.",
       "kind": "implementation",
       "priority": 70,
       "acceptance": [
-        "Chosen change resolves conflicting findings and has comparative measurements"
+        "The implementation or no-change decision is supported by comparative measurements and resolves the competing findings"
       ],
       "depends_on": [
         "profile",
@@ -87,11 +87,11 @@
     {
       "id": "verify",
       "title": "Verify improvement and regressions: {goal}",
-      "description": "Independently run `{test_command}` and the same benchmark workload. Prepare a PR with evidence only if a safe improvement exists. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Independently inspect the exact candidate revision, or unchanged input revision for a no-change decision. Run `{test_command}` and the same benchmark workload. Do not edit source code or publish a change. Produce a local review artifact with comparison, variance, regression checks, and remaining uncertainty. Record failed evidence and a durable finding if the proposed result is unsupported; do not claim an improvement from an inconclusive measurement.",
       "kind": "verification",
       "priority": 70,
       "acceptance": [
-        "Final artifact compares the exact delivered revision with the baseline and records remaining gaps"
+        "Final artifact independently verifies the exact result or no-change decision against the baseline and records remaining uncertainty"
       ],
       "depends_on": [
         "integrate"

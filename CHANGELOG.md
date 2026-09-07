@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.11.1
+
+- Preserve unfinished harness/sender runs when process supervision raises before
+  proving the child stopped. Inherited locks remain authoritative for recovery;
+  the scheduler stops allocating more work and reports `RECOVERY_WAIT`.
+- Journal stdout/stderr paths before launch so interrupted-run logs are discoverable.
+- Keep health checks useful on malformed timestamps, JSON, missing sender leases,
+  and files that disappear during hashing; report all observed problems.
+- Batch health projections for tasks/workstreams/cases and avoid reading result
+  bodies unnecessarily. Scope duplicate-title warnings to one workstream.
+- Updated generic workflow packs to 1.1.0: local review artifacts, VCS-neutral
+  handoffs, independent verifiers, evidence-based no-change performance outcomes,
+  explicit port compatibility scope, and reuse of already-recorded authority.
+- No schema change from 12.
+
 ## 0.11.0
 
 - Added `evidence show --task` with specific missing, stale, failed, unavailable,

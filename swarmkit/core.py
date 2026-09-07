@@ -16,7 +16,7 @@ import subprocess
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CLI_PATH = PACKAGE_ROOT / "swarmctl.py"
 
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 
 
 SCHEMA_VERSION = "12"
@@ -203,10 +203,13 @@ def db_path(root):
 
 
 def delivery_content_intact(delivery):
-    path = Path(delivery["content_path"])
-    if not path.is_file():
+    try:
+        path = Path(delivery["content_path"])
+        if not path.is_file():
+            return False
+        sha, size = hash_file(path)
+    except OSError:
         return False
-    sha, size = hash_file(path)
     return sha == delivery["content_sha256"] and size == delivery["content_size_bytes"]
 
 
@@ -226,10 +229,13 @@ def hash_file(path):
 def case_payload_intact(path, expected_sha, expected_size):
     if not path:
         return True
-    candidate = Path(path)
-    if not candidate.is_file():
+    try:
+        candidate = Path(path)
+        if not candidate.is_file():
+            return False
+        sha, size = hash_file(candidate)
+    except OSError:
         return False
-    sha, size = hash_file(candidate)
     return sha == expected_sha and size == expected_size
 
 

@@ -70,3 +70,8 @@ They establish a stable read view and release only transactions they opened.
 Keep reconciliation outside a standalone read scope: it changes canonical state
 and belongs in a write transaction. Row projection helpers used after an external
 lookup rely on their caller to scope the row lookup and linked reads together.
+
+Health checks deliberately tolerate malformed values: report the affected entity
+and continue checking other records. Keep ordinary domain commands strict. Health
+projections batch related counts and avoid loading task result bodies; use
+`scripts/benchmark_service.py` when changing those queries.

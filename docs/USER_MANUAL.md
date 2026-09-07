@@ -546,6 +546,14 @@ For invariant and coordination problems:
 swarmctl --root /work/my-run/.swarm doctor
 ```
 
+`doctor` reads state without reconciling or repairing it. It returns structured
+problems and a nonzero exit code for integrity errors, including malformed stored
+timestamps/JSON and missing evidence files. Duplicate active titles are compared
+within a workstream; repeated workflow titles in independent cases are expected.
+If a cancelled workstream from an older release still contains unfinished tasks,
+inspect it and explicitly cancel that work with a recorded reason.
+
+
 ## Journey 7: recover from a stale or failed agent
 
 Normally no manual action is needed. Agent subprocesses that exit without completing return their task to `READY`. Expired leases are also requeued.

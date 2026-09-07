@@ -363,3 +363,24 @@ No remote push, PR, merge, provider action, or OS service installation occurred.
   checks pass with 223 tests in both source and extracted ZIP; docs are aligned.
 - Documentation impact: CLI/evidence contract, worker/verifier guidance, migration,
   release metadata and engineering backlog. Evidence remains a harness attestation.
+
+## Supervision, health, and workflow assumptions (0.11.1)
+
+- Supervision exceptions previously closed agent/sender journals even when child
+  termination was not established. Open journals now survive exceptions; real-child
+  lock tests prove recovery waits. The scheduler stops allocating after an uncertain
+  dispatch, and pre-launch journal rows already contain log paths.
+- Health checks now report malformed times/JSON and absent leases instead of
+  crashing. Missing-during-hash payloads return an integrity failure. Terminal
+  workstreams with unfinished work are reported; title warnings are scoped.
+- Batched task/wait, workstream count, and case-link health projections. On the
+  1,000-case/5,000-task fixture: reads 7,016 -> 16, median 72.207 -> 28.354 ms,
+  peak traced allocation 36,570 -> 6,458 bytes. Benchmark now includes health.
+- Generic workflow packs 1.1.0 keep outputs local, avoid Git/PR assumptions, preserve
+  independent verification, allow measured no-change performance decisions, require
+  accepted port exclusions, and reuse recorded authority instead of asking twice.
+- Updated the retained responsive product spec to distinguish historical wave
+  scheduling from the implemented runtime.
+- Source/package checks passed with 232 tests; updated policy pack validation is
+  included. Documentation impact: runtime recovery, health/architecture/performance,
+  workflow authoring/examples, user journeys, product rationale and release metadata.

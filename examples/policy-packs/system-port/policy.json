@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "id": "system-port",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "System Port",
-  "description": "Bounded system port using durable tasks, evidence, waits, and effects.",
-  "when_to_use": "Use for system port.",
+  "description": "Inventory compatibility requirements, port separate scopes, integrate them once, and independently verify required user journeys.",
+  "when_to_use": "Use when moving a system to another platform, language, or interface while preserving explicitly agreed user-visible behavior.",
   "guidance": "GUIDANCE.md",
   "variables": {
     "goal": {
@@ -20,11 +20,11 @@
     {
       "id": "inventory",
       "title": "Inventory compatibility: {goal}",
-      "description": "Inventory {goal}. Define a journey matrix and explicit behavioral compatibility requirements. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Inventory {goal}. Create a journey matrix that separates required behavior, explicitly excluded behavior, compatibility boundaries, and unknowns. Assign non-overlapping core and interface scopes for the parallel stages. Record the exact input revision and environment; request a scope decision when compatibility expectations are unclear.",
       "kind": "discovery",
       "priority": 70,
       "acceptance": [
-        "Inventory defines user journeys, compatibility boundaries, and unsupported behavior"
+        "Inventory defines required user journeys, approved exclusions, compatibility boundaries, and separate implementation scopes"
       ],
       "depends_on": [],
       "completion": {
@@ -35,11 +35,11 @@
     {
       "id": "core",
       "title": "Port core behavior: {goal}",
-      "description": "Implement the core behavior in an isolated workspace. Own only the core scope defined in the inventory. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Implement only the core scope assigned by the inventory in a registered isolated workspace. Use the environment's VCS and checkout tools. Run `{test_command}` for the assigned journeys, record the exact resulting revision, and provide a local change artifact the integration owner can apply.",
       "kind": "implementation",
       "priority": 70,
       "acceptance": [
-        "Core implementation maps every assigned journey to a test or documented gap"
+        "Core implementation maps every assigned required journey to verification and provides an exact revision for integration"
       ],
       "depends_on": [
         "inventory"
@@ -52,11 +52,11 @@
     {
       "id": "interfaces",
       "title": "Port interfaces and adapters: {goal}",
-      "description": "Implement the interfaces in a separate workspace. Own only interface paths assigned by the inventory. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Implement only the interface scope assigned by the inventory in a separate registered workspace. Use the environment's VCS and checkout tools. Run `{test_command}` for assigned compatibility contracts and provide an exact revision and local change artifact to the integration owner.",
       "kind": "implementation",
       "priority": 70,
       "acceptance": [
-        "Interface implementation preserves assigned compatibility contracts"
+        "Interface implementation preserves assigned compatibility contracts and provides an exact revision for integration"
       ],
       "depends_on": [
         "inventory"
@@ -69,7 +69,7 @@
     {
       "id": "integrate",
       "title": "Integrate port slices: {goal}",
-      "description": "Act as the sole integration owner. Review both workspace diffs and combine them into one revision with explicit conflict dispositions. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Act as the sole integration owner. Inspect both exact revisions and combine their changes in a registered isolated workspace using the configured VCS tools. Resolve conflicts and contradictory assumptions explicitly. Run `{test_command}` and record one exact integrated revision for independent verification.",
       "kind": "implementation",
       "priority": 70,
       "acceptance": [
@@ -87,11 +87,11 @@
     {
       "id": "verify",
       "title": "Verify all user journeys: {goal}",
-      "description": "Run the entire journey matrix on the exact integrated revision and run `{test_command}`. Prepare a PR with the matrix and evidence. Use a task workspace before edits. Set an evidence contract for the exact delivered revision and environment. Record criterion evidence; test with `{test_command}`. Raise durable findings or confirmation blockers when scope or authority is unclear.",
+      "description": "Independently run `{test_command}` and the entire required journey matrix on the exact integrated revision. Do not modify the implementation or publish a change. Produce a local review artifact mapping each journey to evidence. Required failures or missing evidence block completion; document exclusions only when the mission or an explicit scope decision accepts them.",
       "kind": "verification",
       "priority": 70,
       "acceptance": [
-        "Every inventoried journey has passing evidence or an explicitly documented unsupported gap"
+        "Every required journey passes on the exact integrated revision, and any excluded behavior has an explicit accepted scope decision"
       ],
       "depends_on": [
         "integrate"

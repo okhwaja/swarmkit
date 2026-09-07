@@ -221,3 +221,19 @@ harness and tools. Runtime process locking requires a single POSIX host.
 Malformed stage kinds, dependency values, and template field expressions are
 reported as policy validation errors. Templates must render from the declared
 variables; validation does not invoke the harness or execute policy prose.
+
+
+## Generic workflows and publication
+
+The performance-investigation, pipeline-repair, and system-port examples produce
+local evidence and review artifacts by default. They use the target environment's
+VCS and exact revision identifiers; they do not require Git or remote PR creation.
+The performance workflow accepts a supported no-change decision when no safe
+improvement is justified. The port workflow requires every agreed journey to pass;
+unsupported behavior needs an explicit accepted scope decision. Verifiers inspect
+and measure the result without changing the implementation they are reviewing.
+
+The separate `pr-adversarial-review` example specifically describes a Git-backed
+pull-request workflow. Apply it only when the mission authorizes that publishing
+workflow and the harness supplies the provider tools and named review skill.
+Installing or applying any pack does not grant additional tool authority.

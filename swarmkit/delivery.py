@@ -597,8 +597,8 @@ def dispatch_delivery(root, delivery_id, agent, dry_run=False):
                 row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
                 conn.execute(
                     """INSERT INTO delivery_runs(id,mission_id,delivery_id,extension_id,
-                        executor_type,agent_id,prompt_path,envelope_path,command_json,started_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        executor_type,agent_id,prompt_path,envelope_path,command_json,started_at,stdout_path,stderr_path)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         run_id,
                         row["mission_id"],
@@ -610,6 +610,8 @@ def dispatch_delivery(root, delivery_id, agent, dry_run=False):
                         str(prepared["envelope_path"]),
                         json_dump(prepared["command"]),
                         utcnow(),
+                        str(stdout_path),
+                        str(stderr_path),
                     ),
                 )
                 add_event(
@@ -627,69 +629,65 @@ def dispatch_delivery(root, delivery_id, agent, dry_run=False):
                 )
         finally:
             conn.close()
-        # Unexpected controller errors are uncertain unless launch failure is proven.
-        exit_code, started = 126, True
+        # Do not close a run if supervision raises before proving the child stopped.
+        # Its inherited process lock remains the recovery authority.
+        exit_code, started = run_logged_process(
+            prepared["command"],
+            prepared["workdir"],
+            prepared["timeout"],
+            stdout_path,
+            stderr_path,
+            run_lock,
+        )
+        conn = connect(root)
         try:
-            exit_code, started = run_logged_process(
-                prepared["command"],
-                prepared["workdir"],
-                prepared["timeout"],
-                stdout_path,
-                stderr_path,
-                run_lock,
-            )
-        finally:
-            conn = connect(root)
-            try:
-                with transaction(conn):
-                    conn.execute(
-                        """UPDATE delivery_runs SET ended_at=?,exit_code=?,stdout_path=?,stderr_path=?
-                            WHERE id=?""",
-                        (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
+            with transaction(conn):
+                conn.execute(
+                    """UPDATE delivery_runs SET ended_at=?,exit_code=?,stdout_path=?,stderr_path=?
+                        WHERE id=?""",
+                    (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
+                )
+                row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+                add_event(
+                    conn,
+                    row["mission_id"],
+                    "delivery_run",
+                    run_id,
+                    "DELIVERY_RUN_FINISHED",
+                    agent,
+                    {"delivery_id": delivery_id, "exit_code": exit_code, "started": started},
+                )
+                if row["status"] == "CLAIMED" and row["claimed_by"] == agent:
+                    status = "UNKNOWN" if started else "FAILED"
+                    error = (
+                        "Extension exited without recording provider acknowledgment; reconcile with the provider"
+                        if started
+                        else "Extension could not start; inspect " + str(stderr_path)
                     )
-                    row = conn.execute(
-                        "SELECT * FROM deliveries WHERE id=?", (delivery_id,)
-                    ).fetchone()
+                    conn.execute(
+                        """UPDATE deliveries SET status=?,claimed_by=NULL,lease_until=NULL,
+                            last_error=?,updated_at=? WHERE id=?""",
+                        (status, error, utcnow(), delivery_id),
+                    )
                     add_event(
                         conn,
                         row["mission_id"],
-                        "delivery_run",
-                        run_id,
-                        "DELIVERY_RUN_FINISHED",
-                        agent,
-                        {"delivery_id": delivery_id, "exit_code": exit_code, "started": started},
+                        "delivery",
+                        delivery_id,
+                        "DELIVERY_RUN_UNACKNOWLEDGED" if started else "DELIVERY_RUN_FAILED",
+                        "dispatcher",
+                        {
+                            "run_id": run_id,
+                            "exit_code": exit_code,
+                            "error": error,
+                            "status": status,
+                        },
                     )
-                    if row["status"] == "CLAIMED" and row["claimed_by"] == agent:
-                        status = "UNKNOWN" if started else "FAILED"
-                        error = (
-                            "Extension exited without recording provider acknowledgment; reconcile with the provider"
-                            if started
-                            else "Extension could not start; inspect " + str(stderr_path)
-                        )
-                        conn.execute(
-                            """UPDATE deliveries SET status=?,claimed_by=NULL,lease_until=NULL,
-                                last_error=?,updated_at=? WHERE id=?""",
-                            (status, error, utcnow(), delivery_id),
-                        )
-                        add_event(
-                            conn,
-                            row["mission_id"],
-                            "delivery",
-                            delivery_id,
-                            "DELIVERY_RUN_UNACKNOWLEDGED" if started else "DELIVERY_RUN_FAILED",
-                            "dispatcher",
-                            {
-                                "run_id": run_id,
-                                "exit_code": exit_code,
-                                "error": error,
-                                "status": status,
-                            },
-                        )
-                    final = conn.execute(
-                        "SELECT status FROM deliveries WHERE id=?", (delivery_id,)
-                    ).fetchone()[0]
-            finally:
-                conn.close()
+                final = conn.execute(
+                    "SELECT status FROM deliveries WHERE id=?", (delivery_id,)
+                ).fetchone()[0]
+        finally:
+            conn.close()
     return {
         "run_id": run_id,
         "delivery_id": delivery_id,
