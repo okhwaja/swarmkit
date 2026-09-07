@@ -203,3 +203,24 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
 - Final handoff is reporting-only under notes/, excluded from distribution; shipped
   source remains the version that passed 167 tests in both source/package checks.
   All work stayed on codex/readable-reliable-swarmkit; nothing was pushed remotely.
+
+## Continued pass: durable checkout creation (0.9.0 / schema 10)
+
+The user requested continued work after the initial 0.8.0 report. A provider can
+allocate a checkout outside the suggested path and then lose its receipt. The
+previous path-existence check could not stop a later duplicate invocation.
+
+Added a committed creation journal before subprocess launch, retained argv/logs,
+UNKNOWN/CREATED/REGISTERED/NOT_CREATED outcomes, provider-observation reconciliation,
+and replay-free attachment of success receipts after pause/ownership loss. Process
+locks fence reconciliation while a surviving child remains alive. Uncertain
+creation participates in drain/resume/amendment/completion gates; pending attachment
+blocks dispatch into the default source directory. Inspection appears in CLI,
+why/doctor, and bounded task/manager context. Manual/jj/internal environments retain
+opaque revisions and paths; no Git inference or automatic cleanup was introduced.
+
+Documentation impact: CLI/state, user journey, harness/provider contract, runtime
+architecture, migration/release. Schema 10 is additive. Initial full source check:
+174 tests passed, including seven additional recovery/failure/lifecycle tests;
+source formatting, Ruff, generated CLI and docs checks passed. Full extracted
+release verification follows before the local checkpoint.

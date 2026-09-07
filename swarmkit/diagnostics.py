@@ -175,6 +175,23 @@ def doctor(conn):
                         "problem": "done workstream has non-terminal tasks",
                     }
                 )
+    for row in conn.execute(
+        "SELECT id,task_id,state FROM workspace_creations WHERE state IN ('UNKNOWN','CREATED')"
+    ):
+        problems.append(
+            {
+                "severity": "warning",
+                "entity": row["task_id"],
+                "problem": "checkout creation "
+                + row["id"]
+                + " needs "
+                + (
+                    "provider reconciliation"
+                    if row["state"] == "UNKNOWN"
+                    else "attachment with workspace create"
+                ),
+            }
+        )
     for row in conn.execute("SELECT * FROM policy_packs"):
         try:
             validate_policy_manifest(json_load(row["manifest_json"], {}))

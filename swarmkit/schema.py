@@ -474,6 +474,22 @@ CREATE INDEX IF NOT EXISTS idx_attempts_agent ON attempts(task_id, agent);
 """
 
 
+WORKSPACE_CREATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS workspace_creations (
+    id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id),
+    repository TEXT NOT NULL, requested_base TEXT NOT NULL, provider TEXT NOT NULL,
+    suggested_path TEXT NOT NULL, state TEXT NOT NULL
+        CHECK(state IN ('UNKNOWN','CREATED','REGISTERED','NOT_CREATED')),
+    command_json TEXT NOT NULL, receipt_json TEXT, observation TEXT,
+    stdout_path TEXT NOT NULL, stderr_path TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_creation_pending
+    ON workspace_creations(task_id) WHERE state IN ('UNKNOWN','CREATED');
+CREATE INDEX IF NOT EXISTS idx_workspace_creation_task ON workspace_creations(task_id,created_at);
+"""
+
+
 def execute_schema(conn, source):
     # executescript commits implicitly; execute each DDL statement in our transaction.
     for statement in source.split(";"):
@@ -578,7 +594,9 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            if target == 9:
+            if target == 10:
+                execute_schema(conn, WORKSPACE_CREATION_SCHEMA)
+            elif target == 9:
                 migrate_reliability_schema(conn)
             elif target == 8:
                 migrate_workspace_schema(conn)

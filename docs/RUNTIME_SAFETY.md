@@ -1,6 +1,6 @@
 # Durable runtime and recovery
 
-This is the normative runtime contract, including the 0.8.0 reliability and usability changes. Swarmkit supports
+This is the normative runtime contract, including the 0.9.0 checkout recovery changes. Swarmkit supports
 one user on one POSIX host (macOS or Linux). The harness and its tools enforce
 permissions and credentials. These commands coordinate work; they do not grant
 authority or intercept arbitrary tool calls.
@@ -178,7 +178,7 @@ about your internal CLI's syntax):
 ```
 
 Then run `workspace create --task TASK --repository /path/to/source --base BASE`.
-Creation happens before claiming a task. The argv placeholders are `{repository}`
+Create before claiming, or supply `--agent` when the current owner creates it during an attempt. The argv placeholders are `{repository}`
 (absolute source directory), `{path}` (suggested task-specific destination),
 `{base}` (opaque revision expression), `{task_id}` (stable request key), and `{root}`
 (absolute mission directory). Each expanded argument is passed without a shell,
@@ -202,12 +202,52 @@ allocates checkout locations itself. Providers should deduplicate requests using
 `task_id`; a registered identical create request returns its original receipt.
 
 Commands have a bounded timeout, at most 64 KB of JSON receipt text, and an owned
-process group. Nonzero exit, timeout, invalid receipts, missing directories, or
-a task becoming ineligible during creation prevent registration. The command may
-still have created a checkout: Swarmkit does not automatically retry or delete
-it. Inspect it, then use `workspace register` if appropriate. An unregistered
-suggested destination already on disk also requires inspection before retry.
+process group. Before invoking a provider, Swarmkit commits a creation record as
+`UNKNOWN` with the exact argv and persistent stdout/stderr paths. A controller
+crash, timeout, nonzero exit, or malformed receipt cannot authorize a replay, even
+when the provider chose a path other than the suggested destination. Only a proven
+failure to start the process is automatically recorded as `NOT_CREATED` and retryable.
 Do not create detached background processes in a checkout adapter.
+
+Inspect incomplete creation using `workspace attempts --task TASK`, `why`, or
+`doctor`. `workspace attempts` defaults to the latest 50 records (`--limit` 1–500); add
+`--pending` to focus on uncertain or unattached creations.
+After checking the internal CLI/provider, record what actually happened:
+
+```bash
+# A checkout exists. Record its exact path and starting revision.
+python3 swarmctl.py workspace reconcile WC_ID --outcome created \
+  --observation "Provider lookup returned checkout 42" \
+  --path /absolute/actual-checkout --base-revision EXACT_REVISION \
+  --workspace-ref OPTIONAL_CHECKOUT_NAME
+# Repeat the original create request to attach that recorded checkout.
+python3 swarmctl.py workspace create --task TASK --repository /path/to/source --base BASE
+
+# Or, only after proving no checkout was created, allow a fresh invocation.
+python3 swarmctl.py workspace reconcile WC_ID --outcome not-created \
+  --observation "Provider lookup found no checkout for this request"
+```
+
+Reconciliation is refused while a live adapter retains the creation lock, even
+if its controller has died. Observations remain in the audit trail. They are an
+operator/harness assertion, not automatic verification by Swarmkit. A reconciled
+outcome cannot be changed to a conflicting outcome. Checkouts are never deleted.
+
+A valid success receipt becomes `CREATED` before task attachment. If a pause or
+expired owner prevents attachment, a later eligible owner repeats `workspace create`
+to attach it and mark it `REGISTERED`, without calling the provider again. Provider,
+source, and requested base must still match. Reconciliation is available during a
+pause or after cancellation; attachment still obeys task ownership and lifecycle
+rules. Terminal tasks retain the creation record for explicit operator cleanup.
+Manual `workspace register` cannot bypass a pending creation record, and dispatch
+refuses a checkout that still needs reconciliation or attachment.
+
+Uncertain creation also keeps a drain pending and blocks resume, amendment, and
+mission completion. Observe the provider first; `CREATED` records do not imply a
+live process and may be attached after resume. An unregistered suggested destination
+already on disk still requires inspection before any new creation. Python callers
+must invoke creation/reconciliation outside an existing transaction: the intent
+must be durable before the external command starts.
 
 Dispatch uses the registered directory regardless of VCS, and refuses a missing
 checkout. Swarmkit retains checkouts for explicit inspection/integration and does
@@ -346,7 +386,7 @@ and the database. It is deliberately less useful for detailed postmortems.
 
 ## Upgrade
 
-Known schema versions 1–8 upgrade transactionally to schema 9. Versions 2–6 were
+Known schema versions 1–9 upgrade transactionally to schema 10. Versions 2–6 were
 additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
 metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
@@ -443,3 +483,11 @@ inherit the creation lock, so a controller crash does not permit another creator
 while the original child is still alive. A failed/ambiguous checkout command still
 requires inspecting the provider and registering any created checkout; no automatic
 provider retry or checkout deletion is implied.
+
+## Schema 10 upgrade
+
+Version 0.9.0 adds the checkout creation journal and its pending-task uniqueness
+constraint. Existing workspace registrations are unchanged. Old releases have no
+durable record of an unregistered provider operation; inspect those checkouts
+manually before adopting this release. Stop old controllers and keep a backup
+before upgrade. Older binaries cannot read schema 10.

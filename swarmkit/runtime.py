@@ -49,6 +49,15 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
     conn = connect(root)
     try:
         if task_id:
+            pending = conn.execute(
+                "SELECT id,state FROM workspace_creations WHERE task_id=? AND state IN ('UNKNOWN','CREATED')",
+                (task_id,),
+            ).fetchone()
+            if pending:
+                raise SwarmError(
+                    "Checkout creation requires reconciliation or attachment before dispatch: "
+                    + pending["id"]
+                )
             workspace = conn.execute(
                 "SELECT path FROM workspaces WHERE task_id=?", (task_id,)
             ).fetchone()

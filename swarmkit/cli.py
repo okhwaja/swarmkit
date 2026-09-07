@@ -113,7 +113,7 @@ from .tasks import (
     update_workstream,
 )
 from .views import brief_status, render_board, render_status_report
-from .workspaces import create_workspace, register_workspace
+from .workspaces import create_workspace, register_workspace, reconcile_workspace, creation_dict
 
 
 def add_runtime_cli(sub):
@@ -219,6 +219,22 @@ def add_runtime_cli(sub):
     )
     wr.add_argument("--agent", help="Required when registering for an active task attempt")
     ws.add_parser("list")
+    attempts = ws.add_parser("attempts", help="Inspect durable checkout creation records and logs")
+    attempts.add_argument("--task")
+    attempts.add_argument(
+        "--pending", action="store_true", help="Only unresolved or unattached creations"
+    )
+    attempts.add_argument("--limit", type=int, default=50)
+    recovery = ws.add_parser("reconcile", help="Record a provider-observed checkout outcome")
+    recovery.add_argument("creation_id")
+    recovery.add_argument("--outcome", choices=["created", "not-created"], required=True)
+    recovery.add_argument(
+        "--observation", required=True, help="Evidence from inspecting the checkout provider"
+    )
+    recovery.add_argument("--path", help="Existing checkout path for a created outcome")
+    recovery.add_argument("--base-revision", help="Exact starting revision for a created outcome")
+    recovery.add_argument("--workspace-ref", default="")
+
     service = sub.add_parser(
         "serve", help="Poll durable service state with bounded restartable scheduler runs"
     )
@@ -351,6 +367,34 @@ def handle_runtime_cli(root, args):
                     args.workspace_ref,
                     agent=args.agent,
                 )
+            elif args.workspace_command == "reconcile":
+                receipt = None
+                if (
+                    args.outcome == "created"
+                    or args.path
+                    or args.base_revision
+                    or args.workspace_ref
+                ):
+                    receipt = {
+                        "path": args.path,
+                        "base_revision": args.base_revision,
+                        "workspace_ref": args.workspace_ref,
+                    }
+                result = reconcile_workspace(
+                    root, conn, args.creation_id, args.outcome, args.observation, receipt
+                )
+            elif args.workspace_command == "attempts":
+                if not 1 <= args.limit <= 500:
+                    raise SwarmError("Workspace attempt limit must be between 1 and 500")
+                result = [
+                    creation_dict(r)
+                    for r in conn.execute(
+                        "SELECT * FROM workspace_creations WHERE (? IS NULL OR task_id=?) "
+                        "AND (NOT ? OR state IN ('UNKNOWN','CREATED')) "
+                        "ORDER BY created_at DESC,rowid DESC LIMIT ?",
+                        (args.task, args.task, args.pending, args.limit),
+                    )
+                ]
             else:
                 result = [
                     workspace_dict(r)

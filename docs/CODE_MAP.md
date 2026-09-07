@@ -12,7 +12,7 @@ Python dependencies. Start with the module that owns the behavior you want to ch
 | Coordination | `swarmkit/coordination.py`, `swarmkit/decisions.py`, `swarmkit/cases.py` | Reconciliation, manager reviews, findings, external waits, decisions, service intake, and briefing inquiries. |
 | Demonstration | `swarmkit/demo.py`, `examples/demo_lifecycle.py` | A synthetic end-to-end recovery without a harness. |
 | Execution | `swarmkit/runtime.py`, `swarmkit/config.py`, `swarmkit/setup.py` | Runner configuration, setup checks, subprocess ownership, recovery, and scheduling. |
-| Workspaces | `swarmkit/workspaces.py` | Manual, configured-command, and explicitly selected Git checkout providers. |
+| Workspaces | `swarmkit/workspaces.py` | Manual, configured-command, and explicitly selected Git checkout providers; durable creation receipts and recovery. |
 | Verification and actions | `swarmkit/evidence.py`, `swarmkit/effects.py`, `swarmkit/delivery.py` | Evidence contracts, external-action receipts, resource leases, and delivery adapters. |
 | Agent context | `swarmkit/prompts.py`, `swarmkit/inbox.py` | Fresh role prompts and durable event delivery. |
 | Read models | `swarmkit/queries.py`, `swarmkit/views.py` | JSON projections, boards, and operator reports. |

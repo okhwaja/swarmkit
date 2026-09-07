@@ -27,6 +27,7 @@ from .runtime import dispatch
 from .schema import (
     migrate_reliability_schema,
     RUNTIME_SCHEMA,
+    WORKSPACE_CREATION_SCHEMA,
     SCHEMA,
     execute_schema,
     migrate_workspace_schema,
@@ -59,6 +60,7 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
                     execute_schema(conn, RUNTIME_SCHEMA)
                     migrate_workspace_schema(conn)
                     migrate_reliability_schema(conn)
+                    execute_schema(conn, WORKSPACE_CREATION_SCHEMA)
                     now = utcnow()
                     mission_id = make_id("M")
                     conn.execute(

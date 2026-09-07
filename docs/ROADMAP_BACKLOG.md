@@ -1,7 +1,7 @@
 # Roadmap implementation status and backlog
 
-Reviewed against the approved P0/P1 roadmap, with the 0.8.0 local improvement pass
-on 2026-09-07 UTC. P2 remains deferred. Releases 0.7–0.8 add tested runtime
+Reviewed against the approved P0/P1 roadmap, with the 0.9.0 local improvement pass
+on 2026-09-07 UTC. P2 remains deferred. Releases 0.7–0.9 add tested runtime
 slices across most of the active roadmap; this
 is not a claim that every capability or persistent-coworker release gate is done.
 The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
@@ -9,7 +9,7 @@ The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
 ## Questions for the owner
 
 These questions block the follow-on integrations below, not the changes shipped
-through 0.8.0. No answer or permission is inferred while you are away.
+through 0.9.0. No answer or permission is inferred while you are away.
 
 | Decision | Needed before | Suggested starting point |
 |---|---|---|
@@ -31,7 +31,7 @@ explicit. “Existing” identifies foundations present before this release.
 | 3 | Lifecycle controls | Added mission pause/drain/resume/cancel/abandon, task descendant cancellation, manager fencing, delivery-aware draining, and cleanup visibility. Per-case/workstream pause and selective interruption remain. |
 | 4 | Reliable inbox | Added leased batches, explicit idempotent acknowledgment, redelivery, scoped offsets, and stale-token fencing. Consumers still must deduplicate their own mutations. |
 | 5 | Durable confirmations | Existing versioned decisions now close attempts as waiting; fresh attempts must acknowledge current answers before checkpointing, evidence-sensitive completion, or effects. Harness authority remains external. |
-| 6 | Workspaces and locks | Added VCS-neutral registered checkouts, configurable internal CLI adapters, opt-in Git worktrees, automatic dispatch cwd selection, and exclusive resource leases. Shared locks, automatic cleanup, and crash-atomic external checkout creation remain. |
+| 6 | Workspaces and locks | Added VCS-neutral registered checkouts, configurable internal CLI adapters, opt-in Git worktrees, automatic dispatch cwd selection, and exclusive resource leases. Durable creation intents, retained receipts/logs, inherited locks, and explicit outcome reconciliation prevent ambiguous creation replay. Shared locks, provider-verified receipts, and explicit cleanup tooling remain. |
 | 7 | Completion evidence | Added exact criterion/revision/environment/attempt evidence coverage and file integrity checks, including first contract binding for newly produced revisions. Opt-in for old workflows. Trusted command execution and mission-wide criterion-to-result mapping remain. |
 | 8 | Bounded invocation context | Added snapshot watermarks, unique immutable prompt paths, prompt digests, bounded lists/text, and an explicit overflow retrieval packet. Invocation context now uses bounded SQL pages and scoped indexes; inbox pagination occurs before decoding. Full audit and explicit entity-history queries remain deliberately complete. |
 | 9 | Safe planning/review commits | Added task planning keys and strict semantic manager review commits. Whole-policy-application retry keys are now supported; atomic multi-task plan replacement remains. |
@@ -64,7 +64,7 @@ These are remaining implementation work, not decisions being pushed to the owner
   simultaneously active cases. Indexed bounded context/inbox reads and repeatable
   inactive-history benchmarks are implemented.
 - Conditional retry/backoff, shared resource locks, granular lifecycle scope, and
-  crash-atomic managed workspace registration/cleanup.
+  explicit workspace cleanup tooling. Creation intents and attachment recovery are implemented.
 - Automatic verification of provider receipts and bounded trusted test execution.
 
 Do not call the persistent-coworker release gate complete until its remaining

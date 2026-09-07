@@ -205,6 +205,7 @@ from swarmkit.workspaces import (
     register_workspace,
     run_workspace_command,
     create_workspace,
+    reconcile_workspace,
 )
 
 if __name__ == "__main__":

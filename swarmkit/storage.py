@@ -228,7 +228,8 @@ def has_active_work(conn):
         conn.execute(
             """SELECT 1 FROM tasks WHERE status IN ('CLAIMED','RUNNING','VERIFYING')
            UNION ALL SELECT 1 FROM manager_reviews WHERE status='RUNNING'
-           UNION ALL SELECT 1 FROM deliveries WHERE status='CLAIMED' LIMIT 1"""
+           UNION ALL SELECT 1 FROM deliveries WHERE status='CLAIMED'
+           UNION ALL SELECT 1 FROM workspace_creations WHERE state='UNKNOWN' LIMIT 1"""
         ).fetchone()
     )
 

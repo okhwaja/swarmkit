@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.8.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.9.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
@@ -1601,15 +1601,30 @@ optional arguments:
 ## `swarmctl workspace`
 
 ```text
-usage: swarmctl workspace [-h] {create,register,list} ...
+usage: swarmctl workspace [-h] {create,register,list,attempts,reconcile} ...
 
 positional arguments:
-  {create,register,list}
+  {create,register,list,attempts,reconcile}
     register            Register a checkout created by the harness or an
                         external tool
+    attempts            Inspect durable checkout creation records and logs
+    reconcile           Record a provider-observed checkout outcome
 
 optional arguments:
   -h, --help            show this help message and exit
+```
+
+## `swarmctl workspace attempts`
+
+```text
+usage: swarmctl workspace attempts [-h] [--task TASK] [--pending]
+                                   [--limit LIMIT]
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --task TASK
+  --pending      Only unresolved or unattached creations
+  --limit LIMIT
 ```
 
 ## `swarmctl workspace create`
@@ -1637,6 +1652,29 @@ usage: swarmctl workspace list [-h]
 
 optional arguments:
   -h, --help  show this help message and exit
+```
+
+## `swarmctl workspace reconcile`
+
+```text
+usage: swarmctl workspace reconcile [-h] --outcome {created,not-created}
+                                    --observation OBSERVATION [--path PATH]
+                                    [--base-revision BASE_REVISION]
+                                    [--workspace-ref WORKSPACE_REF]
+                                    creation_id
+
+positional arguments:
+  creation_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --outcome {created,not-created}
+  --observation OBSERVATION
+                        Evidence from inspecting the checkout provider
+  --path PATH           Existing checkout path for a created outcome
+  --base-revision BASE_REVISION
+                        Exact starting revision for a created outcome
+  --workspace-ref WORKSPACE_REF
 ```
 
 ## `swarmctl workspace register`

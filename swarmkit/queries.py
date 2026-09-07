@@ -479,6 +479,11 @@ def explain_state(conn):
             reasons.append("Current decision must be acknowledged")
         if uncertain_effects(conn, row["id"]):
             reasons.append("External effect requires reconciliation")
+        if conn.execute(
+            "SELECT 1 FROM workspace_creations WHERE task_id=? AND state IN ('UNKNOWN','CREATED')",
+            (row["id"],),
+        ).fetchone():
+            reasons.append("Checkout creation requires provider reconciliation or attachment")
         limit = budget_reason(conn, row["id"])
         if limit:
             reasons.append(limit)
@@ -502,6 +507,13 @@ def explain_state(conn):
         ],
         "unfinished_delivery_runs": [
             dict(r) for r in conn.execute("SELECT * FROM delivery_runs WHERE ended_at IS NULL")
+        ],
+        "pending_workspace_creations": [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id,task_id,state,repository,suggested_path,stdout_path,stderr_path "
+                "FROM workspace_creations WHERE state IN ('UNKNOWN','CREATED') ORDER BY created_at,id"
+            )
         ],
         "uncertain_deliveries": [
             dict(r)

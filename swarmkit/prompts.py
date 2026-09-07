@@ -86,6 +86,12 @@ def task_context(conn, task_id):
     )
     workspace = conn.execute("SELECT * FROM workspaces WHERE task_id=?", (task_id,)).fetchone()
     task["workspace"] = workspace_dict(workspace) if workspace else None
+    task["workspace_creations"] = context_page(
+        conn,
+        "SELECT * FROM workspace_creations WHERE task_id=? ORDER BY rowid DESC",
+        (task_id,),
+        "workspace attempts --task " + task_id,
+    )
     contract = conn.execute("SELECT * FROM task_contracts WHERE task_id=?", (task_id,)).fetchone()
     task["evidence_contract"] = dict(contract) if contract else None
     return task
@@ -122,6 +128,11 @@ def manager_context(conn):
         "recent_wakeups": (
             "SELECT * FROM external_waits WHERE status='WOKEN' ORDER BY rowid DESC",
             "wait list",
+        ),
+        "pending_workspace_creations": (
+            "SELECT id,task_id,state,repository,suggested_path FROM workspace_creations "
+            "WHERE state IN ('UNKNOWN','CREATED') ORDER BY created_at,rowid",
+            "workspace attempts --pending",
         ),
         "installed_policies": (
             "SELECT id,version,name,description,when_to_use FROM policy_packs ORDER BY id",

@@ -139,6 +139,14 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
                 self.assertEqual(
                     self.conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0], 0
                 )
+                pending = workspaces.pending_creation(self.conn, self.task)
+                workspaces.reconcile_workspace(
+                    self.root,
+                    self.conn,
+                    pending["id"],
+                    "not-created",
+                    "Test adapter did not create any checkout",
+                )
         self.configure({"provider": "command", "command": ["tool", "{unknown}"]})
         with mock.patch.object(workspaces.subprocess, "Popen") as process:
             with self.assertRaisesRegex(s.SwarmError, "placeholder"):
@@ -241,6 +249,12 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
             child = int(ready.read_text())
             controller.kill()
             controller.wait(timeout=5)
+            pending = workspaces.pending_creation(self.conn, self.task)
+            self.assertEqual(pending["state"], "UNKNOWN")
+            with self.assertRaisesRegex(s.SwarmError, "Another process"):
+                workspaces.reconcile_workspace(
+                    self.root, self.conn, pending["id"], "not-created", "Cannot yet prove this"
+                )
             with self.assertRaises(s.SwarmError):
                 with s.process_lock(self.root / "workspaces.lock"):
                     pass
@@ -253,6 +267,196 @@ print(json.dumps({'path':str(path),'base_revision':'internal-revision:42','works
                     os.killpg(child, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+    def test_lost_receipt_at_provider_allocated_path_never_replays(self):
+        checkout = self.base / "provider allocated checkout"
+        counter = self.base / "invocations"
+        script = self.base / "lost-receipt.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            "p=Path(%r); p.write_text(p.read_text()+'x' if p.exists() else 'x')\n"
+            "Path(%r).mkdir(exist_ok=True)\nprint('receipt lost')\n" % (str(counter), str(checkout))
+        )
+        self.configure({"provider": "command", "command": [sys.executable, str(script)]})
+        with self.assertRaisesRegex(s.SwarmError, "JSON"):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")
+        pending = workspaces.pending_creation(self.conn, self.task)
+        self.assertEqual(pending["state"], "UNKNOWN")
+        self.assertIn("receipt lost", Path(pending["stdout_path"]).read_text())
+        self.conn.close()
+        self.conn = s.connect(self.root)
+        with self.assertRaisesRegex(s.SwarmError, "requires reconciliation"):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")
+        with self.assertRaisesRegex(s.SwarmError, "requires reconciliation"):
+            s.register_workspace(self.conn, self.task, self.source, checkout, "exact:42")
+        config_path = self.root / "runner.json"
+        config = json.loads(config_path.read_text())
+        config["command"] = [sys.executable, "-c", "pass"]
+        config_path.write_text(json.dumps(config))
+        with self.assertRaisesRegex(s.SwarmError, "before dispatch"):
+            s.dispatch(self.root, "worker", "owner", self.task, dry_run=True)
+        receipt = {"path": str(checkout), "base_revision": "exact:42", "workspace_ref": "jj:name"}
+        workspaces.reconcile_workspace(
+            self.root,
+            self.conn,
+            pending["id"],
+            "created",
+            "Internal CLI lookup returned this checkout",
+            receipt,
+        )
+        registered = s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")
+        self.assertEqual(registered["path"], str(checkout))
+        self.assertEqual(registered["workspace_ref"], "jj:name")
+        self.assertEqual(counter.read_text(), "x")
+        retried = workspaces.reconcile_workspace(
+            self.root, self.conn, pending["id"], "created", "Repeated provider observation", receipt
+        )
+        self.assertEqual(retried["state"], "REGISTERED")
+        self.assertEqual(workspaces.creation_row(self.conn, pending["id"])["state"], "REGISTERED")
+
+    def test_success_receipt_survives_expired_owner_before_attachment(self):
+        self.adapter()
+        s.claim_task(self.conn, self.task, "owner", 600)
+        real_run = workspaces.run_logged_process
+
+        def expire_after_provider(*args, **kwargs):
+            result = real_run(*args, **kwargs)
+            self.conn.execute(
+                "UPDATE tasks SET lease_until='2000-01-01T00:00:00Z' WHERE id=?", (self.task,)
+            )
+            self.conn.commit()
+            return result
+
+        with mock.patch.object(workspaces, "run_logged_process", side_effect=expire_after_provider):
+            with self.assertRaises(s.SwarmError):
+                s.create_workspace(
+                    self.root, self.conn, self.task, self.source, "trunk()", agent="owner"
+                )
+        self.assertEqual(workspaces.pending_creation(self.conn, self.task)["state"], "CREATED")
+        s.reconcile_conn(self.conn)
+        s.claim_task(self.conn, self.task, "fresh-owner", 600)
+        with mock.patch.object(
+            workspaces,
+            "run_logged_process",
+            side_effect=AssertionError("No second provider invocation"),
+        ):
+            result = s.create_workspace(
+                self.root, self.conn, self.task, self.source, "trunk()", agent="fresh-owner"
+            )
+        self.assertEqual(result["base_revision"], "internal-revision:42")
+
+    def test_creation_inside_transaction_cannot_launch_uncommitted_action(self):
+        self.adapter()
+        with (
+            s.transaction(self.conn),
+            mock.patch.object(workspaces, "run_logged_process") as process,
+        ):
+            with self.assertRaisesRegex(s.SwarmError, "own transaction"):
+                s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")
+            process.assert_not_called()
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM workspace_creations").fetchone()[0], 0
+        )
+
+    def test_proven_launch_failure_can_retry_without_reconciliation(self):
+        self.configure({"provider": "command", "command": [str(self.base / "missing-tool")]})
+        with self.assertRaisesRegex(s.SwarmError, "failed"):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")
+        row = self.conn.execute("SELECT * FROM workspace_creations").fetchone()
+        self.assertEqual(row["state"], "NOT_CREATED")
+        self.assertIn("Could not start", Path(row["stderr_path"]).read_text())
+        self.adapter()
+        self.assertEqual(
+            s.create_workspace(self.root, self.conn, self.task, self.source, "trunk()")["provider"],
+            "command",
+        )
+
+    def test_reconciliation_cli_records_observation_and_is_retryable(self):
+        self.configure({"provider": "command", "command": [sys.executable, "-c", "print('lost')"]})
+        with self.assertRaises(s.SwarmError):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "base")
+        pending = workspaces.pending_creation(self.conn, self.task)
+        command = [
+            "--root",
+            str(self.root),
+            "workspace",
+            "reconcile",
+            pending["id"],
+            "--outcome",
+            "not-created",
+            "--observation",
+            "Provider lookup found no checkout",
+        ]
+        with s.process_lock(self.root / "workspaces.lock"):
+            with self.assertRaisesRegex(s.SwarmError, "Another process"):
+                workspaces.reconcile_workspace(
+                    self.root, self.conn, pending["id"], "not-created", "No checkout"
+                )
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(s.main(command), 0)
+            self.assertEqual(json.loads(output.getvalue())["state"], "NOT_CREATED")
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='WORKSPACE_CREATION_NOT_CREATED'"
+        ).fetchone()[0]
+        self.assertEqual(count, 1)
+        with self.assertRaisesRegex(s.SwarmError, "Only an uncertain"):
+            workspaces.reconcile_workspace(
+                self.root,
+                self.conn,
+                pending["id"],
+                "created",
+                "Conflicting result",
+                {"path": str(self.base), "base_revision": "r"},
+            )
+
+    def test_uncertain_creation_blocks_drain_resume_and_amendment_until_observed(self):
+        self.configure({"provider": "command", "command": [sys.executable, "-c", "print('lost')"]})
+        with self.assertRaises(s.SwarmError):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "base")
+        pending = workspaces.pending_creation(self.conn, self.task)
+        s.control_mission(self.conn, "drain", "operator", "Finish owned work")
+        s.reconcile_conn(self.conn)
+        self.assertEqual(s.runtime_state(self.conn)["desired_state"], "DRAINING")
+        s.control_mission(self.conn, "pause", "operator", "Inspect checkout")
+        with self.assertRaisesRegex(s.SwarmError, "checkout"):
+            s.control_mission(self.conn, "resume", "operator", "Continue")
+        with self.assertRaisesRegex(s.SwarmError, "checkout"):
+            s.amend_mission(
+                self.conn, "New objective", ["Verified"], [], "New information", "operator"
+            )
+        checkout = self.base / "found checkout"
+        checkout.mkdir()
+        # Provider observation is allowed during pause, but attachment still needs active state.
+        workspaces.reconcile_workspace(
+            self.root,
+            self.conn,
+            pending["id"],
+            "created",
+            "Located through provider",
+            {"path": str(checkout), "base_revision": "r"},
+        )
+        with self.assertRaisesRegex(s.SwarmError, "not accepting"):
+            s.create_workspace(self.root, self.conn, self.task, self.source, "base")
+        s.control_mission(self.conn, "resume", "operator", "Provider checked")
+        self.assertEqual(
+            s.create_workspace(self.root, self.conn, self.task, self.source, "base")["path"],
+            str(checkout),
+        )
+
+    def test_schema_nine_migration_adds_creation_journal(self):
+        self.conn.execute("DROP TABLE workspace_creations")
+        self.conn.execute("UPDATE meta SET value='9' WHERE key='schema_version'")
+        self.conn.commit()
+        self.conn.close()
+        self.conn = s.connect(self.root)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM workspace_creations").fetchone()[0], 0
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],
+            "10",
+        )
 
     def test_migration_preserves_old_git_workspaces(self):
         self.conn.execute("DROP TABLE workspaces")

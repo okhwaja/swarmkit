@@ -698,6 +698,8 @@ def complete_mission(conn, evidence, actor, shutdown_service=False, outcome=None
         raise SwarmError("Mission must be active or draining to complete")
     if uncertain_effects(conn):
         raise SwarmError("Reconcile uncertain effects before mission completion")
+    if conn.execute("SELECT 1 FROM workspace_creations WHERE state='UNKNOWN'").fetchone():
+        raise SwarmError("Reconcile uncertain checkout creation before mission completion")
     if mission_mode(conn) == "SERVICE" and not shutdown_service:
         raise SwarmError(
             "SERVICE missions stay active when idle; pass --shutdown-service to terminate deliberately"
@@ -761,6 +763,11 @@ def control_mission(conn, action, actor, reason):
         raise SwarmError("Lifecycle changes require a reason")
     if state["desired_state"] in {"CANCELLED", "ABANDONED"} or mission(conn)["status"] == "DONE":
         raise SwarmError("Terminal missions cannot resume; create a new mission")
+    if (
+        action == "resume"
+        and conn.execute("SELECT 1 FROM workspace_creations WHERE state='UNKNOWN'").fetchone()
+    ):
+        raise SwarmError("Reconcile uncertain checkout creation before resuming")
     if action == "resume" and (
         uncertain_effects(conn)
         or conn.execute("SELECT 1 FROM deliveries WHERE status='UNKNOWN'").fetchone()
@@ -885,6 +892,8 @@ def amend_mission(conn, objective, success, constraints, reason, actor):
     state = runtime_state(conn)
     if state["desired_state"] != "PAUSED":
         raise SwarmError("Pause the mission before amending it")
+    if conn.execute("SELECT 1 FROM workspace_creations WHERE state='UNKNOWN'").fetchone():
+        raise SwarmError("Reconcile uncertain checkout creation before amendment")
     if (
         has_unfinished_runs(conn)
         or uncertain_effects(conn)

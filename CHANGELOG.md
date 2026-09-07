@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+
+- Journal checkout creation before invoking Git or a configured internal CLI.
+  Lost receipts, timeouts, and controller loss cannot replay a potentially
+  successful creation, including providers that allocate their own paths.
+- Added `workspace attempts` and `workspace reconcile`, retained provider logs,
+  and preserved successful receipts across pause/expired ownership. Repeat create
+  attaches a known checkout without invoking the provider again.
+- Blocked dispatch, resume, amendment, completion, and drain finalization where
+  an unresolved creation would hide live or uncertain work. Reconciliation uses
+  inherited process locks and remains available during pause/cancellation.
+- Schema 10 adds the creation journal; existing workspace registrations remain.
+
 ## 0.8.0
 
 - Split the engine into explicit storage, domain, runtime, context, and presentation
