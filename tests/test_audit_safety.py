@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -14,7 +15,7 @@ from swarmkit import audit
 class AuditSafetyTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="swarm-audit-safety-")
-        self.root = Path(self.temp.name) / ".swarm"
+        self.root = Path(self.temp.name).resolve() / ".swarm"
         self.output = Path(self.temp.name) / "audit.zip"
         s.initialize(self.root, "Private objective", ["Verified"], [])
         self.conn = s.connect(self.root)
@@ -66,6 +67,108 @@ class AuditSafetyTest(unittest.TestCase):
         ):
             audit.export_audit(self.root, self.output)
         self.assertTrue(audit.verify_audit(self.output)["ok"])
+
+    def test_runtime_symlinks_and_special_files_do_not_pull_unrelated_data_into_export(self):
+        outside = self.root.parent / "unrelated"
+        outside.mkdir()
+        private = outside / "private.txt"
+        private.write_text("unrelated-secret-marker")
+        (self.root / "runs/file-link").symlink_to(private)
+        (self.root / "runs/directory-link").symlink_to(outside, target_is_directory=True)
+        os.mkfifo(self.root / "runs/live-pipe")
+        (self.root / "runs/ordinary.log").write_text("Run output")
+        audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            content = b"".join(archive.read(name) for name in archive.namelist())
+            omitted = json.loads(archive.read("swarm-audit/runtime-export.json"))["skipped"]
+            self.assertEqual(archive.read("swarm-audit/runs/ordinary.log"), b"Run output")
+        self.assertNotIn(b"unrelated-secret-marker", content)
+        self.assertEqual(
+            {item["path"] for item in omitted},
+            {"runs/file-link", "runs/directory-link", "runs/live-pipe"},
+        )
+        self.assertTrue(audit.verify_audit(self.output)["ok"])
+
+    def test_runtime_file_disappearing_during_copy_is_omitted_and_explained(self):
+        path = self.root / "runs/rotating.log"
+        path.write_text("Rotating log")
+        real_copy = audit.shutil.copy2
+
+        def remove_before_copy(source, target, *args, **kwargs):
+            if Path(source) == path:
+                path.unlink()
+            return real_copy(source, target, *args, **kwargs)
+
+        with mock.patch.object(audit.shutil, "copy2", side_effect=remove_before_copy):
+            audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            omitted = json.loads(archive.read("swarm-audit/runtime-export.json"))["skipped"]
+        self.assertEqual(omitted[0]["path"], "runs/rotating.log")
+        self.assertIn("disappeared", omitted[0]["reason"])
+
+    def test_runtime_file_becoming_a_symlink_during_copy_is_not_followed(self):
+        path = self.root / "runs/rotating.log"
+        path.write_text("Run output")
+        private = self.root.parent / "private.txt"
+        private.write_text("private-race-marker")
+        real_copy = audit.shutil.copy2
+
+        def replace_before_copy(source, target, *args, **kwargs):
+            if Path(source) == path:
+                path.unlink()
+                path.symlink_to(private)
+            return real_copy(source, target, *args, **kwargs)
+
+        with mock.patch.object(audit.shutil, "copy2", side_effect=replace_before_copy):
+            audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertNotIn("swarm-audit/runs/rotating.log", archive.namelist())
+            self.assertNotIn(
+                b"private-race-marker", b"".join(archive.read(name) for name in archive.namelist())
+            )
+            omitted = json.loads(archive.read("swarm-audit/runtime-export.json"))["skipped"]
+        self.assertEqual(omitted[0]["reason"], "became a symbolic link during copy")
+
+    def test_intake_file_disappearing_during_copy_does_not_abort_canonical_export(self):
+        case = self.case_with_payload()
+        path = Path(case["payload_path"])
+        real_copy = audit.shutil.copy2
+
+        def remove_before_copy(source, target, *args, **kwargs):
+            if Path(source) == path:
+                path.unlink()
+            return real_copy(source, target, *args, **kwargs)
+
+        with mock.patch.object(audit.shutil, "copy2", side_effect=remove_before_copy):
+            audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            omitted = json.loads(archive.read("swarm-audit/intake-export.json"))["skipped"]
+            self.assertIn("swarm-audit/state.sqlite3", archive.namelist())
+        self.assertEqual(omitted[0]["id"], case["id"])
+        self.assertIn("disappeared", omitted[0]["reason"])
+        self.assertTrue(audit.verify_audit(self.output)["ok"])
+
+    def test_registered_artifact_disappearing_during_copy_is_reported(self):
+        task = s.add_task(
+            self.conn, "Inspect", "Inspect", "discovery", ["Checked"], [], 50, "manager", True
+        )
+        path = self.root.parent / "result.txt"
+        path.write_text("Result")
+        artifact = s.register_artifact(self.conn, task, path, actor="manager")
+        self.conn.commit()
+        real_copy = audit.shutil.copy2
+
+        def remove_before_copy(source, target, *args, **kwargs):
+            if Path(source) == path:
+                path.unlink()
+            return real_copy(source, target, *args, **kwargs)
+
+        with mock.patch.object(audit.shutil, "copy2", side_effect=remove_before_copy):
+            audit.export_audit(self.root, self.output, include_artifacts=True)
+        with zipfile.ZipFile(self.output) as archive:
+            omitted = json.loads(archive.read("swarm-audit/artifact-export.json"))["skipped"]
+        self.assertEqual(omitted[0]["id"], artifact)
+        self.assertIn("disappeared", omitted[0]["reason"])
 
     def test_unregistered_intake_payload_is_not_exported(self):
         payload = self.root / "intake/orphan.json"

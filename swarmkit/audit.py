@@ -149,6 +149,51 @@ def audit_summary(conn, snapshot=None):
     }
 
 
+def copy_runtime_tree(source, destination):
+    """Copy ordinary runtime files; never follow links to unrelated content."""
+    skipped = []
+
+    def omit(path, reason):
+        skipped.append({"path": str(Path(path).relative_to(source.parent)), "reason": reason})
+
+    def ignore(directory, names):
+        ignored = []
+        for name in names:
+            path = Path(directory) / name
+            if name.endswith(".lock"):
+                ignored.append(name)  # Liveness locks are never portable evidence.
+            elif path.is_symlink():
+                ignored.append(name)
+                omit(path, "symbolic link")
+            elif not path.is_file() and not path.is_dir():
+                ignored.append(name)
+                omit(path, "unavailable or non-regular file")
+        return ignored
+
+    def copy_file(source_path, target_path):
+        try:
+            shutil.copy2(source_path, target_path, follow_symlinks=False)
+            if Path(target_path).is_symlink():
+                Path(target_path).unlink()
+                omit(source_path, "became a symbolic link during copy")
+        except (FileNotFoundError, PermissionError):
+            Path(target_path).unlink(missing_ok=True)
+            omit(source_path, "disappeared or became unreadable during copy")
+        return str(target_path)
+
+    if source.is_symlink():
+        omit(source, "symbolic link")
+    elif source.exists():
+        shutil.copytree(source, destination, ignore=ignore, copy_function=copy_file, symlinks=True)
+        # A source entry can become a link after ignore() inspected it. copytree
+        # preserves such links; remove them before archive enumeration can read one.
+        for path in destination.rglob("*"):
+            if path.is_symlink():
+                omit(source / path.relative_to(destination), "became a symbolic link during copy")
+                path.unlink()
+    return skipped
+
+
 def stage_private_audit(root, source_root, stage, include_artifacts=False, max_artifact_mb=25):
     render_board(root, reconcile=False)
     conn = connect(root)
@@ -195,11 +240,12 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
     package_root = PACKAGE_ROOT
     if (package_root / "guidance").exists():
         shutil.copytree(package_root / "guidance", stage / "guidance")
+    runtime_skipped = []
     for name in ("prompts", "runs", "outbox"):
-        if (source_root / name).exists():
-            shutil.copytree(
-                source_root / name, stage / name, ignore=shutil.ignore_patterns("*.lock")
-            )
+        runtime_skipped.extend(copy_runtime_tree(source_root / name, stage / name))
+    (stage / "runtime-export.json").write_text(
+        json.dumps({"skipped": runtime_skipped}, indent=2) + "\n", encoding="utf-8"
+    )
     # A crash or an outer caller's rollback may leave an unregistered snapshot.
     # Only payloads referenced by this database snapshot belong in its audit.
     intake_copied, intake_skipped = [], []
@@ -216,7 +262,14 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
             continue
         target = stage / "intake" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        try:
+            shutil.copy2(path, target)
+        except (FileNotFoundError, PermissionError):
+            target.unlink(missing_ok=True)
+            intake_skipped.append(
+                identity | {"reason": "payload disappeared or became unreadable during copy"}
+            )
+            continue
         if hash_file(target) != (payload["payload_sha256"], payload["payload_size_bytes"]):
             target.unlink()
             intake_skipped.append(identity | {"reason": "payload changed since intake"})
@@ -233,6 +286,9 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
         Start with `snapshot.json`, `health.json`, and `BOARD.md`. For a persistent service,
         use `cases.json` for complete case and signal histories. Check `intake-export.json`
         and `artifact-export.json` for files omitted because they changed or disappeared.
+        `runtime-export.json` lists omitted runtime links, special files, and files
+        that disappeared or became unreadable during copying. Runtime symlinks are
+        not followed; explicit registered artifact paths are handled separately.
         Archive integrity verification does not prove that every source file was available.
         Use `events.jsonl` to
         reconstruct causality and `agent-runs.json` plus `runs/` to inspect individual
@@ -261,25 +317,31 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
         limit = max_artifact_mb * 1024 * 1024
         for artifact in snapshot["artifacts"]:
             path = Path(artifact["path"])
-            if path.is_file() and path.stat().st_size <= limit:
-                target = artifact_dir / (artifact["id"] + "-" + path.name)
-                shutil.copy2(path, target)
-                if hash_file(target)[0] != artifact["sha256"]:
-                    target.unlink()
-                    skipped.append(
-                        {"id": artifact["id"], "reason": "content changed since registration"}
-                    )
+            target = artifact_dir / (artifact["id"] + "-" + path.name)
+            try:
+                if path.is_file() and path.stat().st_size <= limit:
+                    shutil.copy2(path, target)
+                    if hash_file(target)[0] != artifact["sha256"]:
+                        target.unlink()
+                        skipped.append(
+                            {"id": artifact["id"], "reason": "content changed since registration"}
+                        )
+                    else:
+                        copied.append(
+                            {"id": artifact["id"], "archive_path": str(target.relative_to(stage))}
+                        )
                 else:
-                    copied.append(
-                        {"id": artifact["id"], "archive_path": str(target.relative_to(stage))}
+                    skipped.append(
+                        {
+                            "id": artifact["id"],
+                            "path": str(path),
+                            "reason": "missing, non-file, or over size limit",
+                        }
                     )
-            else:
+            except (FileNotFoundError, PermissionError):
+                target.unlink(missing_ok=True)
                 skipped.append(
-                    {
-                        "id": artifact["id"],
-                        "path": str(path),
-                        "reason": "missing, non-file, or over size limit",
-                    }
+                    {"id": artifact["id"], "reason": "disappeared or became unreadable during copy"}
                 )
     (stage / "artifact-export.json").write_text(
         json.dumps({"copied": copied, "skipped": skipped}, indent=2) + "\n", encoding="utf-8"

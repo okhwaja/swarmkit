@@ -384,3 +384,21 @@ No remote push, PR, merge, provider action, or OS service installation occurred.
 - Source/package checks passed with 232 tests; updated policy pack validation is
   included. Documentation impact: runtime recovery, health/architecture/performance,
   workflow authoring/examples, user journeys, product rationale and release metadata.
+
+## Audit file boundaries and final verification (0.11.2)
+
+- Private audit copying now skips runtime symlinks and special files and writes
+  runtime-export.json. A source file replaced by a symlink during copy is removed
+  from staging instead of allowing archive enumeration to follow it.
+- Disappearing/unreadable log, intake, and artifact files receive explicit omission
+  records; canonical SQLite evidence remains in the archive. Existing output is
+  still replaced only after the complete archive is written.
+- Release checks pass with 237 tests in source and extracted package; Black checks
+  57 files, Ruff and doc checks pass. Actual dist/swarmkit-0.11.2.zip built.
+- Fresh migration fixture created using original 0.7.1/schema8 code upgraded directly
+  through schema12: preserved jj:revision-42, backfilled signal identity, fenced old
+  ambiguous delivery, installed evidence indexes/keys, passed doctor and audit-verify.
+- Extracted the actual ZIP to a path with spaces and ran python -m swarmkit demo,
+  bin/swarmctl status --brief, and audit-verify successfully outside the source tree.
+- Documentation impact: audit/privacy contract, omission reports, release metadata
+  and roadmap coverage. No source checkouts/providers were changed by the smoke run.

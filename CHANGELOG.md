@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.2
+
+- Private audits omit runtime symlinks and special files rather than following
+  them into unrelated content. `runtime-export.json` explains omissions.
+- Handle logs, intake payloads, and registered artifacts that disappear or become
+  unreadable during copying; retain the canonical snapshot and report missing
+  evidence. Failed archive publication still preserves the previous output.
+- No schema change from 12.
+
 ## 0.11.1
 
 - Preserve unfinished harness/sender runs when process supervision raises before

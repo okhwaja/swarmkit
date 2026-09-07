@@ -556,3 +556,18 @@ latest criterion/target result and task history. No existing evidence payload,
 hash, result order, or artifact is rewritten. Completion reads one indexed result
 per criterion instead of scanning verification history. Stop older controllers
 and back up before upgrading; older binaries cannot read schema 12.
+
+
+## Runtime files in private exports
+
+Private exports copy ordinary files from `prompts`, `runs`, and `outbox`. They omit
+process locks, runtime symlinks, and special files such as FIFOs instead of following
+links into unrelated directories. `runtime-export.json` records skipped links,
+special files, and files that disappear or become unreadable during copying.
+Explicit registered artifacts are handled separately by `--include-artifacts`,
+the size limit, and recorded hash checks.
+
+If an intake payload or artifact disappears between inspection and copying,
+the archive retains its canonical database record and explains the missing file
+in `intake-export.json` or `artifact-export.json`. Review these omission reports
+alongside `audit-verify`: an intact archive can have incomplete source evidence.
