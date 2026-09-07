@@ -95,3 +95,13 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   can be followed by a replacement policy.
 - Repeated case-task links preserve completed state. Follow-ups clear stale result
   summaries. Completed cases are no longer rescanned by every reconciliation.
+
+- Saved local commit d956171 for completion/case lifecycle; source/package release
+  checks passed 116 tests.
+- Reproduced distribution inclusion of local .swarm JSON/Markdown and symlinked
+  private content. The builder now uses explicit source roots/files, prunes runtime
+  directories, streams file content, normalizes ZIP metadata, and atomically
+  replaces the output only after a successful build. Added .gitignore defaults.
+- Documentation checks now inspect shipped Markdown and generated CLI/contracts,
+  without forcing an encyclopedic list of arbitrary phrases into the README.
+  This prepares the shorter first-use documentation pass.

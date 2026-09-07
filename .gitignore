@@ -1,0 +1,16 @@
+# Local missions and demos
+.swarm/
+.swarm-*/
+swarm-demo/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Generated distributions and development caches
+dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.DS_Store

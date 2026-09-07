@@ -55,9 +55,17 @@ operator could actually follow the instructions.
 ## Automated guarantees
 
 `check_docs.py` verifies required documents, internal links, version/package
-alignment, public command presence, required extension coverage, and bundled
+alignment, generated CLI help, role guidance, and bundled
 policy and delivery-extension manifests. `release_check.py` runs tests and documentation checks both in
 the source tree and in a newly built, extracted distribution ZIP.
 
 CI runs the same release check. Do not bypass it for documentation-only changes:
 documentation examples and package contents are executable behavior.
+
+Distribution builds select only known source/documentation directories and explicit
+root files. They exclude symlinks, runtime directories containing `state.sqlite3`,
+hidden local files, and development caches. Documentation checks use that same
+file selection, so private mission Markdown is not treated as product documentation.
+Checks do not require arbitrary phrases in the README: executable examples and
+generated command help carry the interface contract, while prose needs editorial
+review for clarity and correctness.

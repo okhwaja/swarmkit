@@ -36,23 +36,15 @@ REQUIRED_DOCUMENTS = [
     "docs/USER_MANUAL.md",
 ]
 
-REQUIRED_MENTIONS = {
-    "README.md": ["policy install", "policy apply", "delivery enqueue-report", "--mode SERVICE", "case open", "human-gated-change-review", "docs/PERSISTENT_SERVICES.md", "finding raise", "task wait-external", "wait signal"],
-    "SETUP_AGENT.md": ["policy list", "extension validate", "delivery dispatch", "case open", "case signal", "fresh-context", "human-gated-change-review", "task wait-external", "wait signal"],
-    "docs/EXTENSIONS.md": ["idempotency", "provider receipt", "recipient_policy", "case signal", "wait signal"],
-    "docs/HARNESS_INTEGRATION.md": ["Policy packs", "adversarial-review", "delivery enqueue-report", "Persistent-service ingress", "case open", "case signal", "finding", "WAITING_EXTERNAL"],
-    "docs/MODEL_GUIDANCE.md": ["policy pack", "delivery sent", "persistent-service case", "context rot", "WAITING_EXTERNAL"],
-    "docs/PERSISTENT_SERVICES.md": ["persistent logical", "case open", "case signal", "decision require-choice", "--decision", "--wake"],
-    "docs/POLICY_PACKS.md": ["human-gated-change-review"],
-    "docs/RESPONSIVE_ORCHESTRATION.md": ["manager review", "finding raise", "finding disposition", "task wait-external", "wait signal", "WAITING_EXTERNAL", "deadline"],
-    "docs/RESPONSIVE_ORCHESTRATION_PRODUCT_SPEC.md": ["Responsive coordination", "Acceptance scenarios", "External signal", "No churn"],
-    "docs/SYSTEM_EXPLAINER.md": ["Policy packs", "Delivery extensions", "Cases and signals", "service mission", "manager review", "WAITING_EXTERNAL"],
-    "docs/USER_MANUAL.md": ["policy install", "policy apply", "adversarial-review", "delivery enqueue-report", "persistent review agent", "case open", "case signal", "finding raise", "task wait-external", "wait signal"],
-    "guidance/HARNESS_SYSTEM_PROMPT.md": ["policy", "delivery", "persistent logical", "case payloads", "finding raise", "task wait-external"],
-    "guidance/manager.md": ["policy apply", "delivery extension", "SERVICE", "case signals", "finding", "external wait"],
-    "guidance/worker.md": ["policy", "linked to a case", "finding raise", "task wait-external"],
-    "guidance/verifier.md": ["policy", "case-linked verification", "wake"],
-}
+REQUIRED_GUIDANCE = [
+    "HARNESS_SYSTEM_PROMPT.md",
+    "manager.md",
+    "worker.md",
+    "verifier.md",
+    "briefer.md",
+    "liaison.md",
+    "status.md",
+]
 
 
 def root_commands():
@@ -73,7 +65,9 @@ def check_internal_links(markdown_path):
             continue
         resolved = (markdown_path.parent / file_target).resolve()
         if not resolved.exists():
-            errors.append("%s has broken link: %s" % (markdown_path.relative_to(PACKAGE_ROOT), target))
+            errors.append(
+                "%s has broken link: %s" % (markdown_path.relative_to(PACKAGE_ROOT), target)
+            )
     return errors
 
 
@@ -82,17 +76,13 @@ def run_checks():
     for relative in REQUIRED_DOCUMENTS:
         if not (PACKAGE_ROOT / relative).is_file():
             errors.append("Missing required document: %s" % relative)
-    for relative, phrases in REQUIRED_MENTIONS.items():
-        path = PACKAGE_ROOT / relative
-        if not path.is_file():
-            errors.append("Missing instruction file: %s" % relative)
-            continue
-        text = path.read_text(encoding="utf-8")
-        for phrase in phrases:
-            if phrase not in text:
-                errors.append("%s must mention %r" % (relative, phrase))
-    for path in PACKAGE_ROOT.rglob("*.md"):
-        if "dist" not in path.parts:
+    for name in REQUIRED_GUIDANCE:
+        path = PACKAGE_ROOT / "guidance" / name
+        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+            errors.append("Missing or empty role guidance: %s" % name)
+    # Check shipped documentation, not private Markdown in a local mission.
+    for path in package_script.package_files():
+        if path.suffix == ".md":
             errors.extend(check_internal_links(path))
 
     if package_script.package_version() != swarmctl.VERSION:
@@ -104,11 +94,25 @@ def run_checks():
     if expected_name not in readme:
         errors.append("README must name current package %s" % expected_name)
     cli_reference = PACKAGE_ROOT / "docs" / "CLI_REFERENCE.md"
-    if cli_reference.is_file() and cli_reference.read_text(encoding="utf-8") != generate_cli_docs.render():
+    if (
+        cli_reference.is_file()
+        and cli_reference.read_text(encoding="utf-8") != generate_cli_docs.render()
+    ):
         errors.append("CLI reference is stale; run python3 scripts/generate_cli_docs.py")
 
     commands = root_commands()
-    for command in {"policy", "case", "extension", "delivery", "finding", "wait", "setup-check", "run", "report", "export"}:
+    for command in {
+        "policy",
+        "case",
+        "extension",
+        "delivery",
+        "finding",
+        "wait",
+        "setup-check",
+        "run",
+        "report",
+        "export",
+    }:
         if command not in commands:
             errors.append("Missing documented root command: %s" % command)
 
