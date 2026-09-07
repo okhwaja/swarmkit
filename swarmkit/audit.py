@@ -9,7 +9,7 @@ import tempfile
 import textwrap
 import zipfile
 
-from .core import PACKAGE_ROOT, CLI_PATH, VERSION, hash_file, json_load, parse_time, utcnow
+from .core import PACKAGE_ROOT, VERSION, hash_file, json_load, parse_time, utcnow
 from .diagnostics import doctor
 from .queries import case_dict, explain_state, mission_snapshot
 from .storage import connect

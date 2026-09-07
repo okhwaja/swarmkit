@@ -5,12 +5,10 @@ import datetime as dt
 import json
 import shlex
 import shutil
-import subprocess
 
 from .config import runner_config
 from .coordination import reconcile_deliveries
 from .core import (
-    PACKAGE_ROOT,
     CLI_PATH,
     SwarmError,
     atomic_write,
@@ -20,11 +18,13 @@ from .core import (
     json_dump,
     json_load,
     make_id,
+    process_lock,
+    run_logged_process,
     transaction,
     utcnow,
 )
 from .queries import delivery_dict, extension_dict
-from .storage import add_event, connect, mission, require_active_mission, require_delivery_owner
+from .storage import runtime_state, add_event, connect, mission, require_delivery_owner
 
 
 def validate_extension_manifest(manifest):
@@ -316,10 +316,17 @@ def enqueue_delivery(
 def claim_delivery(conn, delivery_id, agent, lease_seconds=600):
     future_time(lease_seconds)
     reconcile_deliveries(conn)
-    require_active_mission(conn)
+    # Final reports may be sent after task work is complete; pause/cancel still
+    # fence delivery claims. Queueing a report is an explicit separate operation.
+    if runtime_state(conn)["desired_state"] != "ACTIVE":
+        raise SwarmError("Mission is not accepting delivery claims")
     row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
     if not row:
         raise SwarmError("Unknown delivery: %s" % delivery_id)
+    if conn.execute(
+        "SELECT 1 FROM delivery_runs WHERE delivery_id=? AND ended_at IS NULL", (delivery_id,)
+    ).fetchone():
+        raise SwarmError("Delivery still has an unfinished process; run recover after it stops")
     if row["status"] != "PENDING":
         raise SwarmError("Delivery %s is %s, not PENDING" % (delivery_id, row["status"]))
     if not delivery_content_intact(dict(row)):
@@ -506,8 +513,9 @@ def write_delivery_prompt(root, conn, delivery_id, agent):
     prompt = prompt.replace("<command_prefix>", command_prefix)
     prompt = prompt.replace("<delivery_id>", delivery_id)
     prompt = prompt.replace("<agent_id>", agent)
-    prompt_path = root / "outbox" / delivery_id / ("prompt-%s.md" % agent)
-    prompt_path.write_text(prompt, encoding="utf-8")
+    prompt_path = root / "outbox" / delivery_id / ("prompt-%s.md" % make_id("P"))
+    with prompt_path.open("x", encoding="utf-8") as handle:
+        handle.write(prompt)
     return prompt_path, envelope_path, envelope
 
 
@@ -566,133 +574,183 @@ def dispatch_delivery(root, delivery_id, agent, dry_run=False):
     conn = connect(root)
     try:
         prepared = prepare_delivery_command(root, conn, delivery_id, agent)
-        if dry_run:
-            return {
-                "delivery_id": delivery_id,
-                "executor_type": prepared["executor_type"],
-                "command": prepared["command"],
-                "prompt_path": str(prepared["prompt_path"]),
-                "envelope_path": str(prepared["envelope_path"]),
-            }
-        claim_delivery(conn, delivery_id, agent)
-        row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
-        run_id = make_id("DR")
-        run_dir = root / "runs" / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        conn.execute(
-            """INSERT INTO delivery_runs(id, mission_id, delivery_id, extension_id,
-               executor_type, agent_id, prompt_path, envelope_path, command_json, started_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (
-                run_id,
-                row["mission_id"],
-                delivery_id,
-                row["extension_id"],
-                prepared["executor_type"],
-                agent,
-                str(prepared["prompt_path"]),
-                str(prepared["envelope_path"]),
-                json_dump(prepared["command"]),
-                utcnow(),
-            ),
-        )
-        add_event(
-            conn,
-            row["mission_id"],
-            "delivery_run",
-            run_id,
-            "DELIVERY_RUN_STARTED",
-            agent,
-            {
-                "delivery_id": delivery_id,
-                "executor_type": prepared["executor_type"],
-            },
-        )
-        conn.commit()
     finally:
         conn.close()
-
-    try:
-        completed = subprocess.run(
-            prepared["command"],
-            cwd=str(prepared["workdir"]),
-            text=True,
-            capture_output=True,
-            timeout=prepared["timeout"],
-        )
-        exit_code, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
-    except subprocess.TimeoutExpired as exc:
-        exit_code = 124
-        stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + "\nExtension timed out after %d seconds." % prepared[
-            "timeout"
-        ]
-    except OSError as exc:
-        exit_code = 127
-        stdout = ""
-        stderr = "Could not start extension: %s" % exc
-    stdout_path = run_dir / "stdout.txt"
-    stderr_path = run_dir / "stderr.txt"
-    stdout_path.write_text(stdout, encoding="utf-8")
-    stderr_path.write_text(stderr, encoding="utf-8")
-    conn = connect(root)
-    try:
-        conn.execute(
-            """UPDATE delivery_runs SET ended_at=?, exit_code=?, stdout_path=?, stderr_path=?
-               WHERE id=?""",
-            (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
-        )
-        row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
-        add_event(
-            conn,
-            row["mission_id"],
-            "delivery_run",
-            run_id,
-            "DELIVERY_RUN_FINISHED",
-            agent,
-            {
-                "delivery_id": delivery_id,
-                "exit_code": exit_code,
-            },
-        )
-        if row["status"] == "CLAIMED" and row["claimed_by"] == agent:
-            if exit_code == 0:
-                error = "Extension exited successfully without recording provider acknowledgment"
-                status = "PENDING"
-                event_type = "DELIVERY_RUN_UNACKNOWLEDGED"
-            else:
-                error = "Extension process exited %s; inspect %s" % (exit_code, stderr_path)
-                status = "FAILED"
-                event_type = "DELIVERY_RUN_FAILED"
-            conn.execute(
-                """UPDATE deliveries SET status=?, claimed_by=NULL, lease_until=NULL,
-                   last_error=?, updated_at=? WHERE id=?""",
-                (status, error, utcnow(), delivery_id),
+    if dry_run:
+        return {
+            "delivery_id": delivery_id,
+            "executor_type": prepared["executor_type"],
+            "command": prepared["command"],
+            "prompt_path": str(prepared["prompt_path"]),
+            "envelope_path": str(prepared["envelope_path"]),
+        }
+    run_id = make_id("DR")
+    run_dir = root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path, stderr_path = run_dir / "stdout.txt", run_dir / "stderr.txt"
+    with process_lock(run_dir / "process.lock") as run_lock:
+        conn = connect(root)
+        try:
+            with transaction(conn):
+                claim_delivery(conn, delivery_id, agent, lease_seconds=prepared["timeout"] + 60)
+                row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+                conn.execute(
+                    """INSERT INTO delivery_runs(id,mission_id,delivery_id,extension_id,
+                        executor_type,agent_id,prompt_path,envelope_path,command_json,started_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        run_id,
+                        row["mission_id"],
+                        delivery_id,
+                        row["extension_id"],
+                        prepared["executor_type"],
+                        agent,
+                        str(prepared["prompt_path"]),
+                        str(prepared["envelope_path"]),
+                        json_dump(prepared["command"]),
+                        utcnow(),
+                    ),
+                )
+                add_event(
+                    conn,
+                    row["mission_id"],
+                    "delivery_run",
+                    run_id,
+                    "DELIVERY_RUN_STARTED",
+                    agent,
+                    {
+                        "delivery_id": delivery_id,
+                        "executor_type": prepared["executor_type"],
+                        "prompt_sha256": hash_file(prepared["prompt_path"])[0],
+                    },
+                )
+        finally:
+            conn.close()
+        # Unexpected controller errors are uncertain unless launch failure is proven.
+        exit_code, started = 126, True
+        try:
+            exit_code, started = run_logged_process(
+                prepared["command"],
+                prepared["workdir"],
+                prepared["timeout"],
+                stdout_path,
+                stderr_path,
+                run_lock,
             )
-            add_event(
-                conn,
-                row["mission_id"],
-                "delivery",
-                delivery_id,
-                event_type,
-                "dispatcher",
-                {
-                    "run_id": run_id,
-                    "exit_code": exit_code,
-                    "error": error,
-                },
-            )
-        conn.commit()
-        final = delivery_dict(
-            conn, conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
-        )
-    finally:
-        conn.close()
+        finally:
+            conn = connect(root)
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        """UPDATE delivery_runs SET ended_at=?,exit_code=?,stdout_path=?,stderr_path=?
+                            WHERE id=?""",
+                        (utcnow(), exit_code, str(stdout_path), str(stderr_path), run_id),
+                    )
+                    row = conn.execute(
+                        "SELECT * FROM deliveries WHERE id=?", (delivery_id,)
+                    ).fetchone()
+                    add_event(
+                        conn,
+                        row["mission_id"],
+                        "delivery_run",
+                        run_id,
+                        "DELIVERY_RUN_FINISHED",
+                        agent,
+                        {"delivery_id": delivery_id, "exit_code": exit_code, "started": started},
+                    )
+                    if row["status"] == "CLAIMED" and row["claimed_by"] == agent:
+                        status = "UNKNOWN" if started else "FAILED"
+                        error = (
+                            "Extension exited without recording provider acknowledgment; reconcile with the provider"
+                            if started
+                            else "Extension could not start; inspect " + str(stderr_path)
+                        )
+                        conn.execute(
+                            """UPDATE deliveries SET status=?,claimed_by=NULL,lease_until=NULL,
+                                last_error=?,updated_at=? WHERE id=?""",
+                            (status, error, utcnow(), delivery_id),
+                        )
+                        add_event(
+                            conn,
+                            row["mission_id"],
+                            "delivery",
+                            delivery_id,
+                            "DELIVERY_RUN_UNACKNOWLEDGED" if started else "DELIVERY_RUN_FAILED",
+                            "dispatcher",
+                            {
+                                "run_id": run_id,
+                                "exit_code": exit_code,
+                                "error": error,
+                                "status": status,
+                            },
+                        )
+                    final = conn.execute(
+                        "SELECT status FROM deliveries WHERE id=?", (delivery_id,)
+                    ).fetchone()[0]
+            finally:
+                conn.close()
     return {
         "run_id": run_id,
         "delivery_id": delivery_id,
         "exit_code": exit_code,
-        "delivery_status": final["status"],
+        "delivery_status": final,
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
     }
+
+
+@atomic_write
+def abandon_delivery_run(conn, run_id, actor, reason):
+    row = conn.execute("SELECT * FROM delivery_runs WHERE id=?", (run_id,)).fetchone()
+    if not row or row["ended_at"]:
+        raise SwarmError("Delivery run is unknown or already ended")
+    conn.execute("UPDATE delivery_runs SET ended_at=?,exit_code=125 WHERE id=?", (utcnow(), run_id))
+    conn.execute(
+        """UPDATE deliveries SET status='UNKNOWN',claimed_by=NULL,lease_until=NULL,
+            last_error=?,updated_at=? WHERE id=? AND status IN ('CLAIMED','PENDING')""",
+        (reason, utcnow(), row["delivery_id"]),
+    )
+    add_event(
+        conn,
+        row["mission_id"],
+        "delivery_run",
+        run_id,
+        "DELIVERY_RUN_RECOVERED",
+        actor,
+        {"delivery_id": row["delivery_id"], "reason": reason},
+    )
+
+
+@atomic_write
+def reconcile_delivery(conn, delivery_id, outcome, receipt, actor):
+    """Record provider truth before retrying an ambiguous external delivery."""
+    row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+    if not row or row["status"] != "UNKNOWN":
+        raise SwarmError("Only UNKNOWN deliveries need provider reconciliation")
+    if outcome not in {"sent", "not-sent"} or not receipt.strip():
+        raise SwarmError("Reconciliation needs sent/not-sent and a provider receipt or observation")
+    if conn.execute(
+        "SELECT 1 FROM delivery_runs WHERE delivery_id=? AND ended_at IS NULL", (delivery_id,)
+    ).fetchone():
+        raise SwarmError(
+            "Wait for the delivery process to stop, then run recover before reconciling"
+        )
+    status = "SENT" if outcome == "sent" else "PENDING"
+    now = utcnow()
+    conn.execute(
+        """UPDATE deliveries SET status=?,provider_receipt=?,sent_at=?,last_error=NULL,
+            claimed_by=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
+        (status, receipt, now if outcome == "sent" else None, now, delivery_id),
+    )
+    add_event(
+        conn,
+        row["mission_id"],
+        "delivery",
+        delivery_id,
+        "DELIVERY_RECONCILED",
+        actor,
+        {"outcome": outcome, "receipt": receipt, "status": status},
+    )
+    return delivery_dict(
+        conn, conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+    )

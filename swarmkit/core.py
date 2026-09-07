@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import secrets
+import signal
+import subprocess
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +60,7 @@ VALID_BLOCKER_KINDS = {
 }
 
 
-VALID_DELIVERY_STATES = {"PENDING", "CLAIMED", "SENT", "FAILED", "CANCELLED"}
+VALID_DELIVERY_STATES = {"PENDING", "CLAIMED", "SENT", "FAILED", "UNKNOWN", "CANCELLED"}
 
 
 VALID_CASE_STATES = {
@@ -228,3 +230,36 @@ def process_lock(path):
         # Closing, without LOCK_UN, lets an inherited child descriptor retain
         # the lock after a controller crash until the actual process exits.
         yield handle
+
+
+def run_logged_process(command, workdir, timeout, stdout_path, stderr_path, lock_handle):
+    """Run one owned process group with streaming logs and an inherited live lock.
+
+    Return (exit_code, started). Only a failure before Popen succeeds proves that
+    this invocation could not have performed an external action.
+    """
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(workdir),
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+                pass_fds=(lock_handle.fileno(),),
+            )
+        except OSError as exc:
+            stderr.write("Could not start process: %s\n" % exc)
+            return 126, False
+        try:
+            return process.wait(timeout=timeout), True
+        except subprocess.TimeoutExpired:
+            stderr.write("\nProcess timed out after %s seconds.\n" % timeout)
+            return 124, True
+        finally:
+            # Background children must not outlive the invocation recorded in SQLite.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()

@@ -389,13 +389,14 @@ optional arguments:
 
 ```text
 usage: swarmctl delivery [-h]
-                         {enqueue,enqueue-report,list,show,claim,sent,fail,retry,cancel,dispatch}
+                         {enqueue,enqueue-report,list,show,claim,sent,fail,retry,reconcile,cancel,dispatch}
                          ...
 
 positional arguments:
-  {enqueue,enqueue-report,list,show,claim,sent,fail,retry,cancel,dispatch}
+  {enqueue,enqueue-report,list,show,claim,sent,fail,retry,reconcile,cancel,dispatch}
     enqueue             Snapshot an existing file and enqueue it
     enqueue-report      Generate the current status report and enqueue it
+    reconcile           Record provider truth for an uncertain delivery
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -505,11 +506,28 @@ optional arguments:
 
 ```text
 usage: swarmctl delivery list [-h]
-                              [--status {CANCELLED,CLAIMED,FAILED,PENDING,SENT}]
+                              [--status {CANCELLED,CLAIMED,FAILED,PENDING,SENT,UNKNOWN}]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --status {CANCELLED,CLAIMED,FAILED,PENDING,SENT}
+  --status {CANCELLED,CLAIMED,FAILED,PENDING,SENT,UNKNOWN}
+```
+
+## `swarmctl delivery reconcile`
+
+```text
+usage: swarmctl delivery reconcile [-h] --outcome {sent,not-sent} --receipt
+                                   RECEIPT [--actor ACTOR]
+                                   delivery_id
+
+positional arguments:
+  delivery_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --outcome {sent,not-sent}
+  --receipt RECEIPT
+  --actor ACTOR
 ```
 
 ## `swarmctl delivery retry`

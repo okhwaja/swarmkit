@@ -2,9 +2,6 @@
 
 from pathlib import Path
 import concurrent.futures
-import os
-import signal
-import subprocess
 import time
 
 from .config import runner_config
@@ -22,8 +19,10 @@ from .core import (
     json_dump,
     make_id,
     process_lock,
+    run_logged_process,
     utcnow,
 )
+from .delivery import abandon_delivery_run
 from .prompts import role_for_task, write_prompt
 from .queries import external_wait_dict
 from .storage import (
@@ -138,32 +137,9 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
         stdout_path, stderr_path = run_dir / "stdout.txt", run_dir / "stderr.txt"
         exit_code = 126
         try:
-            with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
-                process = subprocess.Popen(
-                    command,
-                    cwd=str(workdir),
-                    stdout=stdout,
-                    stderr=stderr,
-                    start_new_session=True,
-                    pass_fds=(run_lock.fileno(),),
-                )
-                try:
-                    exit_code = process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-                    exit_code = 124
-                    stderr.write("\nRunner timed out after %d seconds.\n" % timeout)
-                finally:
-                    # A run owns its process group; do not leave background children
-                    # mutating work after the recorded invocation has finished.
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-        except OSError as exc:
-            stderr_path.write_text("Harness launch failed: %s\n" % exc, encoding="utf-8")
-            stdout_path.touch(exist_ok=True)
+            exit_code, _ = run_logged_process(
+                command, workdir, timeout, stdout_path, stderr_path, run_lock
+            )
         finally:
             conn = connect(root)
             try:
@@ -525,7 +501,9 @@ def recover_runs(root, actor="operator"):
     recovered, live = [], []
     conn = connect(root)
     try:
-        for row in conn.execute("SELECT * FROM agent_runs WHERE ended_at IS NULL").fetchall():
+        unfinished = conn.execute("SELECT id FROM agent_runs WHERE ended_at IS NULL").fetchall()
+        unfinished += conn.execute("SELECT id FROM delivery_runs WHERE ended_at IS NULL").fetchall()
+        for row in unfinished:
             lockpath = root / "runs" / row["id"] / "process.lock"
             if not lockpath.exists():
                 live.append(
@@ -551,6 +529,12 @@ def recover_runs(root, actor="operator"):
             "recovered": recovered,
             "live_or_unverified": live,
             "uncertain_effects": [dict(x) for x in uncertain_effects(conn)],
+            "uncertain_deliveries": [
+                dict(x)
+                for x in conn.execute(
+                    "SELECT id,subject,last_error FROM deliveries WHERE status='UNKNOWN'"
+                )
+            ],
         }
     finally:
         conn.close()
@@ -559,8 +543,10 @@ def recover_runs(root, actor="operator"):
 @atomic_write
 def abandon_run(conn, run_id, actor, reason):
     row = conn.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
-    if not row or row["ended_at"]:
-        raise SwarmError("Run is unknown or already ended")
+    if not row:
+        return abandon_delivery_run(conn, run_id, actor, reason)
+    if row["ended_at"]:
+        raise SwarmError("Run is already ended")
     conn.execute("UPDATE agent_runs SET ended_at=?,exit_code=125 WHERE id=?", (utcnow(), run_id))
     if row["role"] == "manager":
         for review in conn.execute(

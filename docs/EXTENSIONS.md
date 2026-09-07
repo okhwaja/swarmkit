@@ -29,7 +29,7 @@ Generating a report and sending it are different operations. `swarmctl report` i
 ```text
 generate content → immutable snapshot → PENDING → CLAIMED → provider receipt → SENT
                                              ↘ failure → FAILED → explicit retry
-                                             ↘ lease expiry → PENDING
+                                             ↘ missing receipt / crash / timeout → UNKNOWN → provider reconciliation
 ```
 
 The record stores the content hash, recipients, extension version and manifest snapshot, attempt count, run outputs, errors, idempotency key, and provider receipt. A successful process exit without `delivery sent` is not considered delivery.
@@ -83,7 +83,28 @@ swarmctl --root /work/my-run/.swarm delivery retry N-ID --actor human
 swarmctl --root /work/my-run/.swarm delivery cancel N-ID --reason "Report is obsolete"
 ```
 
-Failed jobs do not retry themselves indefinitely. Your scheduler or operator decides whether to call `retry`. Claimed jobs whose lease expires return to `PENDING`, preserving an error explaining the uncertain attempt. The provider-side idempotency key is the defense against duplicate sends after an ambiguous timeout.
+A definitive failure or a process that could not start becomes `FAILED`; an explicit
+`retry` puts it back in the queue. A lease expiry, timeout, controller crash, or
+process exit without a durable provider acknowledgement becomes `UNKNOWN`. It
+cannot be claimed or retried until the provider result is reconciled:
+
+```sh
+swarmctl delivery list --status UNKNOWN
+swarmctl recover
+swarmctl delivery reconcile N-ID --outcome sent --receipt 'provider message ID'
+# Or, only after proving that the provider did not accept the request:
+swarmctl delivery reconcile N-ID --outcome not-sent --receipt 'provider lookup result'
+```
+
+`sent` records success without another send. `not-sent` makes the delivery pending
+for a deliberate new attempt. Reconciliation refuses an unfinished process record;
+wait for it to stop and run `recover` first. Provider idempotency keys remain useful,
+but the runtime does not treat their presence as proof that a retry is safe.
+
+Delivery dispatch streams output to files, owns its subprocess group, and gives
+the child an inherited process lock. `recover` inspects both worker and delivery
+runs. Final reports can be delivered after finite mission work is complete;
+mission pause/cancel still blocks new delivery claims.
 
 ## Agent executor
 

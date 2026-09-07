@@ -8,7 +8,6 @@ import sqlite3
 
 from .core import (
     PACKAGE_ROOT,
-    CLI_PATH,
     SCHEMA_VERSION,
     SwarmError,
     VALID_MISSION_MODES,

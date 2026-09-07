@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest import mock
 
-from swarmkit import coordination, runtime, schema, workspaces
+from swarmkit import runtime
 import zipfile
 
 
@@ -521,7 +521,7 @@ class SwarmLifecycleTest(unittest.TestCase):
             swarmctl.claim_delivery(conn, lease_job["id"], "lost-emailer", 30)
             conn.execute("UPDATE deliveries SET lease_until=? WHERE id=?", ("2000-01-01T00:00:00Z", lease_job["id"]))
             conn.commit()
-            self.assertIn((lease_job["id"], "PENDING"), swarmctl.reconcile_conn(conn))
+            self.assertIn((lease_job["id"], "UNKNOWN"), swarmctl.reconcile_conn(conn))
             self.assertTrue(swarmctl.doctor(conn)["ok"])
         finally:
             conn.close()
@@ -605,7 +605,7 @@ class SwarmLifecycleTest(unittest.TestCase):
             conn.close()
         result = swarmctl.dispatch_delivery(self.root, unacknowledged["id"], "unack-emailer")
         self.assertEqual(result["exit_code"], 0)
-        self.assertEqual(result["delivery_status"], "PENDING")
+        self.assertEqual(result["delivery_status"], "UNKNOWN")
         conn = self.connection()
         try:
             row = conn.execute(

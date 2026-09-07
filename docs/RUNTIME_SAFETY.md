@@ -47,7 +47,7 @@ evidence, and effect writes acquire a write lock before checking ownership.
 
 `run` holds a single-host OS controller lock. Each harness run holds its own lock,
 inherited by the child process. A controller crash releases the controller lock,
-but the child retains its run lock until it exits. `recover` only closes an
+but the child retains its run lock until it exits. `recover` covers both worker and delivery runs. It only closes an
 unfinished run automatically when that lock is free. It records interruption and
 requeues eligible work; uncertain external effects still block a new claim.
 `run` returns `RECOVERY_WAIT` while an earlier live or unverified run remains.
@@ -342,8 +342,22 @@ Known schema versions 1–8 upgrade transactionally to schema 9. Versions 2–6 
 additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
 metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
-scoped event and context queries. Each version step and final metadata update occur
+scoped event and context queries and marks legacy deliveries with known ambiguous
+run/lease error records `UNKNOWN`, requiring provider reconciliation. Each version step and final metadata update occur
 inside one write transaction. A failed migration rolls back, and unknown/newer
 versions fail instead of being relabeled. Stop old controllers before upgrading;
 back up the mission directory before moving between releases. Old history is
 retained; new attempt records begin with the first post-upgrade claim.
+
+## Delivery uncertainty
+
+Delivery adapters use the same streaming logs, owned subprocess groups, and inherited
+process locks as worker harnesses. A missing provider acknowledgement, timeout,
+expired claim, or interrupted delivery becomes `UNKNOWN`; it is never automatically
+returned to the send queue. Use `recover`, inspect the provider, then record
+`delivery reconcile --outcome sent|not-sent --receipt ...`. Only a proven non-delivery
+returns the job to `PENDING`. See [delivery operations](EXTENSIONS.md).
+
+Final reports can be sent after finite task work is complete. Paused, cancelled,
+or abandoned missions still reject new delivery claims. Mission completion and
+provider-confirmed report delivery are separate recorded outcomes.

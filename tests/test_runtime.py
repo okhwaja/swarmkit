@@ -3,7 +3,6 @@ import concurrent.futures
 import contextlib
 import io
 import json
-import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -13,7 +12,7 @@ import time
 import unittest
 from unittest import mock
 
-from swarmkit import coordination, runtime, schema, workspaces
+from swarmkit import runtime, schema
 import zipfile
 
 import swarmctl as s
@@ -272,7 +271,7 @@ class RuntimeTest(unittest.TestCase):
         s.configure_runtime(self.conn, {}, strict_evidence=True)
         review_id, _ = s.request_manager_review(self.conn, 'Plan', 'mission', s.mission(self.conn)['id'])
         self.conn.commit()
-        review = s.claim_manager_review(self.conn, 'manager', 600)
+        s.claim_manager_review(self.conn, 'manager', 600)
         s.finish_manager_review(self.conn, review_id, 'manager', True)
         self.assertEqual(self.conn.execute('SELECT status FROM manager_reviews').fetchone()[0], 'PENDING')
         s.claim_manager_review(self.conn, 'manager', 600)
@@ -448,7 +447,7 @@ class RuntimeTest(unittest.TestCase):
 
 
     def test_runtime_cli_end_to_end(self):
-        task = self.task()
+        self.task()
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(s.main(['--root',str(self.root),'pause','--reason','CLI test']), 0)
         self.assertEqual(json.loads(output.getvalue())['desired_state'], 'PAUSED')

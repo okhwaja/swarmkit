@@ -46,7 +46,7 @@ def reconcile_deliveries(conn, actor="reconciler"):
     for row in rows:
         error = "Delivery lease expired before provider acknowledgment"
         conn.execute(
-            """UPDATE deliveries SET status='PENDING', claimed_by=NULL, lease_until=NULL,
+            """UPDATE deliveries SET status='UNKNOWN', claimed_by=NULL, lease_until=NULL,
                last_error=?, updated_at=? WHERE id=?""",
             (error, now, row["id"]),
         )
@@ -62,7 +62,7 @@ def reconcile_deliveries(conn, actor="reconciler"):
                 "attempt": row["attempt_count"],
             },
         )
-        changed.append((row["id"], "PENDING"))
+        changed.append((row["id"], "UNKNOWN"))
     return changed
 
 

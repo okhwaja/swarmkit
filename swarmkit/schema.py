@@ -1,6 +1,6 @@
 """SQLite schema and sequential migrations. Existing databases upgrade atomically."""
 
-from .core import SCHEMA_VERSION, SwarmError, VERSION
+from .core import SCHEMA_VERSION, SwarmError, VERSION, json_dump, make_id, utcnow
 
 
 SCHEMA = """
@@ -467,6 +467,28 @@ def migrate_workspace_schema(conn):
         conn.execute("ALTER TABLE workspaces ADD COLUMN requested_base TEXT")
 
 
+def migrate_reliability_schema(conn):
+    execute_schema(conn, CONTEXT_SCHEMA)
+    # Older dispatchers queued ambiguous attempts for replay. Preserve the job,
+    # but require provider reconciliation before any new send under this release.
+    rows = conn.execute(
+        """SELECT id,mission_id FROM deliveries WHERE status IN ('PENDING','FAILED')
+            AND (last_error LIKE 'Delivery lease expired%'
+                 OR last_error LIKE 'Extension exited successfully without recording provider acknowledgment%'
+                 OR last_error LIKE 'Extension process exited %')"""
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE deliveries SET status='UNKNOWN',claimed_by=NULL,lease_until=NULL WHERE id=?",
+            (row[0],),
+        )
+        conn.execute(
+            """INSERT INTO events(id,mission_id,entity_type,entity_id,event_type,actor,occurred_at,payload_json)
+                VALUES(?,?,'delivery',?,'DELIVERY_MIGRATED_TO_UNKNOWN','migration',?,?)""",
+            (make_id("E"), row[1], row[0], utcnow(), json_dump({"schema_version": 9})),
+        )
+
+
 def ensure_schema(conn):
     """Upgrade a known schema under one write transaction; never downgrade."""
     try:
@@ -478,7 +500,7 @@ def ensure_schema(conn):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
             if target == 9:
-                execute_schema(conn, CONTEXT_SCHEMA)
+                migrate_reliability_schema(conn)
             elif target == 8:
                 migrate_workspace_schema(conn)
             else:

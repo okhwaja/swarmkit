@@ -3,13 +3,12 @@ import contextlib
 import io
 import json
 from pathlib import Path
-import sqlite3
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from swarmkit import coordination, runtime, schema, workspaces
+from swarmkit import workspaces
 
 import swarmctl as s
 

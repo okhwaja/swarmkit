@@ -1,10 +1,8 @@
 """Idempotent service intake, follow-up signals, and case lifecycle."""
 
 from pathlib import Path
-import concurrent.futures
 import hashlib
 import shutil
-import signal
 
 from .coordination import reconcile_conn
 from .core import (

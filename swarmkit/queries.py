@@ -499,6 +499,15 @@ def explain_state(conn):
         "unfinished_runs": [
             dict(r) for r in conn.execute("SELECT * FROM agent_runs WHERE ended_at IS NULL")
         ],
+        "unfinished_delivery_runs": [
+            dict(r) for r in conn.execute("SELECT * FROM delivery_runs WHERE ended_at IS NULL")
+        ],
+        "uncertain_deliveries": [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id,subject,status,last_error FROM deliveries WHERE status='UNKNOWN'"
+            )
+        ],
         "attempts": [
             dict(r) for r in conn.execute("SELECT * FROM attempts ORDER BY started_at,id")
         ],

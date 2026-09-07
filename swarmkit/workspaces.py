@@ -164,7 +164,7 @@ def run_workspace_command(command, repository, timeout):
 
 
 def create_workspace(root, conn, task_id, repository, base, provider=None):
-    task = workspace_task(conn, task_id)
+    workspace_task(conn, task_id)
     config = workspace_config(root, provider)
     repository = Path(repository).expanduser().resolve()
     if not repository.is_dir() or not isinstance(base, str) or not base.strip():

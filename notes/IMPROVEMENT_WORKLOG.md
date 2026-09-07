@@ -69,3 +69,15 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   labeled DONE without a partial outcome; auto-cancelled intake conflicts with
   applying a replacement policy; delivery subprocesses need the same liveness
   and uncertain-result handling as ordinary harness runs. These are not fixed yet.
+
+- Saved local commit 59885ff for decision attempt fencing (96 passing source tests).
+- Reproduced delivery clean-exit replay, lease-expiry replay, timeout byte/string
+  logging failure, and controller-crash liveness omission. Implemented UNKNOWN
+  delivery state, provider reconciliation command, shared streaming process helper,
+  inherited delivery process locks, delivery recovery, and unique delivery prompts.
+- Final reports can be sent after finite task completion, while pause/cancel still
+  stops new delivery claims. Existing ambiguous delivery error markers upgrade to
+  UNKNOWN in schema 9. Added provider-reconciliation and upgrade tests.
+- Ran temporary Ruff static checks; removed unused imports from the module split.
+  Runtime remains standard-library only. Source suite passed 103 before the last
+  migration regression was added; full validation follows.

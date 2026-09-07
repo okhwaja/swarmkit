@@ -1,13 +1,12 @@
 """A command either records its entire durable result or records none of it."""
 
-import contextlib
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from unittest import mock
 
-from swarmkit import coordination, runtime, schema, workspaces
+from swarmkit import coordination
 
 import swarmctl as s
 

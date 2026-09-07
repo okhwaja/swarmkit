@@ -49,6 +49,7 @@ from .delivery import (
     mark_delivery_failed,
     mark_delivery_sent,
     read_extension_source,
+    reconcile_delivery,
     retry_delivery,
 )
 from .diagnostics import doctor
@@ -510,6 +511,13 @@ def parser():
     delivery_retry = delivery_sub.add_parser("retry")
     delivery_retry.add_argument("delivery_id")
     delivery_retry.add_argument("--actor", default="human")
+    delivery_reconcile = delivery_sub.add_parser(
+        "reconcile", help="Record provider truth for an uncertain delivery"
+    )
+    delivery_reconcile.add_argument("delivery_id")
+    delivery_reconcile.add_argument("--outcome", choices=["sent", "not-sent"], required=True)
+    delivery_reconcile.add_argument("--receipt", required=True)
+    delivery_reconcile.add_argument("--actor", default="human")
     delivery_cancel = delivery_sub.add_parser("cancel")
     delivery_cancel.add_argument("delivery_id")
     delivery_cancel.add_argument("--actor", default="human")
@@ -1112,6 +1120,12 @@ def main(argv=None):
                 elif args.delivery_command == "retry":
                     retry_delivery(conn, args.delivery_id, args.actor)
                     print_json({"delivery_id": args.delivery_id, "status": "PENDING"})
+                elif args.delivery_command == "reconcile":
+                    print_json(
+                        reconcile_delivery(
+                            conn, args.delivery_id, args.outcome, args.receipt, args.actor
+                        )
+                    )
                 elif args.delivery_command == "cancel":
                     cancel_delivery(conn, args.delivery_id, args.actor, args.reason)
                     print_json({"delivery_id": args.delivery_id, "status": "CANCELLED"})
@@ -1452,7 +1466,9 @@ def main(argv=None):
                         lease_inbox(conn, args.agent, args.task, args.limit, args.lease_seconds)
                     )
                 else:
-                    print_json(inbox(conn, args.agent, args.after, args.advance, args.task, args.limit))
+                    print_json(
+                        inbox(conn, args.agent, args.after, args.advance, args.task, args.limit)
+                    )
             finally:
                 conn.close()
             return 0

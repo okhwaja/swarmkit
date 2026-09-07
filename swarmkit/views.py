@@ -584,7 +584,12 @@ def render_status_report(root):
                 )
             )
     for delivery in snapshot["deliveries"]:
-        if delivery["status"] == "FAILED":
+        if delivery["status"] == "UNKNOWN":
+            urgent_lines.append(
+                "- Delivery `%s` has an uncertain provider result. Inspect the provider, then use `delivery reconcile`; do not resend blindly."
+                % delivery["id"]
+            )
+        elif delivery["status"] == "FAILED":
             urgent_lines.append(
                 "- Delivery `%s` failed after %s attempt(s): %s"
                 % (
@@ -599,7 +604,7 @@ def render_status_report(root):
                 % (
                     delivery["id"],
                     delivery["attempt_count"],
-                    delivery["last_error"] or "previous attempt was not acknowledged",
+                    delivery["last_error"] or "retry was explicitly authorized",
                 )
             )
     lines.extend(urgent_lines or ["No urgent system matters detected."])
