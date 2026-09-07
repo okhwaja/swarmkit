@@ -2,8 +2,9 @@
 
 **UX draft for review.** This describes a proposed experience, not the current
 release. Work profiles, automatic review assignment, the example `profile`
-commands, and `init --profile` are not implemented. Example setup results and
-reports below are illustrations, not results from your machine.
+commands, automatic mission-home allocation, and profile selection flags are not
+implemented. Example setup results and reports below are illustrations, not
+results from your machine.
 
 ## What you are setting up
 
@@ -17,9 +18,11 @@ preferences. For example:
 > Use my work agent, its internal checkout tools, and its adversarial-review
 > skill. Run my review routine for every code change produced by a mission.
 
-You set this up once. Later, you give a mission to your agent using that profile.
-You do not need to predict the changes it will produce or attach a review
-procedure to each one.
+Make `work` your default once. Every new mission you create on this machine then
+uses it automatically, including missions started from another directory. You do
+not need to select it repeatedly, predict the changes a mission will produce, or
+attach a review procedure to each change. This is a local user setting; it does
+not imply an online account or synchronization between machines.
 
 In this guide, a **change** means a related set of code edits that you would
 review together. It can be a local change or a change tracked by your company's
@@ -31,7 +34,8 @@ It does not have to be a Git branch or a pull request.
 Open the agent you normally use at work, in your usual project. Give it this
 assignment:
 
-> Set up Swarmkit for this project and save a profile named `work`.
+> Set up Swarmkit for my work environment. Save a profile named `work` and make
+> it the default for all my new missions on this machine.
 >
 > Use this environment's agent harness and existing tools. We use jj and an
 > internal command to create lightweight checkouts. Use the tools and instructions
@@ -87,7 +91,9 @@ The agent returns a short summary such as:
 ```text
 Work profile: work
 
-Project             /work/monorepo
+Default profile     work, for all new missions on this machine
+Project guidance    Start with /work/monorepo; discover the relevant service
+Mission homes       Created automatically in local Swarmkit storage
 Agent harness       Your existing work harness
 Isolated checkouts  Internal checkout command; jj revisions
 Code changes        Reported through the work harness
@@ -127,16 +133,29 @@ swarmctl profile show work
 
 You can also simply ask your agent, “Show me my Swarmkit work settings.”
 
+If you already have the profile, make it the default with:
+
+**Proposed command:**
+
+```sh
+swarmctl profile default work
+```
+
+An explicit `--profile other-profile` on a new mission overrides that default.
+Use `--no-profile` for a mission that should inherit no work settings. These two
+flags are alternatives. An unavailable selected profile produces a setup error;
+it is not silently replaced. Existing missions retain their saved settings.
+
 ## 4. Start a real mission
 
 Tell your agent:
 
-> Use my Swarmkit `work` profile to investigate why the service is slow and fix
-> the supported causes. Show comparable before-and-after measurements. Keep all
-> changes local for now.
+> Use Swarmkit to investigate why the service is slow and fix the supported
+> causes. Show comparable before-and-after measurements. Keep all changes local
+> for now.
 
-The agent starts a mission with your environment and review preferences. It may
-discover that no code change is needed, or that several independent changes are
+The agent starts a mission using your default work environment and review
+preferences. It may discover that no code change is needed, or that several independent changes are
 needed. You do not have to specify those in advance.
 
 If you prefer the terminal, the equivalent starting point would be:
@@ -144,23 +163,107 @@ If you prefer the terminal, the equivalent starting point would be:
 **Proposed command:**
 
 ```sh
-swarmctl --root /work/missions/service-speed/.swarm init \
-  --profile work \
+swarmctl init \
   --objective "Investigate and improve service performance" \
   --success "Comparable measurements demonstrate the improvement" \
   --constraint "Keep all changes local"
 ```
 
-Then use the existing execution and progress commands:
+The proposed `init` would report the chosen profile and the new mission's home:
 
-```sh
-swarmctl --root /work/missions/service-speed/.swarm run --max-cycles 20
-swarmctl --root /work/missions/service-speed/.swarm report
+```text
+Mission: service-speed
+Profile: work (your default)
+Home: /home/you/.local/share/swarmkit/missions/M-example
 ```
 
-Choose the profile when starting the mission. Its preferences then apply to all
-changes produced within that mission. It does not monitor unrelated changes you
+The path is illustrative. Your agent keeps it with the assignment and uses it
+for subsequent commands. You can also pass `--root` to choose the home yourself.
+Use the reported path with the existing execution and progress commands:
+
+```sh
+swarmctl --root /home/you/.local/share/swarmkit/missions/M-example run --max-cycles 20
+swarmctl --root /home/you/.local/share/swarmkit/missions/M-example report
+```
+
+The profile is selected automatically. Its preferences apply to all changes
+produced within that mission. It does not monitor unrelated changes you
 or other people create outside Swarmkit.
+
+## Where does a mission live, and where does it work?
+
+A mission has a **home directory** containing its saved plan, decisions, reports,
+and run history. It also uses **working directories** where agents inspect or
+change things. Those locations serve different purposes.
+
+| Location | Example | What it contains |
+|---|---|---|
+| Mission home | A unique folder in your local Swarmkit storage | Saved mission state, reports, and logs |
+| Starting working directory | Your existing monorepo or a scratch directory | The initial place the harness starts investigating |
+| Task checkout | A lightweight checkout created by your internal tool | Isolated edits for one piece of work |
+
+In this proposed experience, Swarmkit chooses a unique mission home automatically.
+You ordinarily do not need to name it. Your agent reports its location and reuses
+it when you come back; it does not create a new mission just because a conversation
+or working directory changed.
+
+A mission does not require a repository. It could investigate logs, explain an
+incident, or work across several projects. Code work uses your harness's checkout
+tools when isolated changes are needed.
+
+You can give a precise starting point:
+
+> Investigate the ingestion service in `/work/monorepo/services/ingestion`.
+
+Or provide discovery guidance:
+
+> Investigate delayed ingestion. Use our service catalog to locate the owning
+> code and dashboards. Start with the troubleshooting guide in the work profile.
+
+Your work harness supplies the tools and knowledge to locate those resources.
+Agents discover the relevant targets and record them in the mission. Swarmkit's
+core does not guess repository names or implement your company's service catalog.
+If discovery leaves several plausible targets and choosing matters, the agent
+brings that ambiguity back to you.
+
+The work profile can contain a usual starting directory, links to internal guides,
+and instructions for locating projects. A default profile does not restrict every
+mission to one repository. The mission's explicit target takes precedence over a
+usual starting point, within the tools and permissions actually available.
+
+**Current release:** every mission already has a state directory, selected by
+`--root`, then `SWARM_ROOT`, then `.swarm` in the current directory. It is not
+allocated automatically in a central location. Agent execution starts in the
+`working_directory` configured in that mission's `runner.json`, initially the
+parent of its state directory. Registered task checkouts can supply a different
+working directory for individual tasks. Root selection does not discover a repo.
+
+## How to steer the work
+
+Talk to the agent you use to operate Swarmkit. Give it the intended change in
+plain language, for example:
+
+> Focus this mission on ingestion latency. Leave storage optimization for later.
+
+The agent records the new direction in the mission and has the manager reconsider
+remaining work. The direction survives the chat ending and reaches future workers.
+For a changed goal or boundary, this uses mission amendment, including any required
+pause and settlement of outstanding work. A private chat message that never reaches
+the mission is not enough.
+
+Choose the scope of your instruction:
+
+| What you want to change | Where it belongs |
+|---|---|
+| “Use fresh adversarial reviews for my code changes.” | Default work profile; future missions inherit it |
+| “For this mission, keep all changes local.” | This mission's constraints |
+| “Change this mission to diagnosis only.” | A recorded amendment to the current mission |
+| “The checkout CLI now has different arguments.” | Harness/tool configuration, through setup |
+| “Explain why progress stopped.” | A status explanation or inquiry; it does not redirect work |
+
+You do not need separate conversations with every worker. Your agent is the
+interface for your directions; Swarmkit preserves the directions and coordinates
+the resulting plan; the work harness carries out the tool operations.
 
 ## 5. Let the review routine follow the work
 
@@ -255,10 +358,12 @@ such as “For this investigation, produce a diagnosis only.”
 ## What to look for while reviewing this draft
 
 The proposed experience asks you to describe your work environment and preferences
-once, inspect a concrete setup result, and select that profile for a mission.
-Swarmkit then follows the routine as changes emerge.
+once, inspect a concrete setup result, and make that profile the default. New
+missions inherit it, receive a home automatically, and follow the routine as
+changes emerge. Your agent records mission-specific direction as you give it.
 
-The main UX choices in this draft are an agent-led setup, one named work profile,
+The main UX choices in this draft are an agent-led setup, a user-wide default work
+profile, automatic mission homes, harness-led project discovery, durable steering,
 automatic review assignment, and flexible review completion without automatic
 re-review after subsequent edits. No new company review-system enforcement is
 required for this first version.
