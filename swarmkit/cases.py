@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import hashlib
+import contextlib
 import shutil
 
 from .coordination import reconcile_conn
@@ -32,21 +33,42 @@ from .storage import (
 from .tasks import add_task, cancel_task
 
 
-def snapshot_case_payload(root, case_id, payload, name):
+@contextlib.contextmanager
+def new_payload_files():
+    """Remove only snapshots created by a failed intake command."""
+    paths = []
+    try:
+        yield paths
+    except BaseException:
+        for value in reversed(paths):
+            path = Path(value)
+            path.unlink(missing_ok=True)
+            try:
+                path.parent.rmdir()  # Remove the directory only when it is empty.
+            except OSError:
+                pass
+        raise
+
+
+def snapshot_case_payload(root, case_id, payload, name, expected=None):
     if not payload:
         return None, None, None
     source = Path(payload).expanduser().resolve()
     if not source.is_file():
         raise SwarmError("Case payload is not a file: %s" % source)
     source_sha, source_size = hash_file(source)
+    if expected is not None and expected != (source_sha, source_size):
+        raise SwarmError("Case payload changed after the request fingerprint was computed")
     destination_dir = root / "intake" / case_id
     destination_dir.mkdir(parents=True, exist_ok=True)
     suffix = source.suffix if source.suffix else ".txt"
     destination = destination_dir / (name + suffix)
-    shutil.copy2(source, destination)
-    copied_sha, copied_size = hash_file(destination)
-    if copied_sha != source_sha or copied_size != source_size:
-        raise SwarmError("Case payload changed while it was being snapshotted")
+    with new_payload_files() as files:
+        files.append(destination)
+        shutil.copy2(source, destination)
+        copied_sha, copied_size = hash_file(destination)
+        if copied_sha != source_sha or copied_size != source_size:
+            raise SwarmError("Case payload changed while it was being snapshotted")
     return str(destination), copied_sha, copied_size
 
 
@@ -100,6 +122,54 @@ def link_case_task(conn, case_id, task_id, actor):
     return not prior
 
 
+@atomic_write
+def open_inquiry(conn, question, actor="human", workstream_id=None, case_id=None, depends_on=None):
+    """Create briefing work and reopen its case as one durable operation."""
+    question = question.strip()
+    if not question:
+        raise SwarmError("Inquiry question may not be empty")
+    case = case_row(conn, case_id) if case_id else None
+    if case:
+        if workstream_id and case["workstream_id"] != workstream_id:
+            raise SwarmError("Inquiry case and workstream do not match")
+        if case["status"] == "CANCELLED":
+            raise SwarmError("Cancelled case inquiries must use a separate workstream")
+        workstream_id = case["workstream_id"]
+        if case["status"] == "DONE":
+            conn.execute(
+                "UPDATE workstreams SET status='ACTIVE',completion_outcome=NULL,progress_summary=NULL,updated_at=? WHERE id=?",
+                (utcnow(), workstream_id),
+            )
+            add_event(
+                conn,
+                case["mission_id"],
+                "case",
+                case_id,
+                "CASE_REOPENED_FOR_INQUIRY",
+                actor,
+                {"question": question},
+            )
+    task_id = add_task(
+        conn,
+        "Inquiry: %s" % question.splitlines()[0][:100],
+        question,
+        "briefing",
+        [
+            "Answer distinguishes observed facts from inference",
+            "Answer cites durable task, event, artifact, or source identifiers",
+            "Answer states confidence, uncertainty, and recommended next action",
+        ],
+        depends_on or [],
+        40,
+        actor,
+        True,
+        workstream_id,
+    )
+    if case:
+        link_case_task(conn, case_id, task_id, actor)
+    return task_id
+
+
 def open_case(
     root,
     conn,
@@ -116,7 +186,7 @@ def open_case(
     policy_variables=None,
     ready=False,
 ):
-    with transaction(conn):
+    with new_payload_files() as files, transaction(conn):
         values = {
             "source": source.strip(),
             "external_id": external_id.strip(),
@@ -149,11 +219,6 @@ def open_case(
             ).encode("utf-8")
         ).hexdigest()
         current_mission = mission(conn)
-        if current_mission["status"] == "DONE" or runtime_state(conn)["desired_state"] in {
-            "CANCELLED",
-            "ABANDONED",
-        }:
-            raise SwarmError("Cannot open a case in a completed mission")
         existing = conn.execute(
             "SELECT * FROM cases WHERE mission_id=? AND source=? AND external_id=?",
             (current_mission["id"], values["source"], values["external_id"]),
@@ -164,86 +229,74 @@ def open_case(
             result = case_dict(conn, existing)
             result["created"] = False
             return result
+        if current_mission["status"] == "DONE" or runtime_state(conn)["desired_state"] in {
+            "CANCELLED",
+            "ABANDONED",
+        }:
+            raise SwarmError("Cannot open a case in a completed mission")
         case_id = make_id("C")
         payload_path, copied_sha, copied_size = snapshot_case_payload(
-            root, case_id, source_payload, "initial"
+            root, case_id, source_payload, "initial", expected=(payload_sha, payload_size)
         )
+        if payload_path:
+            files.append(payload_path)
         workstream_id = make_id("WS")
         now = utcnow()
-        try:
-            concurrent = conn.execute(
-                "SELECT * FROM cases WHERE mission_id=? AND source=? AND external_id=?",
-                (current_mission["id"], values["source"], values["external_id"]),
-            ).fetchone()
-            if concurrent:
-                if payload_path:
-                    shutil.rmtree(root / "intake" / case_id, ignore_errors=True)
-                if concurrent["request_fingerprint"] != request_fingerprint:
-                    raise SwarmError(
-                        "Case source/external-id was concurrently used by a different payload"
-                    )
-                result = case_dict(conn, concurrent)
-                result["created"] = False
-                return result
-            conn.execute(
-                """INSERT INTO workstreams(id, mission_id, name, outcome, status, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (
-                    workstream_id,
-                    current_mission["id"],
-                    values["title"],
-                    values["objective"],
-                    "ACTIVE",
-                    now,
-                    now,
-                ),
-            )
-            conn.execute(
-                """INSERT INTO cases(id, mission_id, source, external_id, title, objective,
-                   priority, workstream_id, payload_path, payload_sha256, payload_size_bytes,
-                   metadata_json, request_fingerprint, created_by, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    case_id,
-                    current_mission["id"],
-                    values["source"],
-                    values["external_id"],
-                    values["title"],
-                    values["objective"],
-                    priority,
-                    workstream_id,
-                    payload_path,
-                    copied_sha,
-                    copied_size,
-                    json_dump(metadata),
-                    request_fingerprint,
-                    actor,
-                    now,
-                    now,
-                ),
-            )
-            add_event(
-                conn,
+        conn.execute(
+            """INSERT INTO workstreams(id, mission_id, name, outcome, status, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (
+                workstream_id,
                 current_mission["id"],
-                "case",
+                values["title"],
+                values["objective"],
+                "ACTIVE",
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO cases(id, mission_id, source, external_id, title, objective,
+               priority, workstream_id, payload_path, payload_sha256, payload_size_bytes,
+               metadata_json, request_fingerprint, created_by, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
                 case_id,
-                "CASE_OPENED",
+                current_mission["id"],
+                values["source"],
+                values["external_id"],
+                values["title"],
+                values["objective"],
+                priority,
+                workstream_id,
+                payload_path,
+                copied_sha,
+                copied_size,
+                json_dump(metadata),
+                request_fingerprint,
                 actor,
-                {
-                    "source": values["source"],
-                    "external_id": values["external_id"],
-                    "title": values["title"],
-                    "objective": values["objective"],
-                    "priority": priority,
-                    "workstream_id": workstream_id,
-                    "payload_sha256": copied_sha,
-                    "policy_id": policy_id,
-                },
-            )
-        except Exception:
-            if payload_path:
-                shutil.rmtree(root / "intake" / case_id, ignore_errors=True)
-            raise
+                now,
+                now,
+            ),
+        )
+        add_event(
+            conn,
+            current_mission["id"],
+            "case",
+            case_id,
+            "CASE_OPENED",
+            actor,
+            {
+                "source": values["source"],
+                "external_id": values["external_id"],
+                "title": values["title"],
+                "objective": values["objective"],
+                "priority": priority,
+                "workstream_id": workstream_id,
+                "payload_sha256": copied_sha,
+                "policy_id": policy_id,
+            },
+        )
 
         if policy_id:
             apply_policy_to_case(conn, case_id, policy_id, policy_variables or [], actor, ready)
@@ -444,7 +497,7 @@ def add_case_signal(
     decision_id=None,
     wake=False,
 ):
-    with transaction(conn):
+    with new_payload_files() as files, transaction(conn):
         case = case_row(conn, case_id)
         source = source.strip()
         external_id = external_id.strip()
@@ -470,7 +523,7 @@ def add_case_signal(
         source_payload = Path(payload).expanduser().resolve() if payload else None
         if source_payload and not source_payload.is_file():
             raise SwarmError("Signal payload is not a file: %s" % source_payload)
-        payload_sha, _ = hash_file(source_payload) if source_payload else (None, None)
+        payload_sha, payload_size = hash_file(source_payload) if source_payload else (None, None)
         existing = conn.execute(
             "SELECT * FROM case_signals WHERE mission_id=? AND source=? AND external_id=?",
             (case["mission_id"], source, external_id),
@@ -500,8 +553,14 @@ def add_case_signal(
             return result
         signal_id = make_id("S")
         payload_path, copied_sha, copied_size = snapshot_case_payload(
-            root, case_id, source_payload, "signal-%s" % signal_id
+            root,
+            case_id,
+            source_payload,
+            "signal-%s" % signal_id,
+            expected=(payload_sha, payload_size),
         )
+        if payload_path:
+            files.append(payload_path)
         now = utcnow()
         conn.execute(
             """INSERT INTO case_signals(id, mission_id, case_id, source, external_id,

@@ -6,7 +6,14 @@ import sqlite3
 import sys
 
 from .audit import export_audit, verify_audit
-from .cases import add_case_signal, apply_policy_to_case, cancel_case, link_case_task, open_case
+from .cases import (
+    add_case_signal,
+    apply_policy_to_case,
+    cancel_case,
+    link_case_task,
+    open_case,
+    open_inquiry,
+)
 from .coordination import (
     commit_review,
     dispose_finding,
@@ -32,7 +39,6 @@ from .core import (
     json_load,
     print_json,
     root_path,
-    utcnow,
 )
 from .decisions import (
     acknowledge_decision,
@@ -80,7 +86,6 @@ from .queries import (
 from .runtime import abandon_run, dispatch, recover_runs, run_loop, serve
 from .setup import initialize, setup_check
 from .storage import (
-    add_event,
     case_row,
     decision_row,
     connect,
@@ -852,58 +857,9 @@ def main(argv=None):
         if args.command == "ask":
             conn = connect(root)
             try:
-                inquiry_case = case_row(conn, args.case) if args.case else None
-                if (
-                    inquiry_case
-                    and args.workstream
-                    and inquiry_case["workstream_id"] != args.workstream
-                ):
-                    raise SwarmError("Inquiry case and workstream do not match")
-                workstream_id = inquiry_case["workstream_id"] if inquiry_case else args.workstream
-                question = args.question.strip()
-                if not question:
-                    raise SwarmError("Inquiry question may not be empty")
-                if inquiry_case and inquiry_case["status"] == "CANCELLED":
-                    raise SwarmError("Cancelled case inquiries must use a separate workstream")
-                if inquiry_case and inquiry_case["status"] == "DONE":
-                    now = utcnow()
-                    conn.execute(
-                        "UPDATE cases SET status='ACTIVE', closed_at=NULL, updated_at=? WHERE id=?",
-                        (now, inquiry_case["id"]),
-                    )
-                    conn.execute(
-                        "UPDATE workstreams SET status='ACTIVE', updated_at=? WHERE id=?",
-                        (now, inquiry_case["workstream_id"]),
-                    )
-                    add_event(
-                        conn,
-                        inquiry_case["mission_id"],
-                        "case",
-                        inquiry_case["id"],
-                        "CASE_REOPENED_FOR_INQUIRY",
-                        args.actor,
-                        {"question": question},
-                    )
-                    conn.commit()
-                title = "Inquiry: %s" % question.splitlines()[0][:100]
-                task_id = add_task(
-                    conn,
-                    title,
-                    question,
-                    "briefing",
-                    [
-                        "Answer distinguishes observed facts from inference",
-                        "Answer cites durable task, event, artifact, or source identifiers",
-                        "Answer states confidence, uncertainty, and recommended next action",
-                    ],
-                    args.depends_on,
-                    40,
-                    args.actor,
-                    True,
-                    workstream_id,
+                task_id = open_inquiry(
+                    conn, args.question, args.actor, args.workstream, args.case, args.depends_on
                 )
-                if inquiry_case:
-                    link_case_task(conn, inquiry_case["id"], task_id, args.actor)
                 print_json(
                     {"inquiry_task_id": task_id, "next": "Run the orchestrator, then use task show"}
                 )

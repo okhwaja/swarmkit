@@ -53,6 +53,51 @@ class TransactionTest(unittest.TestCase):
     def count(self, table):
         return self.conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
 
+    def test_failed_case_plan_removes_its_payload_snapshot(self):
+        payload = self.root.parent / "request.json"
+        payload.write_text('{"private":"request"}')
+        with self.assertRaises(s.SwarmError):
+            self.case(policy_id="missing-policy", payload=payload)
+        self.assertEqual(list((self.root / "intake").rglob("*.json")), [])
+
+    def test_failed_signal_wakeup_removes_only_its_new_payload(self):
+        payload = self.root.parent / "request.json"
+        payload.write_text('{"private":"request"}')
+        case = self.case(payload=payload)
+        initial = list((self.root / "intake").rglob("*.json"))
+        s.configure_runtime(self.conn, {"max_tasks": 1})
+        with self.assertRaises(s.SwarmError):
+            s.add_case_signal(
+                self.root,
+                self.conn,
+                case["id"],
+                "source",
+                "event-1",
+                "reply",
+                None,
+                "Please review",
+                "ingress",
+                payload=payload,
+                wake=True,
+            )
+        self.assertEqual(list((self.root / "intake").rglob("*.json")), initial)
+
+    def test_case_payload_change_between_fingerprint_and_copy_is_rejected(self):
+        from swarmkit import cases
+
+        payload = self.root.parent / "request.json"
+        payload.write_text('{"revision":"before"}')
+        real_snapshot = cases.snapshot_case_payload
+
+        def changed_snapshot(*args, **kwargs):
+            payload.write_text('{"revision":"after"}')
+            return real_snapshot(*args, **kwargs)
+
+        with mock.patch.object(cases, "snapshot_case_payload", side_effect=changed_snapshot):
+            with self.assertRaisesRegex(s.SwarmError, "changed"):
+                self.case(payload=payload)
+        self.assertEqual(self.count("cases"), 0)
+
     def test_outer_transaction_can_rollback_a_complete_task_plan(self):
         self.conn.execute("BEGIN IMMEDIATE")
         self.task()
@@ -117,7 +162,8 @@ class TransactionTest(unittest.TestCase):
             with s.transaction(self.conn):
                 self.conn.execute("PRAGMA defer_foreign_keys=ON")
                 self.conn.execute(
-                    "INSERT INTO task_dependencies(task_id,depends_on) VALUES('missing-task','missing-dependency')")
+                    "INSERT INTO task_dependencies(task_id,depends_on) VALUES('missing-task','missing-dependency')"
+                )
         self.assertFalse(self.conn.in_transaction)
         self.assertEqual(self.count("task_dependencies"), 0)
 

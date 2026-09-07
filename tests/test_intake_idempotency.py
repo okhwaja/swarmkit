@@ -62,6 +62,14 @@ class IntakeIdempotencyTest(unittest.TestCase):
             wake=wake,
         )
 
+    def test_existing_case_retry_after_mission_cancel_returns_original(self):
+        case = self.case()
+        s.control_mission(self.conn, "cancel", "human", "Withdrawn")
+        again = self.case()
+        self.assertEqual(again["id"], case["id"])
+        self.assertFalse(again["created"])
+        self.assertEqual(again["status"], "CANCELLED")
+
     def test_identical_policy_retry_returns_same_plan_even_when_paused(self):
         first = self.apply()
         before = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]

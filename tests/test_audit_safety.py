@@ -67,6 +67,14 @@ class AuditSafetyTest(unittest.TestCase):
             audit.export_audit(self.root, self.output)
         self.assertTrue(audit.verify_audit(self.output)["ok"])
 
+    def test_unregistered_intake_payload_is_not_exported(self):
+        payload = self.root / "intake/orphan.json"
+        payload.write_text('{"private":"rolled-back request"}')
+        audit.export_audit(self.root, self.output)
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertNotIn("swarm-audit/intake/orphan.json", archive.namelist())
+        self.assertTrue(payload.exists())  # An audit does not clean the live workspace.
+
     def test_malformed_manifest_returns_problems_instead_of_crashing(self):
         for manifest in (
             {"files": [None]},

@@ -138,3 +138,13 @@ Baseline: main at 9587139, Swarmkit 0.7.1/schema 8, 71 tests, 6,839-line CLI/eng
   cancellation hiding an in-flight/unknown outcome. Added unified active-run/work
   queries, manager lease retirement, deterministic drain completion, and delivery
   reconciliation guards. Six targeted regressions cover these boundaries.
+
+- Saved local commit c9853a9 for lifecycle boundaries; 146 source/package tests passed.
+- Moved inquiry creation out of CLI routing into an atomic domain operation. A
+  failed quota/dependency check no longer reopens a completed case. Added two tests.
+- Reproduced payload fingerprint/copy races and leaked snapshots after failed
+  case policy/signal wakeups. Added scoped new-file cleanup, checked snapshot
+  identity, and removed a redundant uniqueness read under the write lock.
+- Existing case retries survive terminal mission state without reopening work.
+  Audit intake copies now select only canonical payload references. Seven added
+  tests cover these behaviors; all 153 source tests pass.

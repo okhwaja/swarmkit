@@ -160,6 +160,12 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
         runs = [dict(row) for row in conn.execute("SELECT * FROM agent_runs ORDER BY started_at")]
         cases = snapshot["cases"]
         summary = audit_summary(conn, snapshot)
+        intake_paths = [
+            row[0]
+            for row in conn.execute(
+                "SELECT payload_path FROM cases WHERE payload_path IS NOT NULL UNION SELECT payload_path FROM case_signals WHERE payload_path IS NOT NULL"
+            )
+        ]
     finally:
         conn.close()
 
@@ -186,11 +192,23 @@ def stage_private_audit(root, source_root, stage, include_artifacts=False, max_a
     package_root = PACKAGE_ROOT
     if (package_root / "guidance").exists():
         shutil.copytree(package_root / "guidance", stage / "guidance")
-    for name in ("prompts", "runs", "outbox", "intake"):
+    for name in ("prompts", "runs", "outbox"):
         if (source_root / name).exists():
             shutil.copytree(
                 source_root / name, stage / name, ignore=shutil.ignore_patterns("*.lock")
             )
+    # A crash or an outer caller's rollback may leave an unregistered snapshot.
+    # Only payloads referenced by this database snapshot belong in its audit.
+    for value in intake_paths:
+        path = Path(value)
+        try:
+            relative = path.resolve().relative_to((source_root / "intake").resolve())
+        except ValueError:
+            continue
+        if path.is_file():
+            target = stage / "intake" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
     audit_guide = textwrap.dedent(
         """\
         # How to review this swarm run

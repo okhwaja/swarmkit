@@ -281,3 +281,20 @@ Retrying the same signal returns the same task even if its description changes o
 the case is subsequently cancelled. Mentioning a signal in another task's prose
 does not count as handling it. New wakeups on explicitly cancelled cases remain
 rejected. Schema 9 reconstructs existing links from structured `CASE_WOKEN` events.
+
+### Atomic intake and inquiries
+
+Case creation, policy/task attachment, and their events commit together. Signal
+recording and its decision/wakeup also form one transaction. A changed payload
+between request fingerprinting and copying is rejected. Failed intake commands
+remove only the snapshots they created, preserving earlier case payloads.
+
+Asking a new question about a completed case reopens it only if its briefing task
+and links can be created successfully. New work clears the old completion summary.
+An identical case-open retry returns the existing case even after mission
+cancellation; it does not create new work or undo cancellation.
+
+SQLite and files cannot share a crash-atomic transaction. A killed process or a
+Python caller rolling back a larger outer transaction may leave unregistered
+payload snapshots. Audits include only intake files referenced by the frozen
+database, and do not delete live files or checkouts automatically.
