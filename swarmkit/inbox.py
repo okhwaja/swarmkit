@@ -38,6 +38,7 @@ WITH target_tasks(id) AS (
     UNION SELECT id FROM target_cases
     UNION SELECT id FROM case_signals WHERE case_id IN target_cases
     UNION SELECT id FROM effects WHERE task_id IN target_tasks
+    UNION SELECT id FROM commitments WHERE producer_task IN target_tasks OR followup_task IN target_tasks
 )
 """
 

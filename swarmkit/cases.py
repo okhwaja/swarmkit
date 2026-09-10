@@ -99,6 +99,21 @@ def link_case_task(conn, case_id, task_id, actor):
     conn.execute(
         "INSERT OR IGNORE INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, task_id)
     )
+    for obligation in conn.execute(
+        "SELECT * FROM commitments WHERE status='OPEN' AND (producer_task=? OR followup_task=?)",
+        (task_id, task_id),
+    ).fetchall():
+        other = (
+            obligation["followup_task"]
+            if obligation["producer_task"] == task_id
+            else obligation["producer_task"]
+        )
+        # Link both sides in this transaction so the obligation cannot straddle cases.
+        link_case_task(conn, case_id, other, actor)
+        conn.execute(
+            "UPDATE commitments SET workstream_id=? WHERE id=?",
+            (case["workstream_id"], obligation["id"]),
+        )
     now = utcnow()
     conn.execute(
         "UPDATE cases SET status='ACTIVE', closed_at=NULL, result_summary=NULL, completion_outcome=NULL, updated_at=? WHERE id=?",
@@ -719,6 +734,13 @@ def cancel_case(conn, case_id, actor, reason):
         raise SwarmError("Case cancellation requires a reason")
     if case["status"] == "CANCELLED":
         raise SwarmError("Case %s is already cancelled" % case_id)
+    from .commitments import cancel_commitment
+
+    for obligation in conn.execute(
+        "SELECT c.id,c.version FROM commitments c JOIN case_tasks ct ON ct.task_id=c.producer_task WHERE ct.case_id=? AND c.status='OPEN'",
+        (case_id,),
+    ).fetchall():
+        cancel_commitment(conn, obligation["id"], actor, obligation["version"], reason)
     now = utcnow()
     linked = [
         row[0] for row in conn.execute("SELECT task_id FROM case_tasks WHERE case_id=?", (case_id,))

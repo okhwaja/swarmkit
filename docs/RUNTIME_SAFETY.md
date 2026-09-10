@@ -653,3 +653,20 @@ versions remain rejected, and a failed migration rolls back the complete upgrade
 count runs out. The default 120 polls have 119 thirty-second pauses plus actual run
 time; this is not a fixed lifetime or an installed background service. An external
 supervisor must arrange subsequent wakes, including `WAITING_FOR_REVIEW` times.
+
+## Decision and delivery contracts (0.14.0)
+
+Schema 14 adds immutable structured decision briefs, delivery commitments,
+required producer handoffs, and append-only commitment records. Its sequential
+migration is transactional; legacy tasks and decisions retain their semantics.
+No historical prose becomes provider evidence or authority. See
+[decision briefs](DECISION_BRIEFS.md) and [delivery commitments](DELIVERY_COMMITMENTS.md).
+
+Commitment writes use current worker ownership, expected record versions, mission
+revision, and decision acknowledgements. Observations retain attempt provenance;
+old-revision results cannot satisfy a changed commitment. Manager creations and
+adoptions participate in staged publication. Mission amendments require explicit
+adoption; quiescence includes unfinished harness processes and uncertain effects.
+Signals are idempotent wake hints, not success. Cancellation never proves an
+external action failed and does not undo remote effects. Private audit snapshots
+include the new canonical records and events.

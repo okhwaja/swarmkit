@@ -410,7 +410,7 @@ c.close()
         schema.ensure_schema(self.conn)
         self.assertEqual(
             self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],
-            "13",
+            s.SCHEMA_VERSION,
         )
 
     def test_plan_edit_after_strict_commit_requires_another_commit(self):

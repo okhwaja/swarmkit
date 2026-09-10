@@ -133,6 +133,13 @@ def update_workstream(
         )
     ):
         raise SwarmError("No workstream update was supplied")
+    if (
+        next_status in {"DONE", "CANCELLED"}
+        and conn.execute(
+            "SELECT 1 FROM commitments WHERE workstream_id=? AND status='OPEN'", (workstream_id,)
+        ).fetchone()
+    ):
+        raise SwarmError("Resolve or explicitly cancel open delivery commitments first")
     if next_status == "DONE":
         remaining = conn.execute(
             """SELECT COUNT(*) AS n FROM task_workstreams tw JOIN tasks t ON t.id=tw.task_id
@@ -209,6 +216,13 @@ def link_task_workstream(conn, workstream_id, task_id, actor):
         raise SwarmError("Task and workstream belong to different missions")
     if workstream["status"] in {"DONE", "CANCELLED"} and task["status"] not in TERMINAL_TASK_STATES:
         raise SwarmError("Cannot link active task to terminal workstream %s" % workstream_id)
+    if conn.execute(
+        "SELECT 1 FROM commitments WHERE status='OPEN' AND (producer_task=? OR followup_task=?) AND (workstream_id IS NULL OR workstream_id!=?)",
+        (task_id, task_id, workstream_id),
+    ).fetchone():
+        raise SwarmError(
+            "Open delivery commitments retain their workstream; dispose/replan before moving tasks"
+        )
     case = conn.execute(
         "SELECT c.workstream_id FROM cases c JOIN case_tasks ct ON ct.case_id=c.id WHERE ct.task_id=?",
         (task_id,),
@@ -256,6 +270,7 @@ def add_task(
     ready,
     workstream_id=None,
     idempotency_key=None,
+    delivery_required=False,
 ):
     if not all(isinstance(value, str) and value.strip() for value in (title, description)):
         raise SwarmError("Task title and description must not be empty")
@@ -271,6 +286,7 @@ def add_task(
         raise SwarmError("Invalid task kind: %s" % kind)
     specification = json_dump(
         [title, description, kind, acceptance, depends_on, priority, ready, workstream_id]
+        + (["delivery_required"] if delivery_required else [])
     )
     if idempotency_key:
         existing = conn.execute(
@@ -315,6 +331,8 @@ def add_task(
         ),
     )
     stage_task(conn, task_id, actor)
+    if delivery_required:
+        conn.execute("INSERT INTO required_handoffs VALUES(?)", (task_id,))
     for dep in depends_on:
         conn.execute(
             "INSERT INTO task_dependencies(task_id, depends_on) VALUES(?,?)", (task_id, dep)
@@ -490,6 +508,9 @@ def checkpoint_task(conn, task_id, agent, summary, next_action, lease_seconds):
 
 @atomic_write
 def complete_task(conn, task_id, agent, result, verification, artifacts):
+    from .commitments import require_handoff
+
+    require_handoff(conn, task_id)
     row = task_row(conn, task_id)
     require_owner(row, agent)
     if unresolved_ack_count(conn, task_id):
@@ -516,6 +537,12 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
         raise SwarmError("At least one non-empty verification statement is required")
     policy = policy_context_for_task(conn, task_id)
     completion = policy["stage"].get("completion", {}) if policy and policy.get("stage") else {}
+    if completion.get("commitment_satisfied"):
+        obligations = conn.execute(
+            "SELECT status FROM commitments WHERE followup_task=?", (task_id,)
+        ).fetchall()
+        if not obligations or any(r[0] != "SATISFIED" for r in obligations):
+            raise SwarmError("Policy stage requires a satisfied delivery commitment")
     minimum_artifacts = completion.get("minimum_artifacts", 0)
     if len(artifacts) < minimum_artifacts:
         raise SwarmError(
@@ -606,7 +633,19 @@ def cancel_task(conn, task_id, actor, reason):
 
 
 @atomic_write
-def block_task(conn, task_id, agent, kind, question, recommendation, options):
+def block_task(conn, task_id, agent, kind, question, recommendation, options, brief=None):
+    from .decision_briefs import validate_brief, brief_mode
+
+    if brief is not None:
+        brief = validate_brief(brief, options)
+        recommendation = (
+            (brief["recommended_option"] + ": ") if brief["recommended_option"] else ""
+        ) + brief["recommendation_rationale"]
+    elif (
+        kind in {"human_decision", "missing_access", "safety_stop"}
+        and brief_mode(conn) == "required"
+    ):
+        raise SwarmError("This mission requires a structured decision --brief")
     if not question.strip():
         raise SwarmError("A blocker requires a non-empty question")
     if kind not in VALID_BLOCKER_KINDS:
@@ -652,6 +691,17 @@ def block_task(conn, task_id, agent, kind, question, recommendation, options):
             "blocks": [task_id],
         },
     )
+    if brief is not None:
+        conn.execute("INSERT INTO decision_briefs VALUES(?,?)", (decision_id, json_dump(brief)))
+        add_event(
+            conn,
+            row["mission_id"],
+            "decision",
+            decision_id,
+            "DECISION_BRIEF_RECORDED",
+            agent,
+            brief,
+        )
     end_attempt(conn, task_id, "WAITING_HUMAN", question)
     reconcile_conn(conn)
     return decision_id
@@ -773,6 +823,8 @@ def complete_mission(conn, evidence, actor, shutdown_service=False, outcome=None
         raise SwarmError(
             "Cannot complete mission while %d workstreams are non-terminal" % active_workstreams
         )
+    if conn.execute("SELECT 1 FROM commitments WHERE status='OPEN'").fetchone():
+        raise SwarmError("Cannot complete mission with open delivery commitments")
     if not evidence.strip():
         raise SwarmError("Mission completion requires evidence")
     conn.execute(
@@ -780,7 +832,9 @@ def complete_mission(conn, evidence, actor, shutdown_service=False, outcome=None
         (evidence, utcnow(), m["id"]),
     )
     if outcome is None:
-        has_cancelled_work = conn.execute("SELECT 1 FROM tasks WHERE status='CANCELLED'").fetchone()
+        has_cancelled_work = conn.execute(
+            "SELECT 1 FROM tasks WHERE status='CANCELLED' UNION ALL SELECT 1 FROM commitments WHERE status='CANCELLED'"
+        ).fetchone()
         outcome = "PARTIAL" if has_cancelled_work else "SUCCEEDED"
     conn.execute("UPDATE runtime_state SET outcome=? WHERE id=1", (outcome,))
     add_event(
@@ -886,6 +940,13 @@ def control_mission(conn, action, actor, reason):
             "UPDATE workstreams SET status='CANCELLED',completion_outcome='CANCELLED',updated_at=? WHERE status NOT IN ('DONE','CANCELLED')",
             (utcnow(),),
         )
+    if action in {"cancel", "abandon"}:
+        from .commitments import cancel_commitment
+
+        for commitment in conn.execute(
+            "SELECT id,version FROM commitments WHERE status='OPEN'"
+        ).fetchall():
+            cancel_commitment(conn, commitment["id"], actor, commitment["version"], reason)
     outcome = "CANCELLED" if action == "cancel" else ("ESCALATED" if action == "abandon" else None)
     conn.execute(
         "UPDATE runtime_state SET desired_state=?,outcome=?,reason=? WHERE id=1",

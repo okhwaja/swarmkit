@@ -20,6 +20,8 @@ release metadata agree in the same commit.
 | `docs/RESPONSIVE_ORCHESTRATION.md` | Manager triggers, findings, external waits, wakeups, and responsive scheduling |
 | `docs/RESPONSIVE_ORCHESTRATION_PRODUCT_SPEC.md` | Responsive-orchestration product intent and acceptance scenarios |
 | `docs/RUNTIME_SAFETY.md` | Runtime recovery, lifecycle, effects, evidence, limits, and migration contract |
+| `docs/DECISION_BRIEFS.md` | Structured decision input, compatibility, and presentation contract |
+| `docs/DELIVERY_COMMITMENTS.md` | Delivery obligation lifecycle, handoff, observations, and wake contract |
 | `docs/CLI_REFERENCE.md` | Generated exact commands, arguments, choices, and defaults |
 | `guidance/*.md` | Normative behavior for launched roles |
 | `CHANGELOG.md` | User-visible changes, versions, and migrations |

@@ -16,10 +16,10 @@ import subprocess
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CLI_PATH = PACKAGE_ROOT / "swarmctl.py"
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 
 
-SCHEMA_VERSION = "13"
+SCHEMA_VERSION = "14"
 
 
 ACTIVE_TASK_STATES = {"CLAIMED", "RUNNING", "VERIFYING"}

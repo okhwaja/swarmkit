@@ -17,6 +17,8 @@ import generate_cli_docs  # noqa: E402
 
 
 REQUIRED_DOCUMENTS = [
+    "docs/DECISION_BRIEFS.md",
+    "docs/DELIVERY_COMMITMENTS.md",
     "docs/CONDITIONAL_GRANTS.md",
     "AGENTS.md",
     "docs/RUNTIME_SAFETY.md",
@@ -39,6 +41,7 @@ REQUIRED_DOCUMENTS = [
 ]
 
 REQUIRED_GUIDANCE = [
+    "decision-brief.md",
     "HARNESS_SYSTEM_PROMPT.md",
     "manager.md",
     "worker.md",

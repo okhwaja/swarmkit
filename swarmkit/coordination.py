@@ -791,6 +791,9 @@ def reconcile_conn(conn, actor="reconciler", at=None):
         changed.append((row["id"], "EXPIRED"))
 
     changed.extend(reconcile_external_waits(conn, actor, at=now))
+    from .commitments import reconcile_commitments
+
+    reconcile_commitments(conn, actor, at=now)
 
     candidates = conn.execute(
         """SELECT t.id,t.mission_id,t.status,
@@ -888,14 +891,30 @@ def reconcile_cases(conn, actor="reconciler"):
             d.open_questions,d.needs_human FROM active_cases c
             LEFT JOIN task_counts t ON t.case_id=c.id LEFT JOIN decision_counts d ON d.case_id=c.id"""
     ).fetchall()
+    delivery_cases = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT ct.case_id,COUNT(*) FROM commitments c JOIN case_tasks ct ON ct.task_id=c.producer_task WHERE c.status='OPEN' GROUP BY ct.case_id"
+        )
+    }
+    cancelled_delivery_cases = {
+        r[0]
+        for r in conn.execute(
+            "SELECT ct.case_id FROM commitments c JOIN case_tasks ct ON ct.task_id=c.producer_task WHERE c.status='CANCELLED'"
+        )
+    }
     for case in cases:
         outcome = None
-        if case["total"] and not case["remaining"]:
+        if delivery_cases.get(case["id"]) and not case["remaining"]:
+            status = "WAITING_EXTERNAL"
+        elif case["total"] and not case["remaining"]:
             terminal_states = {
                 state
                 for state, count in (("DONE", case["done"]), ("CANCELLED", case["cancelled"]))
                 if count
             }
+            if case["id"] in cancelled_delivery_cases:
+                terminal_states.add("CANCELLED")
             outcome = completion_outcome(terminal_states)
             status = "DONE"
         elif case["needs_human"]:
@@ -1010,6 +1029,12 @@ def commit_review(conn, review_id, agent, dispositions, summary):
             "triggers": triggers,
             "dispositions": dispositions,
             "summary": summary,
+            "staged_commitment_ids": [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM commitments WHERE staged_review=? ORDER BY id", (review_id,)
+                )
+            ],
             "staged_task_ids": [
                 r[0]
                 for r in conn.execute(

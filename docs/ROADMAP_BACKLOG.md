@@ -1,6 +1,6 @@
 # Roadmap implementation status and backlog
 
-Reviewed against the approved P0/P1 roadmap, with the 0.13.0 coordination update
+Reviewed against the approved P0/P1 roadmap, with the 0.14.0 decision/delivery update
 on 2026-09-10 UTC. P2 remains deferred. Releases 0.7–0.11 add tested runtime
 slices across most of the active roadmap; this
 is not a claim that every capability or persistent-coworker release gate is done.
@@ -105,3 +105,20 @@ These choices do not block the shipped generic coordination mechanisms. Existing
 owner questions about broader automated approval, provider integration, metering,
 and OS autostart remain open. A full persistent-coworker release still requires
 provider-specific end-to-end fault-injection coverage.
+
+## U11/U12 delivered in 0.14.0
+
+Shipped: structured decision briefs with legacy/required modes and shared rendering;
+continuing-permission role guidance; a provider-neutral author-to-merge pack and
+bounded reference observation checker; durable commitments, required handoffs,
+staged publication, exact-scope observations, signal/wait fencing, explicit adoption,
+completion integration, and case/workstream/status/audit visibility. Tests include
+approval with comments, revision-changing repair, grant-bound merge, and a process
+failure after the fake provider applied the action.
+
+As agreed, proposed-task external-condition gates remain deferred for downstream
+work. Existing continuation tasks already support repeated external waits. A real
+provider adapter, reviewer/approval rules, permitted grant issuer, named babysitting
+skill, credentials, and host wake configuration remain integration choices. Core
+and fake-provider tests do not claim these production integrations are installed
+or validated. Generalized artifact lifecycles are outside this release.

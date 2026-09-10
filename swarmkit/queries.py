@@ -175,6 +175,13 @@ def review_details(conn, review_id):
             "SELECT task_id FROM staged_tasks WHERE review_id=? ORDER BY task_id", (review_id,)
         )
     ]
+    result["staged_commitments"] = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id,title,producer_task,followup_task FROM commitments WHERE staged_review=? ORDER BY id",
+            (review_id,),
+        )
+    ]
     if commit:
         result["commit"]["dispositions"] = json_load(result["commit"].pop("dispositions_json"), [])
     return result
@@ -233,6 +240,15 @@ def signal_dict(row):
 
 def case_dict(conn, row):
     data = dict(row)
+    from .commitments import commitment_dict
+
+    data["commitments"] = [
+        commitment_dict(conn, r)
+        for r in conn.execute(
+            "SELECT c.* FROM commitments c JOIN case_tasks ct ON ct.task_id=c.producer_task WHERE ct.case_id=? ORDER BY c.rowid",
+            (row["id"],),
+        )
+    ]
     data["metadata"] = json_load(data.pop("metadata_json"), {})
     data["payload_intact"] = case_payload_intact(
         data["payload_path"], data["payload_sha256"], data["payload_size_bytes"]
@@ -267,6 +283,10 @@ def case_dict(conn, row):
 
 def case_summary(conn, row):
     case = dict(row)
+    case["open_commitment_count"] = conn.execute(
+        "SELECT COUNT(*) FROM commitments c JOIN case_tasks ct ON ct.task_id=c.producer_task WHERE ct.case_id=? AND c.status='OPEN'",
+        (row["id"],),
+    ).fetchone()[0]
     decisions = [
         dict(item)
         for item in conn.execute(
@@ -297,6 +317,7 @@ def case_summary(conn, row):
         "workstream_id": case["workstream_id"],
         "policy_application_id": case["policy_application_id"],
         "result_summary": case["result_summary"],
+        "open_commitment_count": case["open_commitment_count"],
         "task_counts": task_counts,
         "open_decisions": decisions,
         "updated_at": case["updated_at"],
@@ -368,6 +389,12 @@ def task_dict(conn, row, include_responsive_history=True):
             "SELECT * FROM acceptance_revisions WHERE task_id=? ORDER BY revision", (row["id"],)
         )
     ]
+    from .commitments import list_commitments
+
+    data["commitments"] = list_commitments(conn, row["id"])
+    data["delivery_required"] = bool(
+        conn.execute("SELECT 1 FROM required_handoffs WHERE task_id=?", (row["id"],)).fetchone()
+    )
     data["policy"] = policy_context_for_task(conn, row["id"])
     return data
 
@@ -375,6 +402,9 @@ def task_dict(conn, row, include_responsive_history=True):
 def decision_dict(conn, row, at=None):
     data = dict(row)
     data["options"] = json_load(data.pop("options_json"), [])
+    from .decision_briefs import get_brief
+
+    data["brief"] = get_brief(conn, row["id"])
     end = (
         data["decided_at"]
         if data["status"] == "RESOLVED"
@@ -497,8 +527,10 @@ def mission_snapshot(conn):
         delivery_dict(conn, r) for r in conn.execute("SELECT * FROM deliveries ORDER BY created_at")
     ]
     from .attention import decision_attention
+    from .commitments import list_commitments
 
     return {
+        "commitments": list_commitments(conn),
         "observed_at": observed_at,
         "attention": decision_attention(conn, observed_at),
         "mission": m,
@@ -521,6 +553,8 @@ def mission_snapshot(conn):
 
 @consistent_read
 def explain_state(conn):
+    from .commitments import list_commitments
+
     state = runtime_state(conn)
     reviews = [
         manager_review_dict(r)
@@ -571,6 +605,7 @@ def explain_state(conn):
         )
     return {
         "runtime": state,
+        "commitments": list_commitments(conn),
         "manager_reviews": reviews,
         "tasks": tasks,
         "uncertain_effects": [dict(r) for r in uncertain_effects(conn)],

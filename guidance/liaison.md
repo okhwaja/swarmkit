@@ -21,3 +21,9 @@ answer revision preserves its structured choice; replacing or clearing it must
 be explicit. Do not answer an aging decision automatically. Notifications require
 an approved extension, route, and recipients. A review retry limit is an actionable
 failure to inspect and repair, not a request to keep invoking the same manager.
+
+Present the structured decision brief with background and consequences before
+supporting logs. Distinguish the owner's continuing permission from external
+review approval and technical readiness. Never invent missing authority or imply
+that a timeout supplied consent. The shared reader contract is included in your
+prompt; retrieve the full decision if context is shortened.

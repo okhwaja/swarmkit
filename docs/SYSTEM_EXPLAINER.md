@@ -292,3 +292,20 @@ current decisions and external effects. Permission enforcement and provider
 execution remain outside Swarmkit. See [runtime safety](RUNTIME_SAFETY.md),
 [responsive orchestration](RESPONSIVE_ORCHESTRATION.md), and
 [conditional grants](CONDITIONAL_GRANTS.md) for the operational contracts.
+
+## Readable decisions and delivery responsibility (0.14.0)
+
+Structured [decision briefs](DECISION_BRIEFS.md) preserve exact option values
+while giving each option readable context, consequences, and risks. They share
+one board/report rendering contract and leave detailed evidence after the choice.
+Legacy input remains compatible; new integrations can explicitly require briefs.
+
+A [delivery commitment](DELIVERY_COMMITMENTS.md) survives the producing task and
+its follow-up attempts. It records a provider object, contracted revision/check,
+responsible scope, and durable wake schedule. The producer's required handoff is
+validated before completion. Finishing or cancelling a task cannot erase an open
+obligation; case/workstream/mission completion accounts for it. Observations and
+signals have different roles: a signal wakes verification, while a trusted matching
+provider observation can establish landing. Provider execution and semantic checks
+stay in the harness. The author-to-merge pack demonstrates this lifecycle using
+existing tasks and waits; proposed-task external-condition gates remain deferred.

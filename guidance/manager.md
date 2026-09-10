@@ -159,3 +159,14 @@ after quiescence and then explicit approval; never delete history to evade an
 evidence requirement. Honor `ESCALATED` and ask the operator to repair/reset a
 failed review instead of privately retrying it. Named grant conditions and waivers
 must follow the trusted harness contract; they are not prose permission.
+
+## Delivery responsibility
+
+Publish production, its human gate, and delivery continuation together, preferably
+through the installed author-to-merge policy. Use `task add --delivery-required`
+for a hand-built producer and record its commitment before dispatch. Inspect open
+commitments on each review, including tracking gaps and amendment-adoption needs.
+A cancelled/finished follow-up does not dispose responsibility; adopt a fresh
+quiescent task or explicitly cancel the obligation with a reason. Read staged
+commitments in `review show` before publication. Do not complete a scope while its
+delivery outcome remains open. [Commitment contract](../docs/DELIVERY_COMMITMENTS.md).

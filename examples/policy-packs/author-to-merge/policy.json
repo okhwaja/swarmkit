@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "id": "author-to-merge",
+  "version": "1.0.0",
+  "name": "Author through verified landing",
+  "description": "Create a change, obtain human release, and retain delivery responsibility through review, repairs, and verified landing.",
+  "when_to_use": "Use for an authorized PR/CL authoring workflow with human release and subsequent conditional merge, when the harness supplies provider tools and a bounded babysitting skill.",
+  "guidance": "GUIDANCE.md",
+  "variables": {
+    "goal": {
+      "required": true
+    },
+    "provider": {
+      "required": true
+    },
+    "environment": {
+      "required": true
+    },
+    "babysit_skill": {
+      "default": "babysit-change"
+    }
+  },
+  "stages": [
+    {
+      "id": "author",
+      "title": "Author {goal}",
+      "description": "Implement and verify {goal}. Create the authorized provider object, bind the delivery commitment to its exact reference/revision, and complete the producer handoff.",
+      "kind": "implementation",
+      "acceptance": [
+        "Requested change is tested and uploaded",
+        "Provider reference and revision are bound to the published delivery commitment"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "release",
+      "title": "Human release for {goal}",
+      "description": "Present a structured U11 brief and obtain the human's scoped release for review and continuing remediation/conditional merge. Link the decision to the continuation before completing this gate.",
+      "kind": "briefing",
+      "acceptance": [
+        "Human receives background, option consequences, authority scope, and separated evidence",
+        "The versioned human answer authorizes the chosen continuation and governs its task"
+      ],
+      "depends_on": [
+        "author"
+      ]
+    },
+    {
+      "id": "continue",
+      "title": "Carry {goal} through verified landing",
+      "description": "Read the current decision and commitment. Use {babysit_skill} for bounded review/comment/CI/conflict handling through {provider}. Wait durably between checks. Record trusted evidence and a scoped merge effect; complete only after the commitment is satisfied by provider read-back in {environment}.",
+      "kind": "implementation",
+      "acceptance": [
+        "Every comment is substantively addressed under the reviewed workflow",
+        "Applicable reviewer approval and exact-revision checks permit merge",
+        "All provider effects are reconciled and landing is verified",
+        "The delivery commitment is SATISFIED"
+      ],
+      "depends_on": [
+        "release"
+      ],
+      "completion": {
+        "commitment_satisfied": true
+      }
+    }
+  ],
+  "delivery": {
+    "producer_stage": "author",
+    "followup_stage": "continue",
+    "title": "Land {goal}",
+    "provider": "{provider}",
+    "environment": "{environment}",
+    "terminal_check": "change-landed",
+    "responsible": "mission-manager",
+    "check_seconds": 900,
+    "deadline_seconds": 86400
+  }
+}

@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.13.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.14.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
@@ -11,63 +11,67 @@ Coordinate agent work across missions, decisions, waits, and restarts.
 New here? Run swarmctl guide for the agent operating workflow.
 
 optional arguments:
-  -h, --help     show this help message and exit
-  --root ROOT    Swarm workspace (default: $SWARM_ROOT or .swarm)
-  --version      show program's version number and exit
+  -h, --help         show this help message and exit
+  --root ROOT        Swarm workspace (default: $SWARM_ROOT or .swarm)
+  --version          show program's version number and exit
 
 commands:
   COMMAND
-    help         Explain any command, including nested commands
-    guide        Read bundled workflow documentation without a mission or
-                 network
-    install      Install a user-local swarmctl launcher
-    pause        Set durable mission lifecycle state
-    drain        Set durable mission lifecycle state
-    resume       Set durable mission lifecycle state
-    cancel       Set durable mission lifecycle state
-    abandon      Set durable mission lifecycle state
-    recover      Recover stopped harnesses without rerunning uncertain effects
-    why          Explain blocked work, attempts, limits, and uncertain effects
-    configure    Set persistent runtime limits and evidence enforcement
-    amend        Version a paused mission and require explicit replanning
-    grant        Record scoped conditional authority enforced by trusted
-                 adapters
-    effect       Track intent and receipts for external actions
-    resource     Lease exclusive resources with attempt fencing
-    evidence     Bind result files to criteria, revision, and environment
-    review-commit
-                 Record a semantic disposition for every manager trigger
-    review       Inspect manager review batches and semantic commits
-    workspace    Create, register, or inspect task-specific isolated checkouts
-    serve        Poll durable service state with bounded restartable scheduler
-                 runs
-    audit-verify
-                 Verify every manifest file in an audit ZIP
-    init         Create a mission workspace
-    demo         Run a synthetic example without configuring a harness
-    status       Show the current canonical snapshot
-    board        Regenerate the Markdown board
-    report       Generate the executive workstream and action report
-    reconcile    Apply deterministic readiness and lease transitions
-    doctor       Check state invariants
-    setup-check  Validate harness integration without launching an agent
-    ask          Request an evidence-backed explanation of recorded work
-    policy       Install and apply reusable workflow policy packs
-    case         Manage idempotent work requests for persistent services
-    extension    Install delivery adapters for external systems
-    delivery     Manage the durable external-delivery outbox
-    workstream   Manage executive-level workstreams
-    task         Manage tasks
-    decision     Manage durable decisions
-    finding      Elevate and disposition mission-relevant findings
-    wait         Inspect and signal durable external waits
-    fact         Record sourced, time-bounded operational facts
-    inbox        Read a page of events since an agent cursor
-    prompt       Generate a grounded role prompt
-    dispatch     Invoke the configured third-party harness
-    run          Run manager/worker cycles through the configured harness
-    mission      Manage mission lifecycle
-    export       Create a reviewable audit ZIP
+    help             Explain any command, including nested commands
+    guide            Read bundled workflow documentation without a mission or
+                     network
+    install          Install a user-local swarmctl launcher
+    decision-contract
+                     Inspect/set structured human decision requirements
+    commitment       Track delivery obligations independently of tasks
+    pause            Set durable mission lifecycle state
+    drain            Set durable mission lifecycle state
+    resume           Set durable mission lifecycle state
+    cancel           Set durable mission lifecycle state
+    abandon          Set durable mission lifecycle state
+    recover          Recover stopped harnesses without rerunning uncertain
+                     effects
+    why              Explain blocked work, attempts, limits, and uncertain
+                     effects
+    configure        Set persistent runtime limits and evidence enforcement
+    amend            Version a paused mission and require explicit replanning
+    grant            Record scoped conditional authority enforced by trusted
+                     adapters
+    effect           Track intent and receipts for external actions
+    resource         Lease exclusive resources with attempt fencing
+    evidence         Bind result files to criteria, revision, and environment
+    review-commit    Record a semantic disposition for every manager trigger
+    review           Inspect manager review batches and semantic commits
+    workspace        Create, register, or inspect task-specific isolated
+                     checkouts
+    serve            Poll durable service state with bounded restartable
+                     scheduler runs
+    audit-verify     Verify every manifest file in an audit ZIP
+    init             Create a mission workspace
+    demo             Run a synthetic example without configuring a harness
+    status           Show the current canonical snapshot
+    board            Regenerate the Markdown board
+    report           Generate the executive workstream and action report
+    reconcile        Apply deterministic readiness and lease transitions
+    doctor           Check state invariants
+    setup-check      Validate harness integration without launching an agent
+    ask              Request an evidence-backed explanation of recorded work
+    policy           Install and apply reusable workflow policy packs
+    case             Manage idempotent work requests for persistent services
+    extension        Install delivery adapters for external systems
+    delivery         Manage the durable external-delivery outbox
+    workstream       Manage executive-level workstreams
+    task             Manage tasks
+    decision         Manage durable decisions
+    finding          Elevate and disposition mission-relevant findings
+    wait             Inspect and signal durable external waits
+    fact             Record sourced, time-bounded operational facts
+    inbox            Read a page of events since an agent cursor
+    prompt           Generate a grounded role prompt
+    dispatch         Invoke the configured third-party harness
+    run              Run manager/worker cycles through the configured harness
+    mission          Manage mission lifecycle
+    export           Create a reviewable audit ZIP
 
 Start here:
   swarmctl guide                 Read the agent operating guide (offline)
@@ -324,6 +328,184 @@ optional arguments:
   --actor ACTOR
 ```
 
+## `swarmctl commitment`
+
+```text
+usage: swarmctl commitment [-h]
+                           {add,list,show,bind,observe,wait,signal,adopt,cancel}
+                           ...
+
+positional arguments:
+  {add,list,show,bind,observe,wait,signal,adopt,cancel}
+    add                 Record a required producer handoff and delivery scope
+                        atomically
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl commitment add`
+
+```text
+usage: swarmctl commitment add [-h] --specification SPECIFICATION
+                               --idempotency-key IDEMPOTENCY_KEY
+                               [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --specification SPECIFICATION
+                        JSON specification file
+  --idempotency-key IDEMPOTENCY_KEY
+  --actor ACTOR
+```
+
+## `swarmctl commitment adopt`
+
+```text
+usage: swarmctl commitment adopt [-h] --expected-version EXPECTED_VERSION
+                                 --idempotency-key IDEMPOTENCY_KEY --actor
+                                 ACTOR --followup-task FOLLOWUP_TASK --reason
+                                 REASON
+                                 commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --expected-version EXPECTED_VERSION
+  --idempotency-key IDEMPOTENCY_KEY
+  --actor ACTOR
+  --followup-task FOLLOWUP_TASK
+  --reason REASON
+```
+
+## `swarmctl commitment bind`
+
+```text
+usage: swarmctl commitment bind [-h] --expected-version EXPECTED_VERSION
+                                --task TASK --agent AGENT --idempotency-key
+                                IDEMPOTENCY_KEY --external-ref EXTERNAL_REF
+                                --revision REVISION
+                                commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --expected-version EXPECTED_VERSION
+  --task TASK
+  --agent AGENT
+  --idempotency-key IDEMPOTENCY_KEY
+  --external-ref EXTERNAL_REF
+  --revision REVISION
+```
+
+## `swarmctl commitment cancel`
+
+```text
+usage: swarmctl commitment cancel [-h] --expected-version EXPECTED_VERSION
+                                  --actor ACTOR --reason REASON
+                                  commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --expected-version EXPECTED_VERSION
+  --actor ACTOR
+  --reason REASON
+```
+
+## `swarmctl commitment list`
+
+```text
+usage: swarmctl commitment list [-h] [--task TASK]
+
+optional arguments:
+  -h, --help   show this help message and exit
+  --task TASK
+```
+
+## `swarmctl commitment observe`
+
+```text
+usage: swarmctl commitment observe [-h] --expected-version EXPECTED_VERSION
+                                   --task TASK --agent AGENT --idempotency-key
+                                   IDEMPOTENCY_KEY --observation OBSERVATION
+                                   commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --expected-version EXPECTED_VERSION
+  --task TASK
+  --agent AGENT
+  --idempotency-key IDEMPOTENCY_KEY
+  --observation OBSERVATION
+                        Trusted provider observation JSON file
+```
+
+## `swarmctl commitment show`
+
+```text
+usage: swarmctl commitment show [-h] commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+```
+
+## `swarmctl commitment signal`
+
+```text
+usage: swarmctl commitment signal [-h] --actor ACTOR --source SOURCE
+                                  --external-id EXTERNAL_ID --external-ref
+                                  EXTERNAL_REF [--note NOTE]
+                                  commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --actor ACTOR
+  --source SOURCE
+  --external-id EXTERNAL_ID
+  --external-ref EXTERNAL_REF
+  --note NOTE
+```
+
+## `swarmctl commitment wait`
+
+```text
+usage: swarmctl commitment wait [-h] --expected-version EXPECTED_VERSION
+                                --task TASK --agent AGENT --idempotency-key
+                                IDEMPOTENCY_KEY
+                                [--next-check-at NEXT_CHECK_AT] --deadline
+                                DEADLINE [--signal-expected]
+                                commitment_id
+
+positional arguments:
+  commitment_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --expected-version EXPECTED_VERSION
+  --task TASK
+  --agent AGENT
+  --idempotency-key IDEMPOTENCY_KEY
+  --next-check-at NEXT_CHECK_AT
+  --deadline DEADLINE
+  --signal-expected
+```
+
 ## `swarmctl configure`
 
 ```text
@@ -480,6 +662,18 @@ positional arguments:
 
 optional arguments:
   -h, --help   show this help message and exit
+```
+
+## `swarmctl decision-contract`
+
+```text
+usage: swarmctl decision-contract [-h] [--mode {legacy,required}]
+                                  [--actor ACTOR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --mode {legacy,required}
+  --actor ACTOR
 ```
 
 ## `swarmctl delivery`
@@ -1796,8 +1990,9 @@ optional arguments:
 ## `swarmctl task add`
 
 ```text
-usage: swarmctl task add [-h] [--idempotency-key IDEMPOTENCY_KEY] --title
-                         TITLE --description DESCRIPTION --kind
+usage: swarmctl task add [-h] [--idempotency-key IDEMPOTENCY_KEY]
+                         [--delivery-required] --title TITLE --description
+                         DESCRIPTION --kind
                          {briefing,discovery,implementation,verification}
                          --acceptance ACCEPTANCE [--depends-on DEPENDS_ON]
                          [--workstream WORKSTREAM] [--priority PRIORITY]
@@ -1806,6 +2001,8 @@ usage: swarmctl task add [-h] [--idempotency-key IDEMPOTENCY_KEY] --title
 optional arguments:
   -h, --help            show this help message and exit
   --idempotency-key IDEMPOTENCY_KEY
+  --delivery-required   Require a bound delivery commitment before production
+                        completion
   --title TITLE
   --description DESCRIPTION
   --kind {briefing,discovery,implementation,verification}
@@ -1856,7 +2053,7 @@ optional arguments:
 ```text
 usage: swarmctl task block [-h] --agent AGENT --kind
                            {external_dependency,human_decision,missing_access,resource_conflict,safety_stop,technical_failure}
-                           --question QUESTION
+                           --question QUESTION [--brief BRIEF]
                            [--recommendation RECOMMENDATION] [--option OPTION]
                            task_id
 
@@ -1868,6 +2065,8 @@ optional arguments:
   --agent AGENT
   --kind {external_dependency,human_decision,missing_access,resource_conflict,safety_stop,technical_failure}
   --question QUESTION
+  --brief BRIEF         JSON decision brief file; exact option values stay in
+                        --option
   --recommendation RECOMMENDATION
   --option OPTION
 ```

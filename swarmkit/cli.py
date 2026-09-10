@@ -131,6 +131,9 @@ from .workspaces import create_workspace, register_workspace, reconcile_workspac
 
 
 def add_runtime_cli(sub):
+    from .contracts_cli import add_contracts_cli
+
+    add_contracts_cli(sub)
     for name in ("pause", "drain", "resume", "cancel", "abandon"):
         item = sub.add_parser(name, help="Set durable mission lifecycle state")
         item.add_argument("--reason", required=True)
@@ -905,6 +908,11 @@ def parser():
     amend_task.add_argument("--actor", default="human")
     add = task_sub.add_parser("add")
     add.add_argument("--idempotency-key")
+    add.add_argument(
+        "--delivery-required",
+        action="store_true",
+        help="Require a bound delivery commitment before production completion",
+    )
     add.add_argument("--title", required=True)
     add.add_argument("--description", required=True)
     add.add_argument("--kind", choices=sorted(VALID_TASK_KINDS), required=True)
@@ -942,6 +950,9 @@ def parser():
     block.add_argument("--agent", required=True)
     block.add_argument("--kind", choices=sorted(VALID_BLOCKER_KINDS), required=True)
     block.add_argument("--question", required=True)
+    block.add_argument(
+        "--brief", help="JSON decision brief file; exact option values stay in --option"
+    )
     block.add_argument("--recommendation")
     block.add_argument("--option", action="append", default=[])
     wait_external = task_sub.add_parser("wait-external")
@@ -1162,6 +1173,10 @@ def main(argv=None):
             result = verify_audit(args.archive)
             print_json(result)
             return 0 if result["ok"] else 2
+        from .contracts_cli import handle_contracts_cli
+
+        if handle_contracts_cli(root, args):
+            return 0
         if handle_runtime_cli(root, args):
             return 0
         if args.command == "init":
@@ -1578,6 +1593,7 @@ def main(argv=None):
                         args.ready,
                         args.workstream,
                         args.idempotency_key,
+                        args.delivery_required,
                     )
                     print_json({"task_id": task_id})
                 elif args.task_command == "amend":
@@ -1637,6 +1653,7 @@ def main(argv=None):
                         args.question,
                         args.recommendation,
                         args.option,
+                        json_load(Path(args.brief).read_text()) if args.brief else None,
                     )
                     print_json(
                         {"task_id": args.task_id, "status": "BLOCKED", "decision_id": decision_id}

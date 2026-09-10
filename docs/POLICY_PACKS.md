@@ -244,3 +244,25 @@ policy-owned task cannot use `task amend` to override its reviewed acceptance
 criteria; use explicit policy-plan replacement so the manifest and resulting tasks
 stay consistent. Conditional grants are separate exact-scope authority records,
 not automatic risk classification; see [conditional grants](CONDITIONAL_GRANTS.md).
+
+## Delivery handoffs in a policy (0.14.0)
+
+An optional top-level `delivery` object creates one commitment atomically with
+the policy graph. Its exact fields are `producer_stage`, `followup_stage`, `title`,
+`provider`, `environment`, `terminal_check`, `responsible`, `check_seconds`, and
+`deadline_seconds`. Stage references name distinct existing stages. Text fields
+may use declared variables; intervals are positive integers and the check must
+not exceed the deadline. The producer is marked as requiring a bound handoff.
+
+The [author-to-merge example](../examples/policy-packs/author-to-merge/GUIDANCE.md)
+shows authoring, an explicit human release, and a resumable delivery continuation.
+Its commitment is initially unbound; the author binds the actual provider reference
+and revision before completing. Policy retries preserve one graph and commitment;
+manager review publishes both together. This does not add provider permission or
+an arbitrary workflow expression language. See [delivery commitments](DELIVERY_COMMITMENTS.md)
+and [harness integration](HARNESS_INTEGRATION.md#author-to-merge-integration-0140).
+
+A stage may require `completion.commitment_satisfied: true`. Completion then
+requires at least one linked follow-up commitment and all such records SATISFIED.
+The author-to-merge continuation uses this deterministic gate in addition to task
+evidence; a task result saying “green” cannot finish that stage before landing.

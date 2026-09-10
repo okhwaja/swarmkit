@@ -23,3 +23,8 @@ Performance and port templates include parallel stages and an explicit integrati
 owner followed by fresh verification. Set exact revision/environment evidence
 contracts before claiming the generated tasks. These templates do not configure
 provider credentials, approve risky actions, or install background services.
+
+`author-to-merge` adds a producer, human release gate, and delivery continuation
+with an atomically created commitment. Supply provider/environment variables and
+the harness's bounded babysitting skill. See its GUIDANCE.md and the
+[commitment contract](../../docs/DELIVERY_COMMITMENTS.md).

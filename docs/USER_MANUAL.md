@@ -304,3 +304,18 @@ explicit notification route with an installed delivery extension. No destination
 is selected automatically. If manager retries stop, inspect the recorded failure,
 repair it, and explicitly reset the review. A stopped service may need another
 scheduled wake; polling exhaustion is visible in its result.
+
+## Carry a change through review and merge
+
+Ask for the whole outcome: “After I release this change for review, address every
+comment, fix ordinary CI failures and conflicts, and merge when approved and ready.”
+Your release decision should explain that continuing permission and its limits.
+Ordinary covered repairs should not require you to repeat the instruction.
+
+The report distinguishes authoring completion from an open delivery commitment.
+It shows who is responsible, the follow-up task, next check, and deadline. A
+tracking gap means follow-up needs reassignment; it does not mean the change landed.
+The configured harness handles provider review, repairs, and merge, while Swarmkit
+preserves responsibility during idle time and restarts. See
+[delivery commitments](DELIVERY_COMMITMENTS.md) for optional CLI details and
+[decision briefs](DECISION_BRIEFS.md) for the question format.

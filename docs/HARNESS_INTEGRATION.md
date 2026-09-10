@@ -320,3 +320,57 @@ one. Informational references do not require acknowledgments. Acceptance amendme
 requires quiescent work and reapproval. For structured conditional action authority,
 use [conditional grants](CONDITIONAL_GRANTS.md): trusted adapters run named checks,
 record evidence, and recheck the grant inside the effect-start transaction.
+
+## Author-to-merge integration (0.14.0)
+
+Use the reviewed `author-to-merge` policy to create authoring, human release,
+and continuation tasks plus their delivery commitment in one published plan.
+[Decision briefs](DECISION_BRIEFS.md) define human input;
+[delivery commitments](DELIVERY_COMMITMENTS.md) define the runtime interfaces.
+Enable required briefs for a new unattended integration. The pack is a reference
+workflow, not an installed provider connection or permission grant.
+
+The harness must expose the named babysitting skill as a bounded operation. Each
+invocation reads current task/decision/commitment state, inspects the provider,
+performs permitted repairs, records evidence, and either finishes or enters an
+external wait and exits. Start a fresh context on every dispatch. The manager
+replans when needed; core owns task claims, publication, wake scheduling, and
+recovery. Do not add a second hidden agent scheduler.
+
+Your provider adapter supplies authenticated observations of object identity,
+opaque revision, reviewer approval, comment disposition, CI, and mergeability.
+Approval and comments are separate: approval with outstanding comments still
+requires fixes. Define substantive resolution and reviewer acknowledgement rules
+in reviewed harness policy. Missing review is an external wait. New scope or an
+exception to human constraints returns to the owner; routine covered repairs do not.
+
+Requesting review, posting replies, pushing fixes, and merging must follow the
+actual continuing permission recorded in the human decision. The trusted issuer
+may issue exact-revision grants under that decision only when its scope covers
+the continuation. Issuance must not be an unrestricted worker capability. Recheck
+provider approval validity and fresh named conditions after each revision change.
+Use the existing grant-bound effect ledger and enforce matching scope at the
+provider call. Core's transaction cannot prevent remote state changing afterward;
+use provider-side revision/merge preconditions where available.
+
+`examples/check_change.py` accepts an already-authenticated observation file and
+returns a bounded next-action suggestion plus a commitment observation. Its input
+has provider, external_ref, revision, environment, observed_at, receipt, and strict
+boolean fields review_approved, comments_addressed, ci_passed, mergeable, landed,
+and closed. It provides no authentication, network access, or merge authority.
+It demonstrates that approval does not imply comment resolution and that landing
+is distinct from readiness. The adapter obtains the underlying observations and
+maps provider-specific review/revision semantics; the agent implements repairs.
+
+Ingress verifies callbacks or polls, retains stable provider event IDs, invokes
+`commitment signal`, and resumes the runner. Signals only wake inspection. The
+host supervisor must provide scheduled runs/restarts when the process is idle.
+A trusted final read-back must prove the contracted change landed before recording
+satisfaction. Queue admission is not landing; closed-unmerged is not success.
+After a lost response, reconcile the provider using the existing effect key and
+receipt contract before retrying. Record observations and receipts without secrets.
+
+The packaged test suite includes a fake-provider author/release/repair/grant/merge
+scenario with process failure after remote-state mutation. A production adapter
+must repeat that acceptance workflow against its actual provider before unattended
+use. Swarmkit 0.14.0 does not ship a GitHub/internal-review provider adapter.

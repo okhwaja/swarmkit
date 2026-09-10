@@ -315,3 +315,13 @@ not repeat it; leaving and reentering creates another version. Optional positive
 `decision_escalation_seconds` in runtime limits emits `DECISION_AGING` once per
 decision and threshold. No elapsed-time rule answers a decision or grants consent.
 Notification routing is described in [delivery extensions](EXTENSIONS.md#event-notifications).
+
+## Delivery obligations beyond one task
+
+[Delivery commitments](DELIVERY_COMMITMENTS.md) retain the external condition and
+responsibility independently of a task's lifecycle. `commitment wait` atomically
+updates the obligation and enters the existing task wait; `commitment signal`
+durably wakes verification. Scheduled checks, deadlines, and lost follow-up
+coverage request manager review without granting authority. Run output includes
+commitment schedules alongside task waits, including obligations with no live
+worker. Reconciliation does not manufacture replacement tasks or call providers.

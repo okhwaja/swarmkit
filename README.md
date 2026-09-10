@@ -160,5 +160,13 @@ See [workspace configuration](docs/RUNTIME_SAFETY.md).
 - [Roadmap backlog](docs/ROADMAP_BACKLOG.md): remaining capabilities and integration decisions.
 
 To create a portable release, run `python3 scripts/package.py`. It writes
-`dist/swarmkit-0.13.0.zip`. Run `python3 -B scripts/release_check.py` to test both
+`dist/swarmkit-0.14.0.zip`. Run `python3 -B scripts/release_check.py` to test both
 the source tree and an extracted package. Local mission files are excluded.
+
+## Readable decisions and delivery follow-through
+
+[Decision briefs](docs/DECISION_BRIEFS.md) explain the call, background, consequences,
+and waiting work before the evidence. [Delivery commitments](docs/DELIVERY_COMMITMENTS.md)
+keep an unlanded change visible after authoring finishes. The bundled author-to-merge
+workflow coordinates human release, review, repairs, and verified landing using
+your harness's provider tools; no production provider connection is installed.

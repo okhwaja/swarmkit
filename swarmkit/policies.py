@@ -86,6 +86,10 @@ def validate_policy_manifest(manifest):
         completion = stage.get("completion", {})
         if not isinstance(completion, dict):
             raise SwarmError("Policy stage %s completion must be an object" % stage_id)
+        if "commitment_satisfied" in completion and not isinstance(
+            completion["commitment_satisfied"], bool
+        ):
+            raise SwarmError("Policy completion commitment_satisfied must be boolean")
         minimum_artifacts = completion.get("minimum_artifacts", 0)
         if (
             not isinstance(minimum_artifacts, int)
@@ -122,6 +126,49 @@ def validate_policy_manifest(manifest):
                     "Policy stage %s %s has invalid variables: %s" % (stage_id, location, exc)
                 )
         seen.add(stage_id)
+    delivery = manifest.get("delivery")
+    if delivery is not None:
+        fields = {
+            "producer_stage",
+            "followup_stage",
+            "title",
+            "provider",
+            "environment",
+            "terminal_check",
+            "responsible",
+            "check_seconds",
+            "deadline_seconds",
+        }
+        if not isinstance(delivery, dict) or set(delivery) != fields:
+            raise SwarmError("Policy delivery requires " + ", ".join(sorted(fields)))
+        if (
+            not isinstance(delivery["producer_stage"], str)
+            or not isinstance(delivery["followup_stage"], str)
+            or delivery["producer_stage"] not in seen
+            or delivery["followup_stage"] not in seen
+            or delivery["producer_stage"] == delivery["followup_stage"]
+        ):
+            raise SwarmError("Delivery must reference distinct existing stages")
+        for name in ("check_seconds", "deadline_seconds"):
+            if (
+                not isinstance(delivery[name], int)
+                or isinstance(delivery[name], bool)
+                or delivery[name] < 1
+            ):
+                raise SwarmError("Delivery intervals must be positive integers")
+        if delivery["check_seconds"] > delivery["deadline_seconds"]:
+            raise SwarmError("Delivery check must not exceed deadline")
+        for name in fields - {
+            "check_seconds",
+            "deadline_seconds",
+            "producer_stage",
+            "followup_stage",
+        }:
+            if not isinstance(delivery[name], str) or not delivery[name].strip():
+                raise SwarmError("Delivery requires nonempty " + name)
+            render_policy_text(
+                delivery[name], {name: "value" for name in variables}, "delivery." + name
+            )
     return manifest
 
 
@@ -390,6 +437,23 @@ def apply_policy(
             },
         )
         stage_tasks[stage["id"]] = task_id
+    if manifest.get("delivery"):
+        from .commitments import create_commitment
+        from .core import future_time
+
+        delivery = manifest["delivery"]
+        specification = {
+            name: render_policy_text(delivery[name], values, "delivery." + name)
+            for name in ("title", "provider", "environment", "terminal_check", "responsible")
+        }
+        specification.update(
+            producer_task=stage_tasks[delivery["producer_stage"]],
+            followup_task=stage_tasks[delivery["followup_stage"]],
+            next_check_at=future_time(delivery["check_seconds"]),
+            deadline_at=future_time(delivery["deadline_seconds"]),
+            signal_expected=True,
+        )
+        create_commitment(conn, specification, actor, "policy:" + application_id)
     add_event(
         conn,
         current_mission["id"],

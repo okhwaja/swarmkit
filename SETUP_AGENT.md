@@ -376,3 +376,15 @@ explicit scope/recipient configuration and test their adapter using synthetic
 local data before enabling provider execution. No production route or grant is
 created by setup. See [conditional grants](docs/CONDITIONAL_GRANTS.md) and
 [event notifications](docs/EXTENSIONS.md#event-notifications).
+
+## Accept author-to-merge integration
+
+For a requested author-to-merge workflow, install a reviewed copy of the bundled
+pack, configure required decision briefs, and supply authenticated provider tools
+plus a bounded babysitting skill. Follow the
+[harness integration contract](docs/HARNESS_INTEGRATION.md#author-to-merge-integration-0140).
+Prove human release, approval with outstanding comments, revision-changing fixes,
+CI/conflict handling, idle wake/restart, and exact-scope conditional merge. Inject
+a lost merge response and verify reconciliation causes no duplicate action.
+Confirm all-tasks-terminal cannot hide an open commitment. A local reference
+checker or fake-provider test does not establish production provider readiness.

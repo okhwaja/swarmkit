@@ -240,13 +240,25 @@ def external_wait_summary(conn):
         """SELECT COUNT(*) AS n FROM external_waits w JOIN tasks t ON t.id=w.task_id
            WHERE w.wake_reason='DEADLINE' AND t.status NOT IN ('DONE','CANCELLED')"""
     ).fetchone()["n"]
-    checks = [item["next_check_at"] for item in active if item["next_check_at"]]
-    deadlines = [item["deadline_at"] for item in active]
+    from .commitments import list_commitments
+
+    obligations = [
+        c
+        for c in list_commitments(conn)
+        if c["status"] == "OPEN" and not c["staged_review"] and not c["adoption_required"]
+    ]
+    waiting_task_ids = {item["task_id"] for item in active}
+    checks = [item["next_check_at"] for item in active + obligations if item["next_check_at"]]
+    deadlines = [item["deadline_at"] for item in active + obligations]
     return {
-        "count": len(active),
+        "count": len(active) + sum(c["followup_task"] not in waiting_task_ids for c in obligations),
+        "commitments": obligations,
         "earliest_scheduled_check": min(checks) if checks else None,
         "earliest_deadline": min(deadlines) if deadlines else None,
-        "signal_expected_count": sum(1 for item in active if item["signal_expected"]),
+        "signal_expected_count": sum(1 for item in active if item["signal_expected"])
+        + sum(
+            c["signal_expected"] for c in obligations if c["followup_task"] not in waiting_task_ids
+        ),
         "deadline_attention_count": deadline_attention,
         "waits": active,
     }

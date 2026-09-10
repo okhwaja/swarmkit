@@ -347,3 +347,13 @@ and restart. A case can need human attention while other cases run. Use explicit
 normal provider reconciliation rules. `serve` exposes polling exhaustion and a
 next action; an external supervisor still owns later wakeups, including scheduled
 manager retries. An escalated review requires deliberate repair and reset.
+
+## Cases with delivery commitments
+
+A case containing open [delivery commitments](DELIVERY_COMMITMENTS.md) cannot
+become DONE solely because its tasks are terminal. It remains waiting until
+responsibility is satisfied or explicitly cancelled. Case details expose the
+records and summary counts; cancellation disposes the case's commitments with
+the same audited reason while preserving uncertain effects. Producer/follow-up
+links remain within the same case/workstream. Use the author-to-merge pack for
+authoring services; it is separate from the reviewer-service example above.

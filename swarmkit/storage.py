@@ -341,6 +341,10 @@ def publish_review_tasks(conn, review_id, actor):
         )
     ]
     conn.execute("DELETE FROM staged_tasks WHERE review_id=?", (review_id,))
+    commitment_ids = [
+        r[0] for r in conn.execute("SELECT id FROM commitments WHERE staged_review=?", (review_id,))
+    ]
+    conn.execute("UPDATE commitments SET staged_review=NULL WHERE staged_review=?", (review_id,))
     add_event(
         conn,
         mission(conn)["id"],
@@ -348,7 +352,7 @@ def publish_review_tasks(conn, review_id, actor):
         review_id,
         "PLAN_PUBLISHED",
         actor,
-        {"task_ids": tasks},
+        {"task_ids": tasks, "commitment_ids": commitment_ids},
     )
 
 

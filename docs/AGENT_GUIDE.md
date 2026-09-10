@@ -153,3 +153,14 @@ coordination state cannot enforce permissions on arbitrary harness tools.
 For conditional actions, follow the [grant contract](CONDITIONAL_GRANTS.md).
 A stored choice, a condition result, and an authorized waiver are different records;
 none can be inferred from an unrelated narrative or timeout.
+
+## Carry delivery beyond authoring
+
+Use an installed author-to-merge policy when its scope matches the user's request.
+Inspect `commitment list/show` together with tasks. Authoring DONE does not mean
+delivery SATISFIED. Keep continuing authority explicit in the human brief; never
+translate an external review comment into the owner's permission. Observe current
+provider state, use scoped grants/effects for actions, and enter a durable wait
+between bounded checks. A missing/cancelled follow-up requires manager reassignment,
+not an invented success. See [delivery commitments](DELIVERY_COMMITMENTS.md) and
+[decision briefs](DECISION_BRIEFS.md) for exact schemas and compatibility.

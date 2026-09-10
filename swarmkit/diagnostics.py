@@ -283,6 +283,36 @@ def doctor(conn):
             report("warning", row["id"], "delivery lease is expired")
         if row["status"] == "SENT" and (not row["provider_receipt"] or not row["sent_at"]):
             report("error", row["id"], "sent delivery lacks provider receipt or sent timestamp")
+    from .decision_briefs import validate_brief
+
+    for row in conn.execute(
+        "SELECT b.decision_id,b.brief_json,d.options_json FROM decision_briefs b JOIN decisions d ON d.id=b.decision_id"
+    ):
+        try:
+            validate_brief(json_load(row["brief_json"]), json_load(row["options_json"]))
+        except (SwarmError, ValueError, TypeError, KeyError) as exc:
+            report("error", row["decision_id"], "invalid decision brief: " + str(exc))
+    for row in conn.execute(
+        "SELECT c.*,t.status AS followup_status FROM commitments c JOIN tasks t ON t.id=c.followup_task"
+    ):
+        if row["status"] not in {"OPEN", "SATISFIED", "CANCELLED"}:
+            report("error", row["id"], "invalid commitment state")
+        deadline = read_time(row["deadline_at"], row["id"], "commitment deadline")
+        if row["status"] == "OPEN":
+            if row["followup_status"] in {"DONE", "CANCELLED"}:
+                report("warning", row["id"], "delivery tracking gap: assign a fresh follow-up")
+            if deadline and deadline <= now:
+                report(
+                    "warning", row["id"], "delivery deadline needs attention; not proof of failure"
+                )
+        if (
+            row["status"] == "SATISFIED"
+            and not conn.execute(
+                "SELECT 1 FROM commitment_records WHERE commitment_id=? AND kind='COMMITMENT_OBSERVED'",
+                (row["id"],),
+            ).fetchone()
+        ):
+            report("error", row["id"], "satisfied commitment lacks provider observation")
     duplicate_titles = conn.execute(
         """SELECT t.title,tw.workstream_id,COUNT(*) AS n FROM tasks t
            LEFT JOIN task_workstreams tw ON tw.task_id=t.id WHERE t.status NOT IN ('DONE','CANCELLED')

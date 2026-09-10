@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.14.0
+
+- U11 adds structured, immutable decision briefs: background, human authority
+  reason, option consequences/risks, recommendation, blocked outcome, and
+  separately rendered evidence. Exact choice values stay compatible. New
+  integrations can require briefs with `decision-contract --mode required`.
+- U12 adds durable delivery commitments independent of task attempts, required
+  producer handoffs, staged publication, exact-scope provider observations,
+  versioned waits, idempotent signals, explicit adoption, and audited cancellation.
+  Open obligations remain visible and prevent task-derived success from hiding
+  unlanded changes.
+- Added the author-to-merge policy and a bounded reference provider-observation
+  checker. Harnesses supply real provider access, permissions, scoped grant
+  issuance, babysitting skills, and reliable wakeups. The integration tests exercise
+  human release through repairs and merge, including a lost provider response.
+- Schema 14 upgrades preserve legacy decisions and tasks. No delivery obligation
+  or human authority is inferred from historical prose. Back up state before
+  upgrade; older releases cannot read schema 14.
+- Proposed-task external-condition gates remain deferred; existing task waits
+  support review/repair/merge continuation.
+
 ## 0.13.0
 
 - Decision revisions preserve the existing structured choice unless explicitly

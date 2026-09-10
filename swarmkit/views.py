@@ -40,6 +40,11 @@ def brief_status(conn):
             or "none yet"
         ),
     ]
+    obligations = conn.execute("SELECT COUNT(*) FROM commitments WHERE status='OPEN'").fetchone()[0]
+    if obligations:
+        lines.append(
+            "Delivery commitments open: %s; inspect swarmctl commitment list" % obligations
+        )
     if decisions:
         lines.append("Needs an answer:")
         lines.extend(
@@ -394,22 +399,17 @@ def render_board(root, reconcile=True):
         )
     if not snapshot["tasks"]:
         lines.append("| — | — | — | — | — | No tasks yet | — |")
+    from .commitments import render_commitments
+
+    lines.extend(render_commitments(snapshot["commitments"]))
     lines.extend(["", "## Open decisions", ""])
     open_decisions = [d for d in snapshot["decisions"] if d["status"] == "OPEN"]
     if not open_decisions:
         lines.append("No open decisions.")
     for decision in open_decisions:
-        lines.extend(
-            [
-                "### `%s` — %s" % (decision["id"], decision["kind"]),
-                "",
-                decision["question"],
-                "",
-                "- Recommendation: %s" % (decision["recommendation"] or "None"),
-                "- Blocks: %s" % ", ".join("`%s`" % x for x in decision["blocks"]),
-                "",
-            ]
-        )
+        from .decision_briefs import render_decision
+
+        lines.extend(render_decision(decision))
     lines.extend(["", "## Current facts", ""])
     current_facts = [fact for fact in snapshot["facts"] if fact["status"] == "CURRENT"]
     if not current_facts:
@@ -634,22 +634,16 @@ def render_status_report(root):
         ]
         or ["No open decisions."]
     )
+    from .commitments import render_commitments
+
+    lines.extend(render_commitments(snapshot["commitments"]))
     lines.extend(["", "## Needs human input", ""])
     if not human:
         lines.append("Nothing currently needs human input.")
     for decision in human:
-        lines.extend(
-            [
-                "### `%s`" % decision["id"],
-                "",
-                decision["question"],
-                "",
-                "- Recommendation: %s" % (decision["recommendation"] or "None recorded"),
-                "- Options: %s" % ("; ".join(decision["options"]) or "No fixed options"),
-                "- Blocks: %s" % ", ".join("`%s`" % x for x in decision["blocks"]),
-                "",
-            ]
-        )
+        from .decision_briefs import render_decision
+
+        lines.extend(render_decision(decision))
     lines.extend(["", "## Other urgent matters", ""])
     urgent_lines = []
     for problem in health["problems"]:

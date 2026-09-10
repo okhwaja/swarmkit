@@ -5,6 +5,7 @@ import shlex
 
 from .core import CLI_PATH, PACKAGE_ROOT, SwarmError, json_load, make_id
 from .inbox import inbox
+from .decision_briefs import brief_mode
 from .queries import policy_context_for_task, workspace_dict
 from .storage import connect, mission, mission_mode, runtime_state, task_row
 
@@ -53,6 +54,12 @@ def case_context(conn, row):
 def task_context(conn, task_id):
     task = decode_row(task_row(conn, task_id))
     task["policy"] = policy_context_for_task(conn, task_id)
+    task["commitments"] = context_page(
+        conn,
+        "SELECT * FROM commitments WHERE producer_task=? OR followup_task=? ORDER BY rowid",
+        (task_id, task_id),
+        "commitment list",
+    )
     task["dependencies"] = context_page(
         conn,
         """SELECT t.id, t.title, t.status, t.result FROM tasks t
@@ -102,6 +109,14 @@ def manager_context(conn):
     # Each section has a fixed read bound. Status and entity commands remain the
     # explicit way to inspect the full history; they are never hidden prompt work.
     sections = {
+        "open_commitments": (
+            "SELECT * FROM commitments WHERE status='OPEN' ORDER BY rowid",
+            "commitment list",
+        ),
+        "decision_briefs": (
+            "SELECT b.* FROM decision_briefs b JOIN decisions d ON d.id=b.decision_id WHERE d.status='OPEN' ORDER BY d.rowid",
+            "decision list",
+        ),
         "active_tasks": (
             "SELECT id,title,status,kind,priority,owner,next_action FROM tasks "
             "WHERE status NOT IN ('DONE','CANCELLED') ORDER BY priority DESC,rowid",
@@ -257,6 +272,7 @@ def build_prompt(root, role, agent, task_id=None):
             "command_prefix": command_prefix,
             "mission": current_mission,
             "runtime": runtime_state(conn),
+            "decision_brief_mode": brief_mode(conn),
             "task": task_context(conn, task_id) if task_id else None,
             "unseen_events": inbox(conn, agent, task_id=task_id, limit=PAGE_SIZE),
         }
@@ -269,7 +285,8 @@ def build_prompt(root, role, agent, task_id=None):
             )
             context["linked_decisions"] = context_page(
                 conn,
-                """SELECT d.*, o.selected_option FROM decisions d
+                """SELECT d.*, o.selected_option, b.brief_json FROM decisions d
+                    LEFT JOIN decision_briefs b ON b.decision_id=d.id
                     JOIN decision_tasks dt ON dt.decision_id=d.id
                     LEFT JOIN decision_outcomes o ON o.decision_id=d.id
                     WHERE dt.task_id=? ORDER BY d.rowid DESC""",
@@ -304,6 +321,10 @@ def build_prompt(root, role, agent, task_id=None):
     if not guide.exists():
         raise SwarmError("Missing role guidance: %s" % guide)
     guide_text = guide.read_text(encoding="utf-8")
+    if role in {"worker", "manager", "liaison"}:
+        guide_text += "\n" + (PACKAGE_ROOT / "guidance" / "decision-brief.md").read_text(
+            encoding="utf-8"
+        )
     guide_text = guide_text.replace("<command_prefix>", command_prefix).replace("<agent_id>", agent)
     if task_id:
         guide_text = guide_text.replace("<task_id>", task_id)

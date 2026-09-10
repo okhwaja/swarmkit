@@ -729,7 +729,9 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            if target == 13:
+            if target == 14:
+                migrate_delivery_contracts(conn)
+            elif target == 13:
                 migrate_coordination(conn)
             elif target == 12:
                 execute_schema(conn, EVIDENCE_SCHEMA)
@@ -752,3 +754,40 @@ def ensure_schema(conn):
     except Exception:
         conn.rollback()
         raise
+
+
+DELIVERY_CONTRACT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS decision_briefs (
+    decision_id TEXT PRIMARY KEY REFERENCES decisions(id), brief_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS commitments (
+    id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id),
+    producer_task TEXT NOT NULL REFERENCES tasks(id), followup_task TEXT NOT NULL REFERENCES tasks(id),
+    workstream_id TEXT REFERENCES workstreams(id), title TEXT NOT NULL,
+    provider TEXT NOT NULL, external_ref TEXT, revision TEXT, environment TEXT NOT NULL,
+    terminal_check TEXT NOT NULL, responsible TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN', version INTEGER NOT NULL DEFAULT 1,
+    mission_revision INTEGER NOT NULL, next_check_at TEXT, deadline_at TEXT NOT NULL,
+    signal_expected INTEGER NOT NULL,
+    staged_review TEXT REFERENCES manager_reviews(id),
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, result TEXT,
+    creation_key TEXT NOT NULL UNIQUE, specification_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commitment_open ON commitments(status,next_check_at,deadline_at);
+CREATE INDEX IF NOT EXISTS idx_commitment_producer ON commitments(producer_task);
+CREATE INDEX IF NOT EXISTS idx_commitment_followup ON commitments(followup_task);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_commitment_single_owner ON commitments(followup_task) WHERE status='OPEN';
+CREATE TABLE IF NOT EXISTS commitment_records (
+    id TEXT PRIMARY KEY, commitment_id TEXT NOT NULL REFERENCES commitments(id),
+    key TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL,
+    actor TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(commitment_id,key)
+);
+CREATE TABLE IF NOT EXISTS required_handoffs (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id)
+);
+"""
+
+
+def migrate_delivery_contracts(conn):
+    execute_schema(conn, DELIVERY_CONTRACT_SCHEMA)
+    conn.execute("INSERT OR IGNORE INTO meta VALUES('decision_briefs','legacy')")
