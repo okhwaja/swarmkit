@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `swarmctl.py` for version `0.12.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
+Generated from `swarmctl.py` for version `0.13.0`. Do not edit by hand; run `python3 scripts/generate_cli_docs.py`.
 
 ## `swarmctl`
 
@@ -30,6 +30,8 @@ commands:
     why          Explain blocked work, attempts, limits, and uncertain effects
     configure    Set persistent runtime limits and evidence enforcement
     amend        Version a paused mission and require explicit replanning
+    grant        Record scoped conditional authority enforced by trusted
+                 adapters
     effect       Track intent and receipts for external actions
     resource     Lease exclusive resources with attempt fencing
     evidence     Bind result files to criteria, revision, and environment
@@ -337,11 +339,14 @@ optional arguments:
 
 ```text
 usage: swarmctl decision [-h]
-                         {list,show,resolve,revise,require-choice,link,ack}
+                         {list,show,resolve,revise,require-choice,reference,link,ack}
                          ...
 
 positional arguments:
-  {list,show,resolve,revise,require-choice,link,ack}
+  {list,show,resolve,revise,require-choice,reference,link,ack}
+    reference           Add context without blocking or interrupting the task
+    link                Add an authoritative gate; retires active attempts and
+                        requires acknowledgment
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -382,6 +387,21 @@ usage: swarmctl decision list [-h]
 
 optional arguments:
   -h, --help  show this help message and exit
+```
+
+## `swarmctl decision reference`
+
+```text
+usage: swarmctl decision reference [-h] --task TASK [--actor ACTOR]
+                                   decision_id
+
+positional arguments:
+  decision_id
+
+optional arguments:
+  -h, --help     show this help message and exit
+  --task TASK
+  --actor ACTOR
 ```
 
 ## `swarmctl decision require-choice`
@@ -427,12 +447,14 @@ mission pause still requires resume. A refusal must be honored.
 ## `swarmctl decision revise`
 
 ```text
-usage: swarmctl decision revise [-h] --answer ANSWER [--choice CHOICE]
+usage: swarmctl decision revise [-h] --answer ANSWER
+                                [--choice CHOICE | --clear-choice]
                                 [--actor ACTOR]
                                 decision_id
 
 Correct an existing answer while preserving its history and notifying affected
-work. Supply --choice again when choosing an offered option.
+work. Omitting --choice preserves the stored option. Use --choice to replace
+it or --clear-choice to remove it.
 
 positional arguments:
   decision_id
@@ -440,7 +462,8 @@ positional arguments:
 optional arguments:
   -h, --help       show this help message and exit
   --answer ANSWER
-  --choice CHOICE  Exact machine-readable option from the decision
+  --choice CHOICE  Replace the stored option; omission preserves it
+  --clear-choice   Explicitly remove the stored option
   --actor ACTOR
 
 Example: swarmctl decision revise DECISION_ID --answer 'Limit the repair
@@ -751,7 +774,9 @@ optional arguments:
 ```text
 usage: swarmctl effect prepare [-h] --task TASK --agent AGENT --key KEY
                                --target TARGET --revision REVISION
-                               [--parameters PARAMETERS]
+                               [--parameters PARAMETERS] [--grant GRANT]
+                               [--provider PROVIDER] [--action ACTION]
+                               [--environment ENVIRONMENT]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -762,6 +787,10 @@ optional arguments:
   --revision REVISION
   --parameters PARAMETERS
                         JSON action parameters
+  --grant GRANT
+  --provider PROVIDER
+  --action ACTION
+  --environment ENVIRONMENT
 ```
 
 ## `swarmctl effect start`
@@ -1096,19 +1125,154 @@ optional arguments:
   -h, --help  show this help message and exit
 ```
 
+## `swarmctl grant`
+
+```text
+usage: swarmctl grant [-h] {issue,list,show,revoke,waive,record,require} ...
+
+positional arguments:
+  {issue,list,show,revoke,waive,record,require}
+    issue               Issue a scoped grant against an explicit current
+                        decision choice
+    record              Record a trusted harness check result; never execute
+                        decision text
+    require             Check current scope and every required condition or
+                        explicit waiver
+
+optional arguments:
+  -h, --help            show this help message and exit
+```
+
+## `swarmctl grant issue`
+
+```text
+usage: swarmctl grant issue [-h] --decision DECISION --choice CHOICE
+                            --specification SPECIFICATION --actor ACTOR
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --decision DECISION
+  --choice CHOICE
+  --specification SPECIFICATION
+  --actor ACTOR
+```
+
+## `swarmctl grant list`
+
+```text
+usage: swarmctl grant list [-h]
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl grant record`
+
+```text
+usage: swarmctl grant record [-h] --task TASK --agent AGENT --condition
+                             CONDITION --check CHECK --revision REVISION
+                             --environment ENVIRONMENT --path PATH
+                             --observed-at OBSERVED_AT --expires-at EXPIRES_AT
+                             --exit-code EXIT_CODE
+                             grant_id
+
+positional arguments:
+  grant_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --agent AGENT
+  --condition CONDITION
+  --check CHECK
+  --revision REVISION
+  --environment ENVIRONMENT
+  --path PATH
+  --observed-at OBSERVED_AT
+  --expires-at EXPIRES_AT
+  --exit-code EXIT_CODE
+```
+
+## `swarmctl grant require`
+
+```text
+usage: swarmctl grant require [-h] --task TASK --agent AGENT --provider
+                              PROVIDER --action ACTION --resource RESOURCE
+                              --revision REVISION --environment ENVIRONMENT
+                              grant_id
+
+positional arguments:
+  grant_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --task TASK
+  --agent AGENT
+  --provider PROVIDER
+  --action ACTION
+  --resource RESOURCE
+  --revision REVISION
+  --environment ENVIRONMENT
+```
+
+## `swarmctl grant revoke`
+
+```text
+usage: swarmctl grant revoke [-h] --actor ACTOR --reason REASON grant_id
+
+positional arguments:
+  grant_id
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --actor ACTOR
+  --reason REASON
+```
+
+## `swarmctl grant show`
+
+```text
+usage: swarmctl grant show [-h] grant_id
+
+positional arguments:
+  grant_id
+
+optional arguments:
+  -h, --help  show this help message and exit
+```
+
+## `swarmctl grant waive`
+
+```text
+usage: swarmctl grant waive [-h] --condition CONDITION --actor ACTOR --reason
+                            REASON --expires-at EXPIRES_AT
+                            grant_id
+
+positional arguments:
+  grant_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --condition CONDITION
+  --actor ACTOR
+  --reason REASON
+  --expires-at EXPIRES_AT
+```
+
 ## `swarmctl guide`
 
 ```text
 usage: swarmctl guide [-h]
-                      [{agent,user,setup,harness,runtime,workflows,services,delivery}]
+                      [{grants,agent,user,setup,harness,runtime,workflows,services,delivery}]
 
 positional arguments:
-  {agent,user,setup,harness,runtime,workflows,services,delivery}
+  {grants,agent,user,setup,harness,runtime,workflows,services,delivery}
 
 optional arguments:
   -h, --help            show this help message and exit
 
 Available guides:
+  grants     Use scoped conditional action authority
   agent      Operate Swarmkit on a user's behalf
   user       Direct a mission and review its results
   setup      Connect and verify an agent harness
@@ -1477,29 +1641,47 @@ Next: run --max-cycles 20 if no controller is active.
 ## `swarmctl review`
 
 ```text
-usage: swarmctl review [-h] {list,show} ...
+usage: swarmctl review [-h] {list,show,retry} ...
 
 positional arguments:
-  {list,show}
-    list       List newest review summaries without full trigger payloads
-    show       Read every ordered trigger and the recorded commit
+  {list,show,retry}
+    list             List newest review summaries without full trigger
+                     payloads
+    show             Read every ordered trigger and the recorded commit
+    retry            Reset a stopped review after inspecting its failure and
+                     process state
 
 optional arguments:
-  -h, --help   show this help message and exit
+  -h, --help         show this help message and exit
 ```
 
 ## `swarmctl review list`
 
 ```text
-usage: swarmctl review list [-h] [--status {PENDING,RUNNING,DONE,CANCELLED}]
+usage: swarmctl review list [-h]
+                            [--status {PENDING,RUNNING,DONE,CANCELLED,ESCALATED}]
                             [--agent AGENT] [--limit LIMIT] [--before BEFORE]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --status {PENDING,RUNNING,DONE,CANCELLED}
+  --status {PENDING,RUNNING,DONE,CANCELLED,ESCALATED}
   --agent AGENT         Filter by current review owner
   --limit LIMIT
   --before BEFORE       Continue with reviews older than this review ID
+```
+
+## `swarmctl review retry`
+
+```text
+usage: swarmctl review retry [-h] --reason REASON [--actor ACTOR] review_id
+
+positional arguments:
+  review_id
+
+optional arguments:
+  -h, --help       show this help message and exit
+  --reason REASON
+  --actor ACTOR
 ```
 
 ## `swarmctl review show`
@@ -1599,11 +1781,13 @@ recovery needs.
 
 ```text
 usage: swarmctl task [-h]
-                     {add,approve,claim,checkpoint,complete,cancel,block,wait-external,list,show}
+                     {amend,add,approve,claim,checkpoint,complete,cancel,block,wait-external,list,show}
                      ...
 
 positional arguments:
-  {add,approve,claim,checkpoint,complete,cancel,block,wait-external,list,show}
+  {amend,add,approve,claim,checkpoint,complete,cancel,block,wait-external,list,show}
+    amend               Version quiescent acceptance criteria and require
+                        approval again
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -1632,6 +1816,26 @@ optional arguments:
   --priority PRIORITY
   --actor ACTOR
   --ready               Authorize immediately
+```
+
+## `swarmctl task amend`
+
+```text
+usage: swarmctl task amend [-h] --acceptance ACCEPTANCE --expected-revision
+                           EXPECTED_REVISION --reason REASON --idempotency-key
+                           IDEMPOTENCY_KEY [--actor ACTOR]
+                           task_id
+
+positional arguments:
+  task_id
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --acceptance ACCEPTANCE
+  --expected-revision EXPECTED_REVISION
+  --reason REASON
+  --idempotency-key IDEMPOTENCY_KEY
+  --actor ACTOR
 ```
 
 ## `swarmctl task approve`

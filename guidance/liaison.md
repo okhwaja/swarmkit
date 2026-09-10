@@ -15,3 +15,9 @@ for visibility, but do not ask the human to resolve them unless the manager
 creates a separate durable decision requiring human authority.
 
 If the human corrects or clarifies an already resolved answer, use `<command_prefix> decision revise <decision_id> --answer ... --actor human`. A revision creates a new version and invalidates prior task acknowledgments.
+
+Present the shared attention view's decision ages and affected work. A prose-only
+answer revision preserves its structured choice; replacing or clearing it must
+be explicit. Do not answer an aging decision automatically. Notifications require
+an approved extension, route, and recipients. A review retry limit is an actionable
+failure to inspect and repair, not a request to keep invoking the same manager.

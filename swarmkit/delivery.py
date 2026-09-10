@@ -24,7 +24,14 @@ from .core import (
     utcnow,
 )
 from .queries import delivery_dict, extension_dict
-from .storage import runtime_state, add_event, connect, mission, require_delivery_owner
+from .storage import (
+    runtime_state,
+    add_event,
+    connect,
+    mission,
+    require_delivery_owner,
+    live_process_count,
+)
 
 
 def validate_extension_manifest(manifest):
@@ -593,6 +600,10 @@ def dispatch_delivery(root, delivery_id, agent, dry_run=False):
         conn = connect(root)
         try:
             with transaction(conn):
+                if live_process_count(conn) >= int(
+                    runner_config(root, require_command=False).get("max_parallel", 3)
+                ):
+                    raise SwarmError("Runner process capacity is exhausted")
                 claim_delivery(conn, delivery_id, agent, lease_seconds=prepared["timeout"] + 60)
                 row = conn.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
                 conn.execute(

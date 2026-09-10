@@ -621,6 +621,104 @@ def migrate_reliability_schema(conn):
         )
 
 
+COORDINATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS decision_references (
+    decision_id TEXT NOT NULL REFERENCES decisions(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+    actor TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(decision_id,task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_references_task ON decision_references(task_id);
+CREATE TABLE IF NOT EXISTS review_attempts (
+    review_id TEXT NOT NULL REFERENCES manager_reviews(id), generation INTEGER NOT NULL,
+    agent TEXT NOT NULL UNIQUE, started_at TEXT NOT NULL, ended_at TEXT, disposition TEXT,
+    reason TEXT, PRIMARY KEY(review_id,generation)
+);
+CREATE TABLE IF NOT EXISTS staged_tasks (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id), review_id TEXT NOT NULL REFERENCES manager_reviews(id)
+);
+CREATE INDEX IF NOT EXISTS idx_staged_review ON staged_tasks(review_id);
+CREATE TABLE IF NOT EXISTS acceptance_revisions (
+    task_id TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL,
+    previous_json TEXT NOT NULL, current_json TEXT NOT NULL, actor TEXT NOT NULL,
+    reason TEXT NOT NULL, idempotency_key TEXT NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY(task_id,revision), UNIQUE(task_id,idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS attention_transitions (
+    scope TEXT NOT NULL, entity_id TEXT NOT NULL, active INTEGER NOT NULL,
+    version INTEGER NOT NULL, since TEXT NOT NULL, PRIMARY KEY(scope,entity_id)
+);
+CREATE TABLE IF NOT EXISTS decision_aging (
+    decision_id TEXT NOT NULL REFERENCES decisions(id), threshold INTEGER NOT NULL,
+    PRIMARY KEY(decision_id,threshold)
+);
+CREATE TABLE IF NOT EXISTS notification_subscriptions (
+    id TEXT NOT NULL, version INTEGER NOT NULL, specification_json TEXT NOT NULL,
+    cursor INTEGER NOT NULL, active INTEGER NOT NULL, PRIMARY KEY(id,version)
+);
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    subscription_id TEXT NOT NULL, subscription_version INTEGER NOT NULL, event_seq INTEGER NOT NULL,
+    delivery_id TEXT NOT NULL UNIQUE REFERENCES deliveries(id),
+    PRIMARY KEY(subscription_id,subscription_version,event_seq)
+);
+CREATE TABLE IF NOT EXISTS grants (
+    id TEXT PRIMARY KEY, decision_id TEXT NOT NULL REFERENCES decisions(id), decision_version INTEGER NOT NULL,
+    specification_json TEXT NOT NULL, issued_by TEXT NOT NULL, created_at TEXT NOT NULL,
+    revoked_at TEXT, revocation_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS grant_evaluations (
+    id TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id),
+    task_id TEXT NOT NULL REFERENCES tasks(id), generation INTEGER NOT NULL,
+    mission_revision INTEGER NOT NULL, acceptance_revision INTEGER NOT NULL,
+    condition_id TEXT NOT NULL, revision TEXT NOT NULL, environment TEXT NOT NULL,
+    exit_code INTEGER NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL,
+    observed_at TEXT NOT NULL, expires_at TEXT NOT NULL, actor TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grant_evaluation ON grant_evaluations(grant_id,task_id,condition_id);
+CREATE TABLE IF NOT EXISTS grant_waivers (
+    id TEXT PRIMARY KEY, grant_id TEXT NOT NULL REFERENCES grants(id), condition_id TEXT NOT NULL,
+    actor TEXT NOT NULL, reason TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grant_waiver ON grant_waivers(grant_id,condition_id);
+CREATE TABLE IF NOT EXISTS effect_grants (
+    effect_id TEXT PRIMARY KEY REFERENCES effects(id), grant_id TEXT NOT NULL REFERENCES grants(id),
+    provider TEXT NOT NULL, action TEXT NOT NULL, resource TEXT NOT NULL, environment TEXT NOT NULL
+);
+"""
+
+
+def migrate_coordination(conn):
+    for name, declaration in (
+        ("generation", "INTEGER NOT NULL DEFAULT 0"),
+        ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("next_eligible_at", "TEXT"),
+        ("last_error", "TEXT"),
+    ):
+        if name not in {row[1] for row in conn.execute("PRAGMA table_info(manager_reviews)")}:
+            conn.execute("ALTER TABLE manager_reviews ADD COLUMN " + name + " " + declaration)
+    for table in ("tasks", "attempts", "evidence"):
+        if "acceptance_revision" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(" + table + ")")
+        }:
+            conn.execute(
+                "ALTER TABLE "
+                + table
+                + " ADD COLUMN acceptance_revision INTEGER NOT NULL DEFAULT 1"
+            )
+    execute_schema(conn, COORDINATION_SCHEMA)
+    # Running legacy reviews retain their lease and receive an attempt identity.
+    conn.execute("UPDATE manager_reviews SET generation=1 WHERE status='RUNNING' AND generation=0")
+    conn.execute(
+        "INSERT OR IGNORE INTO review_attempts(review_id,generation,agent,started_at) "
+        "SELECT id,generation,owner,started_at FROM manager_reviews WHERE status='RUNNING'"
+    )
+    # A legacy running manager may already have written a partial plan. Do not
+    # infer which unclaimed tasks were committed from their timestamps.
+    conn.execute(
+        "INSERT OR IGNORE INTO staged_tasks(task_id,review_id) "
+        "SELECT t.id,r.id FROM tasks t CROSS JOIN manager_reviews r "
+        "WHERE r.status='RUNNING' AND t.owner IS NULL AND t.status NOT IN ('DONE','CANCELLED')"
+    )
+
+
 def ensure_schema(conn):
     """Upgrade a known schema under one write transaction; never downgrade."""
     try:
@@ -631,7 +729,9 @@ def ensure_schema(conn):
         for target in range(int(row[0]) + 1, int(SCHEMA_VERSION) + 1):
             # Versions 2–6 introduced additive tables only. Replay their compatible
             # table definitions before the version 7 runtime migration.
-            if target == 12:
+            if target == 13:
+                migrate_coordination(conn)
+            elif target == 12:
                 execute_schema(conn, EVIDENCE_SCHEMA)
             elif target == 11:
                 migrate_review_batches(conn)

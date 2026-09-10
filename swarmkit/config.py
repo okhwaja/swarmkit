@@ -51,14 +51,15 @@ def render_command(command, values, label):
     return rendered
 
 
-def runner_config(root):
+def runner_config(root, require_command=True):
     path = root / "runner.json"
     if not path.exists():
         raise SwarmError("Missing runner config: %s" % path)
     config = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise SwarmError("Runner config must be a JSON object: %s" % path)
-    validate_command(config.get("command"), RUNNER_FIELDS, "Runner command in %s" % path)
+    if require_command:
+        validate_command(config.get("command"), RUNNER_FIELDS, "Runner command in %s" % path)
     for key in ("models", "escalation_models"):
         models = config.get(key, {})
         if not isinstance(models, dict) or not all(
@@ -73,7 +74,15 @@ def runner_config(root):
         value = config.get(key, 3600 if key == "timeout_seconds" else 3)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise SwarmError("Runner %s must be a positive integer in %s" % (key, path))
-    for key, default in (("scheduler_poll_seconds", 1), ("manager_review_debounce_seconds", 1)):
+    from .notifications import validate_subscriptions
+
+    validate_subscriptions(config.get("notifications", []))
+    for key, default in (
+        ("scheduler_poll_seconds", 1),
+        ("manager_review_debounce_seconds", 1),
+        ("manager_review_min_interval_seconds", 0),
+        ("manager_review_max_delay_seconds", 60),
+    ):
         value = config.get(key, default)
         if (
             not isinstance(value, (int, float))

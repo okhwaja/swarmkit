@@ -155,7 +155,11 @@ def render_board(root, reconcile=True):
     active_waits = [item for item in snapshot["external_waits"] if item["status"] == "WAITING"]
     deadline_wakes = [item for item in snapshot["external_waits"] if item["requires_attention"]]
     lines.extend(["", "## Needs attention", ""])
-    attention = []
+    attention = [
+        "- Decision `%s` (%ss old): %s. Next: `%s`."
+        % (item["id"], item["age_seconds"], md_escape(item["question"]), item["next_action"])
+        for item in snapshot["attention"]
+    ]
     for finding in open_findings:
         if finding["significance"] == "URGENT":
             attention.append(
@@ -175,7 +179,9 @@ def render_board(root, reconcile=True):
                 md_escape(wait["condition"]),
             )
         )
-    lines.extend(attention or ["No urgent findings or missed external-wait deadlines."])
+    lines.extend(
+        attention or ["No open decisions, urgent findings or missed external-wait deadlines."]
+    )
     lines.extend(
         [
             "",
@@ -619,6 +625,15 @@ def render_status_report(root):
                 stage_summary,
             )
         )
+    lines.extend(["", "## Needs attention", ""])
+    lines.extend(
+        [
+            "- `%s` (%ss old): %s. Next: `%s`."
+            % (item["id"], item["age_seconds"], md_escape(item["question"]), item["next_action"])
+            for item in snapshot["attention"]
+        ]
+        or ["No open decisions."]
+    )
     lines.extend(["", "## Needs human input", ""])
     if not human:
         lines.append("Nothing currently needs human input.")

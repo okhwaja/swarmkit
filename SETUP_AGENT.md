@@ -367,3 +367,12 @@ an internal checkout CLI is repeatable; otherwise have the harness create and
 register a checkout. Verify an opaque base revision, distinct source/destination,
 and dispatch cwd with [the adapter protocol](docs/RUNTIME_SAFETY.md#isolate-files-and-scarce-resources).
 `setup-check` validates provider configuration without creating a checkout.
+
+For unattended coordination, enable strict evidence when semantic manager commits
+are required. Verify that manager identities are fresh, failed reviews stop at
+the configured retry limit, and the supervisor handles scheduled retry times and
+poll exhaustion. Notification routes and conditional grants are opt-in: obtain
+explicit scope/recipient configuration and test their adapter using synthetic
+local data before enabling provider execution. No production route or grant is
+created by setup. See [conditional grants](docs/CONDITIONAL_GRANTS.md) and
+[event notifications](docs/EXTENSIONS.md#event-notifications).

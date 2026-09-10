@@ -340,3 +340,10 @@ SQLite and files cannot share a crash-atomic transaction. A killed process or a
 Python caller rolling back a larger outer transaction may leave unregistered
 payload snapshots. Audits include only intake files referenced by the frozen
 database, and do not delete live files or checkouts automatically.
+
+Human-attention transitions and optional notification cursors survive idle periods
+and restart. A case can need human attention while other cases run. Use explicit
+[event routes](EXTENSIONS.md#event-notifications) for delivery and preserve the
+normal provider reconciliation rules. `serve` exposes polling exhaustion and a
+next action; an external supervisor still owns later wakeups, including scheduled
+manager retries. An escalated review requires deliberate repair and reset.

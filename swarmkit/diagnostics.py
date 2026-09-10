@@ -232,6 +232,12 @@ def doctor(conn):
         ):
             report("error", row["id"], "dispositioned finding lacks rationale, actor, or timestamp")
     for row in conn.execute("SELECT * FROM manager_reviews"):
+        if row["status"] == "ESCALATED":
+            report(
+                "warning",
+                row["id"],
+                "Manager retries stopped; inspect review show and repair before review retry",
+            )
         if row["status"] not in VALID_MANAGER_REVIEW_STATES:
             report("error", row["id"], "invalid manager review state")
         if row["status"] == "RUNNING" and (not row["owner"] or not row["lease_until"]):

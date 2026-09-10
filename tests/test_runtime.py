@@ -124,6 +124,10 @@ class RuntimeTest(unittest.TestCase):
     def test_scheduler_stops_allocating_after_unfinished_dispatch_error(self):
         task = self.task()
         self.config([sys.executable, "-c", "pass"])
+        configuration = self.root / "runner.json"
+        configuration.write_text(
+            json.dumps(dict(json.loads(configuration.read_text()), max_parallel=1))
+        )
         with mock.patch.object(
             runtime, "run_logged_process", side_effect=OSError("Lost supervisor")
         ) as runner:
@@ -474,15 +478,18 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(
             self.conn.execute("SELECT status FROM manager_reviews").fetchone()[0], "PENDING"
         )
-        s.claim_manager_review(self.conn, "manager", 600)
+        from swarmkit.coordination import retry_manager_review
+
+        retry_manager_review(self.conn, review_id, "human", "Corrected missing commit")
+        s.claim_manager_review(self.conn, "manager-retry", 600)
         s.commit_review(
             self.conn,
             review_id,
-            "manager",
+            "manager-retry",
             [{"disposition": "no-change", "rationale": "No eligible work"}],
             "Reviewed every trigger",
         )
-        s.finish_manager_review(self.conn, review_id, "manager", True)
+        s.finish_manager_review(self.conn, review_id, "manager-retry", True)
         self.assertEqual(
             self.conn.execute("SELECT status FROM manager_reviews").fetchone()[0], "DONE"
         )
@@ -656,6 +663,10 @@ class RuntimeTest(unittest.TestCase):
         with s.process_lock(self.root / "runs" / "R-manager" / "process.lock"):
             pass
         s.recover_runs(self.root)
+        self.assertIsNone(s.claim_manager_review(self.conn, "new-manager", 600))
+        from swarmkit.coordination import retry_manager_review
+
+        retry_manager_review(self.conn, review_id, "human", "Recovered the failed harness")
         review = s.claim_manager_review(self.conn, "new-manager", 600)
         self.assertEqual(review["id"], review_id)
 

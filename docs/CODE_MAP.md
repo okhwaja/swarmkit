@@ -14,7 +14,7 @@ Python dependencies. Start with the module that owns the behavior you want to ch
 | Demonstration | `swarmkit/demo.py`, `examples/demo_lifecycle.py` | A synthetic end-to-end recovery without a harness. |
 | Execution | `swarmkit/runtime.py`, `swarmkit/config.py`, `swarmkit/setup.py` | Runner configuration, setup checks, subprocess ownership, recovery, and scheduling. |
 | Workspaces | `swarmkit/workspaces.py` | Manual, configured-command, and explicitly selected Git checkout providers; durable creation receipts and recovery. |
-| Verification and actions | `swarmkit/evidence.py`, `swarmkit/effects.py`, `swarmkit/delivery.py` | Evidence contracts, external-action receipts, resource leases, and delivery adapters. |
+| Verification and actions | `swarmkit/evidence.py`, `swarmkit/effects.py`, `swarmkit/delivery.py`, `swarmkit/grants.py` | Evidence contracts, external-action receipts, resource leases, and delivery adapters. |
 | Agent context | `swarmkit/prompts.py`, `swarmkit/inbox.py` | Fresh role prompts and durable event delivery. |
 | Read models | `swarmkit/queries.py`, `swarmkit/views.py` | JSON projections, boards, and operator reports. |
 | Integrity and export | `swarmkit/diagnostics.py`, `swarmkit/audit.py` | Consistency checks and portable audit bundles. |
@@ -76,3 +76,10 @@ Health checks deliberately tolerate malformed values: report the affected entity
 and continue checking other records. Keep ordinary domain commands strict. Health
 projections batch related counts and avoid loading task result bodies; use
 `scripts/benchmark_service.py` when changing those queries.
+
+`attention.py` owns the shared decision-attention projection and scoped transitions.
+`notifications.py` validates versioned event routes and advances durable cursors
+with outbox enqueue. `grants.py` owns exact-scope authority, named check records,
+and explicit waivers. These modules use ordinary functions and the same transaction
+helpers; they do not introduce another persistence or command-execution framework.
+Plan staging belongs to task creation/authorization and manager review completion.

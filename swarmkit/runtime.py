@@ -10,6 +10,7 @@ from .coordination import (
     finish_manager_review,
     reconcile_conn,
     request_manager_review,
+    review_failed,
 )
 from .core import (
     ACTIVE_TASK_STATES,
@@ -22,7 +23,8 @@ from .core import (
     run_logged_process,
     utcnow,
 )
-from .delivery import abandon_delivery_run
+from .delivery import abandon_delivery_run, dispatch_delivery
+from .notifications import enqueue_notifications, pending_notifications
 from .prompts import role_for_task, write_prompt
 from .queries import external_wait_dict
 from .storage import (
@@ -32,6 +34,7 @@ from .storage import (
     connect,
     end_attempt,
     mission,
+    live_process_count,
     require_active_mission,
     require_owner,
     runtime_state,
@@ -104,9 +107,7 @@ def dispatch(root, role, agent, task_id=None, dry_run=False):
             command = render_command(config["command"], values, "Runner command")
             if not workdir.is_dir():
                 raise SwarmError("Runner working directory does not exist: %s" % workdir)
-            if conn.execute("SELECT COUNT(*) FROM agent_runs WHERE ended_at IS NULL").fetchone()[
-                0
-            ] >= int(config.get("max_parallel", 3)):
+            if live_process_count(conn) >= int(config.get("max_parallel", 3)):
                 raise SwarmError("Harness concurrency limit reached")
             reason = budget_reason(conn)
             if reason:
@@ -280,20 +281,31 @@ def _run_loop(root, max_cycles, dry_run=False):
         current_mission = mission(conn)
         if runtime_state(conn)["desired_state"] != "ACTIVE":
             return {"state": runtime_state(conn)["desired_state"], "cycles": 0, "runs": []}
-        if current_mission["status"] == "DONE":
+        notification_backlog = enqueue_notifications(root, conn, config.get("notifications", []))
+        if (
+            current_mission["status"] == "DONE"
+            and not pending_notifications(conn, 1)
+            and not notification_backlog
+        ):
             return {
                 "state": "DONE",
                 "outcome": runtime_state(conn)["outcome"],
                 "cycles": 0,
                 "runs": results,
             }
+        if (
+            conn.execute("SELECT 1 FROM manager_reviews WHERE status='ESCALATED'").fetchone()
+            and not pending_notifications(conn, 1)
+            and not notification_backlog
+        ):
+            return {"state": "ESCALATED", "cycles": 0, "runs": []}
         manager_runs = conn.execute(
             "SELECT COUNT(*) AS n FROM agent_runs WHERE role='manager'"
         ).fetchone()["n"]
         queued_review = conn.execute(
-            "SELECT 1 FROM manager_reviews WHERE status IN ('PENDING','RUNNING') LIMIT 1"
+            "SELECT 1 FROM manager_reviews WHERE status IN ('PENDING','RUNNING','ESCALATED') LIMIT 1"
         ).fetchone()
-        if not manager_runs and not queued_review:
+        if not manager_runs and not queued_review and current_mission["status"] != "DONE":
             request_manager_review(
                 conn, "initial mission planning", "mission", current_mission["id"]
             )
@@ -348,8 +360,9 @@ def _run_loop(root, max_cycles, dry_run=False):
                             },
                         )
                         if conn.execute(
-                            "SELECT 1 FROM agent_runs WHERE agent_id=? AND ended_at IS NULL",
-                            (metadata["agent"],),
+                            "SELECT 1 FROM agent_runs WHERE agent_id=? AND ended_at IS NULL UNION ALL "
+                            "SELECT 1 FROM delivery_runs WHERE agent_id=? AND ended_at IS NULL",
+                            (metadata["agent"], metadata["agent"]),
                         ).fetchone():
                             recovery_required = True
                         conn.commit()
@@ -364,6 +377,7 @@ def _run_loop(root, max_cycles, dry_run=False):
                             metadata["review_id"],
                             metadata["agent"],
                             result.get("exit_code") == 0,
+                            result.get("error") or "Manager exited %s" % result.get("exit_code"),
                         )
                     finally:
                         conn.close()
@@ -379,7 +393,16 @@ def _run_loop(root, max_cycles, dry_run=False):
                         "runs": results,
                         "next_action": "Run recover to prove interrupted harnesses stopped before launching more work",
                     }
-                if current_mission["status"] == "DONE" and not active:
+                notification_backlog = enqueue_notifications(
+                    root, conn, config.get("notifications", [])
+                )
+                notifications = pending_notifications(conn, max_parallel)
+                if (
+                    current_mission["status"] == "DONE"
+                    and not active
+                    and not notifications
+                    and not notification_backlog
+                ):
                     return {
                         "state": "DONE",
                         "outcome": runtime_state(conn)["outcome"],
@@ -388,6 +411,13 @@ def _run_loop(root, max_cycles, dry_run=False):
                     }
 
                 desired = runtime_state(conn)["desired_state"]
+                review_blocked = bool(
+                    conn.execute(
+                        "SELECT 1 FROM manager_reviews WHERE status='ESCALATED'"
+                    ).fetchone()
+                )
+                if review_blocked and not active and not notifications and not notification_backlog:
+                    return {"state": "ESCALATED", "cycles": cycles, "runs": results}
                 exhausted = budget_reason(conn)
                 if (desired != "ACTIVE" or exhausted) and not active:
                     if exhausted:
@@ -407,43 +437,57 @@ def _run_loop(root, max_cycles, dry_run=False):
                         return {"state": "MAX_CYCLES", "cycles": cycles, "runs": results}
                     should_launch = False
                 else:
-                    # Manager reviews are serialized planning transactions. Existing
-                    # workers may continue, but do not dispatch from a partially
-                    # written plan before the manager process exits.
-                    manager_active = any(
-                        metadata["kind"] == "manager" for metadata in active.values()
-                    )
-                    should_launch = len(active) < max_parallel and not manager_active
+                    # A review stages new authorizations. Previously committed work
+                    # remains eligible, with every claim rechecked transactionally.
+                    should_launch = len(active) < max_parallel
 
                 launched = False
-                review_pending = False
-                if should_launch:
+                if should_launch and current_mission["status"] != "DONE" and not review_blocked:
+                    manager_agent = "manager-" + make_id("A")
                     review = claim_manager_review(
                         conn,
-                        "manager",
+                        manager_agent,
                         lease_seconds,
                         debounce_seconds,
+                        config.get("manager_review_min_interval_seconds", 0),
+                        config.get("manager_review_max_delay_seconds", 60),
                     )
                     if review:
-                        future = pool.submit(dispatch, root, "manager", "manager", None, False)
+                        future = pool.submit(dispatch, root, "manager", manager_agent, None, False)
                         active[future] = {
                             "kind": "manager",
-                            "agent": "manager",
+                            "agent": manager_agent,
                             "review_id": review["id"],
                         }
                         cycles += 1
                         launched = True
-                    else:
-                        review_pending = bool(
-                            conn.execute(
-                                "SELECT 1 FROM manager_reviews WHERE status='PENDING' LIMIT 1"
-                            ).fetchone()
-                        )
 
-                if should_launch and not launched and not review_pending:
+                if should_launch and not launched and notifications:
+                    in_flight = {item.get("delivery_id") for item in active.values()}
+                    for delivery_id in notifications:
+                        if delivery_id in in_flight or len(active) >= max_parallel:
+                            continue
+                        agent = "notification-" + make_id("A")
+                        future = pool.submit(dispatch_delivery, root, delivery_id, agent)
+                        active[future] = {
+                            "kind": "notification",
+                            "agent": agent,
+                            "delivery_id": delivery_id,
+                        }
+                        cycles += 1
+                        launched = True
+                        break
+
+                if (
+                    should_launch
+                    and not launched
+                    and current_mission["status"] != "DONE"
+                    and not review_blocked
+                ):
                     slots = max_parallel - len(active)
                     ready = conn.execute(
                         """SELECT * FROM tasks t WHERE status='READY'
+                           AND NOT EXISTS (SELECT 1 FROM staged_tasks s WHERE s.task_id=t.id)
                            AND NOT EXISTS (SELECT 1 FROM workspace_creations w WHERE w.task_id=t.id
                                AND w.state IN ('UNKNOWN','CREATED'))
                            ORDER BY priority DESC, created_at""",
@@ -473,6 +517,10 @@ def _run_loop(root, max_cycles, dry_run=False):
                     "SELECT COUNT(*) AS n FROM decisions WHERE status='OPEN'"
                 ).fetchone()["n"]
                 waiting = external_wait_summary(conn)
+                retry_at = conn.execute(
+                    "SELECT MIN(next_eligible_at) FROM manager_reviews WHERE status='PENDING' AND next_eligible_at>?",
+                    (utcnow(),),
+                ).fetchone()[0]
                 pending_reviews = conn.execute(
                     "SELECT COUNT(*) AS n FROM manager_reviews WHERE status='PENDING'"
                 ).fetchone()["n"]
@@ -488,7 +536,17 @@ def _run_loop(root, max_cycles, dry_run=False):
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
                 continue
+            if notification_backlog and cycles < max_cycles:
+                cycles += 1
+                continue
             if pending_reviews and cycles < max_cycles:
+                if retry_at:
+                    return {
+                        "state": "WAITING_FOR_REVIEW",
+                        "next_check_at": retry_at,
+                        "cycles": cycles,
+                        "runs": results,
+                    }
                 time.sleep(poll_seconds)
                 continue
             if open_decisions:
@@ -612,10 +670,10 @@ def abandon_run(conn, run_id, actor, reason):
         for review in conn.execute(
             "SELECT id FROM manager_reviews WHERE status='RUNNING' AND owner=?", (row["agent_id"],)
         ).fetchall():
-            conn.execute(
-                "UPDATE manager_reviews SET status='PENDING',owner=NULL,lease_until=NULL,started_at=NULL,updated_at=? WHERE id=?",
-                (utcnow(), review["id"]),
-            )
+            review_row = conn.execute(
+                "SELECT * FROM manager_reviews WHERE id=?", (review["id"],)
+            ).fetchone()
+            review_failed(conn, review_row, actor, reason)
             conn.execute("DELETE FROM review_commits WHERE review_id=?", (review["id"],))
             add_event(
                 conn,
@@ -667,4 +725,19 @@ def serve(root, max_polls, poll_seconds, max_cycles):
                 break
             if index + 1 < max_polls:
                 time.sleep(poll_seconds)
-        return {"polls": index + 1, "last": last}
+        exhausted = index + 1 == max_polls and last["state"] not in {
+            "DONE",
+            "CANCELLED",
+            "ABANDONED",
+            "PAUSED",
+            "BUDGET_EXHAUSTED",
+            "ESCALATED",
+        }
+        return {
+            "polls": index + 1,
+            "last": last,
+            "poll_budget_exhausted": exhausted,
+            "next_action": (
+                "Schedule another bounded run or serve invocation" if exhausted else None
+            ),
+        }

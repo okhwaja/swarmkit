@@ -237,3 +237,10 @@ The separate `pr-adversarial-review` example specifically describes a Git-backed
 pull-request workflow. Apply it only when the mission authorizes that publishing
 workflow and the harness supplies the provider tools and named review skill.
 Installing or applying any pack does not grant additional tool authority.
+
+Task stages created during a running manager review remain staged until plan
+publication. Their dependencies and fresh-agent constraints still apply. A
+policy-owned task cannot use `task amend` to override its reviewed acceptance
+criteria; use explicit policy-plan replacement so the manifest and resulting tasks
+stay consistent. Conditional grants are separate exact-scope authority records,
+not automatic risk classification; see [conditional grants](CONDITIONAL_GRANTS.md).

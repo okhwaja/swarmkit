@@ -270,3 +270,25 @@ Entity `list`/`show` commands retain their reconciliation behavior where applica
 then read one snapshot. They do not regenerate whole-mission boards or reports as
 a side effect. Use `board` or `report` to refresh those derived files explicitly.
 This keeps an agent's targeted retrieval inexpensive and avoids unrelated writes.
+
+## Published plans and durable operator attention
+
+A manager can reason while workers execute the last committed plan. New task
+creations and authorizations are staged against its review, then published with
+review completion in one write transaction. Strict review commits are invalidated
+by subsequent additions. Negative changes, including cancellation and decision
+fencing, act immediately. This separates planning time from dispatch without
+using wall-clock timestamps as proof of authorization.
+
+Manager attempts have unique identities and durable retry counters. Backoff and
+escalation survive process restarts. A shared attention projection describes
+unresolved decisions, and durable scoped transitions can feed versioned opt-in
+outbox routes. The database remains authoritative; boards and notification payloads
+are views or immutable event snapshots.
+
+Task acceptance revisions preserve identity and history across quiescent changes.
+Conditional grants bind named checks, scope, expiry, and explicit waivers to
+current decisions and external effects. Permission enforcement and provider
+execution remain outside Swarmkit. See [runtime safety](RUNTIME_SAFETY.md),
+[responsive orchestration](RESPONSIVE_ORCHESTRATION.md), and
+[conditional grants](CONDITIONAL_GRANTS.md) for the operational contracts.

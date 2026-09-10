@@ -435,7 +435,7 @@ and the database. It is deliberately less useful for detailed postmortems.
 
 ## Upgrade
 
-Known schema versions 1–11 upgrade transactionally to schema 12. Versions 2–6 were
+Known schema versions 1–12 upgrade transactionally to schema 13. Versions 2–6 were
 additive table releases; their compatible table definitions are replayed before
 the version 7 runtime tables. Schema 8 adds workspace provider and requested-base
 metadata; existing registrations retain provider `git`. Schema 9 adds indexes for
@@ -564,7 +564,7 @@ Version 0.11.0 adds an optional task-scoped evidence key table and indexes for t
 latest criterion/target result and task history. No existing evidence payload,
 hash, result order, or artifact is rewritten. Completion reads one indexed result
 per criterion instead of scanning verification history. Stop older controllers
-and back up before upgrading; older binaries cannot read schema 12.
+and back up before upgrading; older binaries cannot read schema 13.
 
 
 ## Runtime files in private exports
@@ -589,3 +589,67 @@ stored timestamps/JSON and unavailable evidence files. Duplicate active task tit
 are compared within a workstream; repeated workflow titles in independent cases
 are expected. If an older cancelled workstream still contains unfinished tasks,
 inspect and explicitly cancel that work with a recorded reason.
+
+## Explicit choice edits and informational references
+
+`decision revise ID --answer '...'` preserves its stored structured option.
+Supply `--choice` to replace it with another exact offered option, or
+`--clear-choice` to remove it. The flags are mutually exclusive. Each revision
+still advances the decision version, retires obsolete attempts, and requires
+fresh acknowledgments; preserving the option does not prove revised conditions
+passed. The audit event records old/new choices and preserve/set/clear intent.
+Legacy prose-only decisions are not guessed or automatically repaired.
+
+`decision link ID --task TASK` remains an authoritative relation: it can block the
+task and retire active ownership. Use `decision reference ID --task TASK` only
+for informational context. References appear in task prompts and retrieval but
+never gate readiness, require acknowledgment, retire an attempt on revision, or
+keep a decision alive when all its authoritative tasks are terminal. There is no
+implicit conversion of old gates into references.
+
+## Task acceptance amendments
+
+Use `task amend` when the task outcome is still the same but its acceptance
+criteria need correction. Read `task show` first, then supply the complete new
+criteria, the expected acceptance revision, a rationale, and an idempotency key:
+
+```sh
+swarmctl task amend TASK --expected-revision 1 \
+  --acceptance 'Existing required check' --acceptance 'Additional check' \
+  --reason 'Include newly identified coverage' --idempotency-key coverage-2
+swarmctl task approve TASK --actor human
+```
+
+The task must be nonterminal and quiescent: no active owner, unfinished harness,
+active external wait, uncertain/executing effect, or pending workspace creation.
+Unresolved claimed/unknown deliveries also prevent amendment because deliveries
+are not generally attributable to a single task. Interrupt/drain and reconcile
+first when necessary. Policy-owned criteria must be changed through explicit
+policy-plan replacement; this command does not silently override a policy stage.
+
+An amendment retains the task ID, dependencies, artifacts, and old criteria in
+`acceptance_revisions`. It deauthorizes the task and increments
+`acceptance_revision`; approval is separate. The next claim creates a fresh
+attempt generation and agent identity. Attempts, evidence, prompts, and completion
+carry the acceptance revision. Old evidence remains available but cannot satisfy
+the new contract, even if some criterion text is unchanged. Reusing an amendment
+key returns the original revision only for the exact same change.
+
+Conditional external-action authority is specified in
+[conditional grants](CONDITIONAL_GRANTS.md). Review retry gates and staged plan
+publication are specified in [responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
+
+The schema 13 migration adds review-attempt and retry state, staged task
+publications, acceptance revisions, informational decision references, attention
+transitions, notification cursors, and conditional-grant records. Existing task
+attempts and evidence receive acceptance revision 1. An existing RUNNING review
+retains its lease and receives an initial attempt record. Its unowned nonterminal
+tasks are conservatively staged until that review is recovered and completed.
+Stop controllers before upgrading; do not run old and new binaries concurrently. No current decision
+choice is inferred or changed during migration. Unknown and future schema
+versions remain rejected, and a failed migration rolls back the complete upgrade.
+
+`serve` reports `poll_budget_exhausted` and a next action when its configured poll
+count runs out. The default 120 polls have 119 thirty-second pauses plus actual run
+time; this is not a fixed lifetime or an installed background service. An external
+supervisor must arrange subsequent wakes, including `WAITING_FOR_REVIEW` times.

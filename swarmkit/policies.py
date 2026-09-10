@@ -7,7 +7,7 @@ import hashlib
 from .coordination import reconcile_conn
 from .core import SwarmError, VALID_TASK_KINDS, atomic_write, json_dump, make_id, utcnow
 from .queries import policy_application_dict, policy_pack_dict
-from .storage import add_event, mission, require_task_capacity, workstream_row
+from .storage import add_event, mission, require_task_capacity, workstream_row, stage_task
 
 
 def validate_policy_manifest(manifest):
@@ -344,6 +344,7 @@ def apply_policy(
                 now,
             ),
         )
+        stage_task(conn, task_id, actor)
         for dependency in dependencies:
             conn.execute(
                 "INSERT INTO task_dependencies(task_id, depends_on) VALUES(?,?)",

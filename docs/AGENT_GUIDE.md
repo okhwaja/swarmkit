@@ -135,3 +135,21 @@ coordination state cannot enforce permissions on arbitrary harness tools.
 - `swarmctl guide workflows`: reviewed reusable workflows.
 - `swarmctl guide services`: standing missions, cases, and incoming signals.
 - `swarmctl guide delivery`: report delivery adapters and uncertain sends.
+
+## Preserve decisions and revise work explicitly
+
+- `decision revise` preserves the structured choice when `--choice` is omitted.
+  Use `--choice` to replace it or `--clear-choice` to remove it deliberately.
+- Use `decision reference` for context. `decision link` grants the decision
+  authority over that task and may interrupt work.
+- Use `task amend` only after work is quiescent; supply the complete acceptance
+  list, expected revision, reason, and idempotency key. Approval is separate.
+  Policy-owned task criteria require explicit policy-plan replacement.
+- On `ESCALATED`, inspect `review show` and process recovery before an explicit
+  `review retry --reason`. Do not retry the same failing review in a wrapper loop.
+- Read `poll_budget_exhausted` and scheduled retry times when arranging later work.
+  Configure event notifications only with authorized recipients and extensions.
+
+For conditional actions, follow the [grant contract](CONDITIONAL_GRANTS.md).
+A stored choice, a condition result, and an authorized waiver are different records;
+none can be inferred from an unrelated narrative or timeout.

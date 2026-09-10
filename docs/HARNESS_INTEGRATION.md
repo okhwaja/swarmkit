@@ -298,3 +298,25 @@ as `command` for a repeatable internal CLI, or use `workspace register` for a
 harness-created checkout. The default is manual registration, with no VCS
 assumption. See the [workspace adapter contract](RUNTIME_SAFETY.md#isolate-files-and-scarce-resources)
 for argv placeholders, JSON receipts, ownership, failure handling, and migration.
+
+## Coordination integration updates
+
+Manager invocations receive unique attempt identities. Use the supplied agent ID
+as `--actor` for manager mutations and as `--agent` for `review-commit`. Newly
+authorized work stays staged until review completion; do not depend on a task
+created in this invocation running before the invocation finishes. Previously
+committed independent work can continue. Inspect staged tasks after a failed
+review and commit again if the plan changes after a semantic commit. See
+[responsive orchestration](RESPONSIVE_ORCHESTRATION.md).
+
+Honor `WAITING_FOR_REVIEW.next_check_at`, `ESCALATED`, and
+`serve.poll_budget_exhausted` in the supervisor. A retry reset is a deliberate
+operator action, not a wrapper loop around failures. An expired lease never
+proves a process exited. Notifications use the existing outbox contract through
+[explicit event routes](EXTENSIONS.md#event-notifications).
+
+Decision prose revisions preserve choices; `--clear-choice` explicitly removes
+one. Informational references do not require acknowledgments. Acceptance amendment
+requires quiescent work and reapproval. For structured conditional action authority,
+use [conditional grants](CONDITIONAL_GRANTS.md): trusted adapters run named checks,
+record evidence, and recheck the grant inside the effect-start transaction.

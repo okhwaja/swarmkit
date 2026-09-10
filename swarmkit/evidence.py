@@ -92,6 +92,7 @@ def record_evidence(
             expected = {
                 "generation": task["generation"],
                 "mission_revision": mission_revision,
+                "acceptance_revision": task["acceptance_revision"],
                 "criterion": criterion,
                 "revision": revision,
                 "environment": environment,
@@ -114,7 +115,7 @@ def record_evidence(
     if sha is None:
         raise SwarmError("Evidence result file disappeared before registration")
     conn.execute(
-        "INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO evidence(id,task_id,generation,mission_revision,criterion,revision,environment,command,exit_code,path,sha256,created_at,acceptance_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             evidence_id,
             task_id,
@@ -128,6 +129,7 @@ def record_evidence(
             str(path),
             sha,
             utcnow(),
+            task["acceptance_revision"],
         ),
     )
     if idempotency_key is not None:
@@ -186,7 +188,7 @@ def evidence_status(conn, task_id):
         # without materializing the task's verification history.
         row = conn.execute(
             "SELECT * FROM evidence WHERE task_id=? AND criterion=? AND generation=? "
-            "AND mission_revision=? AND revision=? AND environment=? ORDER BY rowid DESC LIMIT 1",
+            "AND mission_revision=? AND revision=? AND environment=? AND acceptance_revision=? ORDER BY rowid DESC LIMIT 1",
             (
                 task_id,
                 criterion,
@@ -194,6 +196,7 @@ def evidence_status(conn, task_id):
                 current_revision,
                 contract["revision"],
                 contract["environment"],
+                task["acceptance_revision"],
             ),
         ).fetchone()
         detail = {
@@ -213,6 +216,7 @@ def evidence_status(conn, task_id):
                     for name, expected in (
                         ("generation", task["generation"]),
                         ("mission_revision", current_revision),
+                        ("acceptance_revision", task["acceptance_revision"]),
                         ("revision", contract["revision"]),
                         ("environment", contract["environment"]),
                     )

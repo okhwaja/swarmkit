@@ -2,6 +2,8 @@
 
 import datetime as dt
 
+from .attention import reconcile_attention
+
 from .core import (
     SwarmError,
     VALID_FINDING_SIGNIFICANCE,
@@ -33,6 +35,7 @@ from .storage import (
     task_row,
     unresolved_ack_count,
     workstream_row,
+    publish_review_tasks,
 )
 
 
@@ -147,24 +150,65 @@ def request_manager_review(conn, reason, entity_type, entity_id, urgency="NORMAL
     return review_id, True
 
 
+def review_failed(conn, row, actor, reason, at=None):
+    """Close one attempt once; neither urgency nor new triggers erase its retry policy."""
+    now = at or utcnow()
+    limits = runtime_state(conn)["limits"]
+    failures = row["failure_count"] + 1
+    maximum = limits.get("max_manager_failures", 3)
+    base = limits.get("review_backoff_seconds", 2)
+    cap = limits.get("review_backoff_cap_seconds", 300)
+    delay = min(base * 2 ** min(failures - 1, 30), cap)
+    eligible = (parse_time(now) + dt.timedelta(seconds=delay)).isoformat().replace("+00:00", "Z")
+    status = "ESCALATED" if failures >= maximum else "PENDING"
+    conn.execute(
+        "UPDATE manager_reviews SET status=?,owner=NULL,lease_until=NULL,failure_count=?,"
+        "next_eligible_at=?,last_error=?,updated_at=? WHERE id=?",
+        (status, failures, eligible, reason, now, row["id"]),
+    )
+    conn.execute(
+        "UPDATE review_attempts SET ended_at=?,disposition='FAILED',reason=? "
+        "WHERE review_id=? AND generation=? AND ended_at IS NULL",
+        (now, reason, row["id"], row["generation"]),
+    )
+    add_event(
+        conn,
+        row["mission_id"],
+        "manager_review",
+        row["id"],
+        "MANAGER_REVIEW_FAILED",
+        actor,
+        {
+            "generation": row["generation"],
+            "failure_count": failures,
+            "next_eligible_at": eligible,
+            "reason": reason,
+            "status": status,
+        },
+    )
+    if status == "ESCALATED":
+        conn.execute("UPDATE runtime_state SET outcome='ESCALATED',reason=? WHERE id=1", (reason,))
+        add_event(
+            conn,
+            row["mission_id"],
+            "manager_review",
+            row["id"],
+            "SUPERVISOR_ESCALATED",
+            actor,
+            {"reason": reason, "next_action": "Inspect review show, then review retry --reason"},
+        )
+
+
 @atomic_write
 def reconcile_manager_reviews(conn, actor="reconciler", at=None):
     now = canonical_time(at) if at else utcnow()
     expired = conn.execute(
-        """SELECT * FROM manager_reviews WHERE status='RUNNING'
-           AND lease_until IS NOT NULL AND lease_until < ?""",
-        (now,),
+        "SELECT * FROM manager_reviews WHERE status='RUNNING' AND lease_until < ?", (now,)
     ).fetchall()
     changed = []
     for row in expired:
-        updated = conn.execute(
-            """UPDATE manager_reviews SET status='PENDING', owner=NULL, lease_until=NULL,
-               started_at=NULL, updated_at=?
-               WHERE id=? AND status='RUNNING' AND lease_until=?""",
-            (now, row["id"], row["lease_until"]),
-        )
-        if updated.rowcount != 1:
-            continue
+        # Retire the lease, but an unfinished process still prevents another claim.
+        review_failed(conn, row, actor, "Manager review lease expired", now)
         add_event(
             conn,
             row["mission_id"],
@@ -174,42 +218,76 @@ def reconcile_manager_reviews(conn, actor="reconciler", at=None):
             actor,
             {"previous_owner": row["owner"]},
         )
-        changed.append((row["id"], "PENDING"))
+        changed.append(
+            (
+                row["id"],
+                conn.execute(
+                    "SELECT status FROM manager_reviews WHERE id=?", (row["id"],)
+                ).fetchone()[0],
+            )
+        )
     return changed
 
 
 @atomic_write
-def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
-    now_dt = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    due_before = (
-        (now_dt - dt.timedelta(seconds=debounce_seconds)).isoformat().replace("+00:00", "Z")
-    )
+def claim_manager_review(
+    conn, agent, lease_seconds, debounce_seconds=0, min_interval_seconds=0, max_delay_seconds=60
+):
+    if conn.execute("SELECT 1 FROM manager_reviews WHERE status='ESCALATED'").fetchone():
+        return None
     require_active_mission(conn)
     future_time(lease_seconds)
     reconcile_manager_reviews(conn)
-    if (
-        conn.execute("SELECT 1 FROM manager_reviews WHERE status='RUNNING'").fetchone()
-        or conn.execute(
-            "SELECT 1 FROM agent_runs WHERE role='manager' AND ended_at IS NULL"
-        ).fetchone()
-    ):
+    if conn.execute(
+        "SELECT 1 FROM manager_reviews WHERE status IN ('RUNNING','ESCALATED')"
+    ).fetchone():
         return None
+    if conn.execute(
+        "SELECT 1 FROM agent_runs WHERE role='manager' AND ended_at IS NULL"
+    ).fetchone():
+        return None
+    now = utcnow()
+    now_dt = parse_time(now)
+    due_before = (
+        (now_dt - dt.timedelta(seconds=debounce_seconds)).isoformat().replace("+00:00", "Z")
+    )
     row = conn.execute(
-        """SELECT * FROM manager_reviews WHERE status='PENDING'
-           AND (urgency='URGENT' OR requested_at<=?)
-           ORDER BY CASE urgency WHEN 'URGENT' THEN 0 ELSE 1 END, requested_at LIMIT 1""",
-        (due_before,),
+        "SELECT * FROM manager_reviews WHERE status='PENDING' "
+        "AND (next_eligible_at IS NULL OR next_eligible_at<=?) "
+        "AND (urgency='URGENT' OR requested_at<=?) "
+        "ORDER BY CASE urgency WHEN 'URGENT' THEN 0 ELSE 1 END, requested_at, rowid LIMIT 1",
+        (now, due_before),
     ).fetchone()
     if not row:
         return None
-    lease = (now_dt + dt.timedelta(seconds=lease_seconds)).isoformat().replace("+00:00", "Z")
-    changed = conn.execute(
-        """UPDATE manager_reviews SET status='RUNNING', owner=?, started_at=?,
-           lease_until=?, updated_at=? WHERE id=? AND status='PENDING'""",
-        (agent, utcnow(), lease, utcnow(), row["id"]),
+    if row["urgency"] != "URGENT" and min_interval_seconds:
+        previous = conn.execute(
+            "SELECT MAX(completed_at) FROM manager_reviews WHERE status='DONE'"
+        ).fetchone()[0]
+        ready = conn.execute(
+            "SELECT 1 FROM tasks t WHERE status='READY' AND NOT EXISTS "
+            "(SELECT 1 FROM staged_tasks s WHERE s.task_id=t.id)"
+        ).fetchone()
+        age = (now_dt - parse_time(row["requested_at"])).total_seconds()
+        if (
+            previous
+            and ready
+            and age < max_delay_seconds
+            and (now_dt - parse_time(previous)).total_seconds() < min_interval_seconds
+        ):
+            return None
+    if conn.execute("SELECT 1 FROM review_attempts WHERE agent=?", (agent,)).fetchone():
+        raise SwarmError("Use a fresh agent identity for each manager attempt")
+    generation = row["generation"] + 1
+    lease = future_time(lease_seconds)
+    conn.execute(
+        "UPDATE manager_reviews SET status='RUNNING',owner=?,started_at=?,lease_until=?,updated_at=?,generation=? WHERE id=?",
+        (agent, now, lease, now, generation, row["id"]),
     )
-    if changed.rowcount != 1:
-        raise SwarmError("Manager review was claimed concurrently")
+    conn.execute(
+        "INSERT INTO review_attempts(review_id,generation,agent,started_at) VALUES(?,?,?,?)",
+        (row["id"], generation, agent, now),
+    )
     conn.execute("DELETE FROM review_commits WHERE review_id=?", (row["id"],))
     add_event(
         conn,
@@ -218,7 +296,7 @@ def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
         row["id"],
         "MANAGER_REVIEW_STARTED",
         agent,
-        {"lease_until": lease},
+        {"lease_until": lease, "generation": generation},
     )
     return manager_review_dict(
         conn.execute("SELECT * FROM manager_reviews WHERE id=?", (row["id"],)).fetchone()
@@ -226,61 +304,95 @@ def claim_manager_review(conn, agent, lease_seconds, debounce_seconds=0):
 
 
 @atomic_write
-def finish_manager_review(conn, review_id, agent, succeeded):
+def finish_manager_review(conn, review_id, agent, succeeded, failure_reason=None):
     row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
     if not row:
         raise SwarmError("Unknown manager review: %s" % review_id)
     if row["status"] != "RUNNING" or row["owner"] != agent:
-        # A controller may receive a late process exit after pause or recovery.
-        # That notification cannot acknowledge a different review lease.
+        return False
+    if runtime_state(conn)["desired_state"] not in {"ACTIVE", "DRAINING"}:
+        return False
+    if conn.execute(
+        "SELECT 1 FROM agent_runs WHERE agent_id=? AND ended_at IS NULL", (agent,)
+    ).fetchone():
+        return False
+    committed = conn.execute(
+        "SELECT 1 FROM review_commits WHERE review_id=? AND actor=?", (review_id, agent)
+    ).fetchone()
+    if row["lease_until"] <= utcnow():
+        succeeded = False
+        failure_reason = "Manager review lease expired"
+    elif runtime_state(conn)["strict_evidence"] and not committed:
+        succeeded = False
+        failure_reason = "Manager did not record a semantic review commit"
+    if not succeeded:
+        review_failed(conn, row, agent, failure_reason or "Manager process failed")
         return False
     now = utcnow()
-    if (
-        runtime_state(conn)["desired_state"] not in {"ACTIVE", "DRAINING"}
-        or row["lease_until"]
-        and row["lease_until"] <= now
-    ):
-        succeeded = False
-    if (
-        runtime_state(conn)["strict_evidence"]
-        and not conn.execute(
-            "SELECT 1 FROM review_commits WHERE review_id=?", (review_id,)
-        ).fetchone()
-    ):
-        succeeded = False
-    status = "DONE" if succeeded else "PENDING"
     conn.execute(
-        """UPDATE manager_reviews SET status=?, owner=NULL, lease_until=NULL,
-           completed_at=?, updated_at=? WHERE id=?""",
-        (status, now if succeeded else None, now, review_id),
+        "UPDATE manager_reviews SET status='DONE',owner=NULL,lease_until=NULL,completed_at=?,"
+        "updated_at=?,failure_count=0,next_eligible_at=NULL,last_error=NULL WHERE id=?",
+        (now, now, review_id),
     )
+    conn.execute(
+        "UPDATE review_attempts SET ended_at=?,disposition='SUCCEEDED' WHERE review_id=? AND generation=?",
+        (now, review_id, row["generation"]),
+    )
+    publish_review_tasks(conn, review_id, agent)
     add_event(
         conn,
         row["mission_id"],
         "manager_review",
         review_id,
-        "MANAGER_REVIEW_COMPLETED" if succeeded else "MANAGER_REVIEW_FAILED",
+        "MANAGER_REVIEW_COMPLETED",
         agent,
-        {"status": status},
+        {"status": "DONE", "generation": row["generation"]},
     )
-    if succeeded:
-        open_consequential = conn.execute(
-            """SELECT significance FROM findings
-               WHERE status='OPEN' AND significance IN ('MATERIAL','URGENT')"""
-        ).fetchall()
-        if open_consequential:
-            urgency = (
-                "URGENT"
-                if any(item["significance"] == "URGENT" for item in open_consequential)
-                else "NORMAL"
-            )
-            request_manager_review(
-                conn,
-                "consequential finding still needs disposition",
-                "mission",
-                row["mission_id"],
-                urgency,
-            )
+    findings = conn.execute(
+        "SELECT significance FROM findings WHERE status='OPEN' AND significance IN ('MATERIAL','URGENT')"
+    ).fetchall()
+    if findings:
+        request_manager_review(
+            conn,
+            "consequential finding still needs disposition",
+            "mission",
+            row["mission_id"],
+            "URGENT" if any(item[0] == "URGENT" for item in findings) else "NORMAL",
+        )
+    return True
+
+
+@atomic_write
+def retry_manager_review(conn, review_id, actor, reason):
+    if not reason.strip():
+        raise SwarmError("Review retry requires a reason")
+    row = conn.execute("SELECT * FROM manager_reviews WHERE id=?", (review_id,)).fetchone()
+    if not row or row["status"] not in {"PENDING", "ESCALATED"}:
+        raise SwarmError("Only a pending or escalated review can be retried")
+    if conn.execute(
+        "SELECT 1 FROM agent_runs WHERE role='manager' AND ended_at IS NULL"
+    ).fetchone():
+        raise SwarmError("Recover or wait for the previous manager process before retrying")
+    conn.execute(
+        "UPDATE manager_reviews SET status='PENDING',failure_count=0,next_eligible_at=NULL,last_error=NULL WHERE id=?",
+        (review_id,),
+    )
+    if (
+        row["status"] == "ESCALATED"
+        and not conn.execute("SELECT 1 FROM manager_reviews WHERE status='ESCALATED'").fetchone()
+    ):
+        conn.execute(
+            "UPDATE runtime_state SET outcome=NULL,reason=NULL WHERE id=1 AND outcome='ESCALATED'"
+        )
+    add_event(
+        conn,
+        row["mission_id"],
+        "manager_review",
+        review_id,
+        "MANAGER_REVIEW_RETRIED",
+        actor,
+        {"reason": reason},
+    )
 
 
 @atomic_write
@@ -686,7 +798,8 @@ def reconcile_conn(conn, actor="reconciler", at=None):
                 WHERE dt.task_id=t.id AND d.status='OPEN') AS decisions_clear,
             NOT EXISTS (SELECT 1 FROM task_dependencies td JOIN tasks dependency ON dependency.id=td.depends_on
                 WHERE td.task_id=t.id AND dependency.status!='DONE') AS dependencies_clear
-            FROM tasks t WHERE t.authorized=1 AND t.status IN ('PROPOSED','BLOCKED')"""
+            FROM tasks t WHERE t.authorized=1 AND t.status IN ('PROPOSED','BLOCKED')
+            AND NOT EXISTS (SELECT 1 FROM staged_tasks s WHERE s.task_id=t.id)"""
     ).fetchall()
     for row in candidates:
         no_open_decisions = row["decisions_clear"]
@@ -731,6 +844,7 @@ def reconcile_conn(conn, actor="reconciler", at=None):
         )
         changed.append((decision["id"], "CANCELLED"))
     changed.extend(reconcile_cases(conn, actor))
+    reconcile_attention(conn, actor, now)
     if runtime_state(conn)["desired_state"] == "DRAINING" and not has_active_work(conn):
         conn.execute("UPDATE runtime_state SET desired_state='PAUSED' WHERE id=1")
         mission_id = mission(conn)["id"]
@@ -892,5 +1006,16 @@ def commit_review(conn, review_id, agent, dispositions, summary):
         review_id,
         "MANAGER_REVIEW_COMMITTED",
         agent,
-        {"triggers": triggers, "dispositions": dispositions, "summary": summary},
+        {
+            "triggers": triggers,
+            "dispositions": dispositions,
+            "summary": summary,
+            "staged_task_ids": [
+                r[0]
+                for r in conn.execute(
+                    "SELECT task_id FROM staged_tasks WHERE review_id=? ORDER BY task_id",
+                    (review_id,),
+                )
+            ],
+        },
     )

@@ -19,6 +19,7 @@ from .cases import (
 )
 from .coordination import (
     commit_review,
+    retry_manager_review,
     dispose_finding,
     raise_finding,
     reconcile_conn,
@@ -49,6 +50,7 @@ from .decisions import (
     require_decision_choice,
     resolve_decision,
     revise_decision,
+    reference_decision,
 )
 from .delivery import (
     cancel_delivery,
@@ -73,6 +75,7 @@ from .evidence import (
     set_contract,
 )
 from .inbox import ack_inbox, inbox, lease_inbox
+from .grants import issue_grant, revoke_grant, waive_condition, record_condition, require_grant
 from .policies import apply_policy, install_policy, read_policy_source
 from .prompts import build_prompt, write_prompt
 from .queries import (
@@ -108,6 +111,7 @@ from .tasks import (
     add_task,
     add_workstream,
     amend_mission,
+    amend_task_acceptance,
     approve_task,
     block_task,
     cancel_task,
@@ -149,12 +153,57 @@ def add_runtime_cli(sub):
     amend.add_argument("--constraint", action="append", default=[])
     amend.add_argument("--reason", required=True)
     amend.add_argument("--actor", default="human")
+    grant = sub.add_parser(
+        "grant", help="Record scoped conditional authority enforced by trusted adapters"
+    )
+    gs = grant.add_subparsers(dest="grant_command", required=True)
+    issue = gs.add_parser(
+        "issue", help="Issue a scoped grant against an explicit current decision choice"
+    )
+    for name in ("decision", "choice", "specification", "actor"):
+        issue.add_argument("--" + name, required=True)
+    gs.add_parser("list")
+    show_grant = gs.add_parser("show")
+    show_grant.add_argument("grant_id")
+    revoke = gs.add_parser("revoke")
+    revoke.add_argument("grant_id")
+    for name in ("actor", "reason"):
+        revoke.add_argument("--" + name, required=True)
+    waive = gs.add_parser("waive")
+    waive.add_argument("grant_id")
+    for name in ("condition", "actor", "reason", "expires-at"):
+        waive.add_argument("--" + name, required=True)
+    record = gs.add_parser(
+        "record", help="Record a trusted harness check result; never execute decision text"
+    )
+    record.add_argument("grant_id")
+    for name in (
+        "task",
+        "agent",
+        "condition",
+        "check",
+        "revision",
+        "environment",
+        "path",
+        "observed-at",
+        "expires-at",
+    ):
+        record.add_argument("--" + name, required=True)
+    record.add_argument("--exit-code", type=int, required=True)
+    gate = gs.add_parser(
+        "require", help="Check current scope and every required condition or explicit waiver"
+    )
+    gate.add_argument("grant_id")
+    for name in ("task", "agent", "provider", "action", "resource", "revision", "environment"):
+        gate.add_argument("--" + name, required=True)
     effect = sub.add_parser("effect", help="Track intent and receipts for external actions")
     es = effect.add_subparsers(dest="effect_command", required=True)
     ep = es.add_parser("prepare")
     for name in ("task", "agent", "key", "target", "revision"):
         ep.add_argument("--" + name, required=True)
     ep.add_argument("--parameters", default="{}", help="JSON action parameters")
+    for name in ("grant", "provider", "action", "environment"):
+        ep.add_argument("--" + name)
     es.add_parser("list")
     for name in ("start", "succeeded", "failed", "unknown", "not-applied"):
         item = es.add_parser(name)
@@ -213,7 +262,9 @@ def add_runtime_cli(sub):
     review_list = review_sub.add_parser(
         "list", help="List newest review summaries without full trigger payloads"
     )
-    review_list.add_argument("--status", choices=["PENDING", "RUNNING", "DONE", "CANCELLED"])
+    review_list.add_argument(
+        "--status", choices=["PENDING", "RUNNING", "DONE", "CANCELLED", "ESCALATED"]
+    )
     review_list.add_argument("--agent", help="Filter by current review owner")
     review_list.add_argument("--limit", type=int, default=50)
     review_list.add_argument("--before", help="Continue with reviews older than this review ID")
@@ -221,6 +272,12 @@ def add_runtime_cli(sub):
         "show", help="Read every ordered trigger and the recorded commit"
     )
     review_show.add_argument("review_id")
+    retry = review_sub.add_parser(
+        "retry", help="Reset a stopped review after inspecting its failure and process state"
+    )
+    retry.add_argument("review_id")
+    retry.add_argument("--reason", required=True)
+    retry.add_argument("--actor", default="human")
     workspace = sub.add_parser(
         "workspace", help="Create, register, or inspect task-specific isolated checkouts"
     )
@@ -293,6 +350,7 @@ def handle_runtime_cli(root, args):
         "configure",
         "amend",
         "effect",
+        "grant",
         "resource",
         "evidence",
         "review-commit",
@@ -329,6 +387,86 @@ def handle_runtime_cli(root, args):
             result = amend_mission(
                 conn, args.objective, args.success, args.constraint, args.reason, args.actor
             )
+        elif args.command == "grant":
+            if args.grant_command in {"list", "show", "require"}:
+                reconcile_conn(conn)
+            if args.grant_command in {"list", "show"}:
+                conn.execute("BEGIN")
+            if args.grant_command == "issue":
+                result = {
+                    "grant_id": issue_grant(
+                        conn, args.decision, args.choice, json_load(args.specification), args.actor
+                    )
+                }
+            elif args.grant_command == "revoke":
+                result = {"revoked": revoke_grant(conn, args.grant_id, args.actor, args.reason)}
+            elif args.grant_command == "waive":
+                result = {
+                    "waiver_id": waive_condition(
+                        conn,
+                        args.grant_id,
+                        args.condition,
+                        args.actor,
+                        args.reason,
+                        args.expires_at,
+                    )
+                }
+            elif args.grant_command == "record":
+                result = {
+                    "evaluation_id": record_condition(
+                        conn,
+                        args.grant_id,
+                        args.task,
+                        args.agent,
+                        args.condition,
+                        args.check,
+                        args.revision,
+                        args.environment,
+                        args.exit_code,
+                        args.path,
+                        args.observed_at,
+                        args.expires_at,
+                    )
+                }
+            elif args.grant_command == "require":
+                result = {
+                    "conditions": require_grant(
+                        conn,
+                        args.grant_id,
+                        args.task,
+                        args.agent,
+                        args.provider,
+                        args.action,
+                        args.resource,
+                        args.revision,
+                        args.environment,
+                    ),
+                    "authorized": True,
+                }
+            elif args.grant_command == "list":
+                result = [
+                    dict(row) for row in conn.execute("SELECT * FROM grants ORDER BY created_at,id")
+                ]
+            else:
+                row = conn.execute("SELECT * FROM grants WHERE id=?", (args.grant_id,)).fetchone()
+                if not row:
+                    raise SwarmError("Unknown grant")
+                result = dict(row)
+                result["specification"] = json_load(result.pop("specification_json"))
+                result["evaluations"] = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT * FROM grant_evaluations WHERE grant_id=? ORDER BY rowid",
+                        (args.grant_id,),
+                    )
+                ]
+                result["waivers"] = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT * FROM grant_waivers WHERE grant_id=? ORDER BY rowid",
+                        (args.grant_id,),
+                    )
+                ]
         elif args.command == "effect":
             if args.effect_command == "prepare":
                 result = prepare_effect(
@@ -339,6 +477,10 @@ def handle_runtime_cli(root, args):
                     args.target,
                     args.revision,
                     json_load(args.parameters),
+                    args.grant,
+                    args.provider,
+                    args.action,
+                    args.environment,
                 )
             elif args.effect_command == "list":
                 result = [
@@ -395,6 +537,10 @@ def handle_runtime_cli(root, args):
             )
             result = {"review_id": args.review_id, "committed": True}
         elif args.command == "review":
+            if args.review_command == "retry":
+                retry_manager_review(conn, args.review_id, args.actor, args.reason)
+                print_json(review_details(conn, args.review_id))
+                return True
             if args.review_command == "show":
                 result = review_details(conn, args.review_id)
             else:
@@ -748,6 +894,15 @@ def parser():
 
     task = sub.add_parser("task", help="Manage tasks")
     task_sub = task.add_subparsers(dest="task_command", required=True)
+    amend_task = task_sub.add_parser(
+        "amend", help="Version quiescent acceptance criteria and require approval again"
+    )
+    amend_task.add_argument("task_id")
+    amend_task.add_argument("--acceptance", action="append", required=True)
+    amend_task.add_argument("--expected-revision", type=int, required=True)
+    amend_task.add_argument("--reason", required=True)
+    amend_task.add_argument("--idempotency-key", required=True)
+    amend_task.add_argument("--actor", default="human")
     add = task_sub.add_parser("add")
     add.add_argument("--idempotency-key")
     add.add_argument("--title", required=True)
@@ -814,12 +969,27 @@ def parser():
     revise = decision_sub.add_parser("revise")
     revise.add_argument("decision_id")
     revise.add_argument("--answer", required=True)
-    revise.add_argument("--choice", help="Exact machine-readable option from the decision")
+    choice_operation = revise.add_mutually_exclusive_group()
+    choice_operation.add_argument(
+        "--choice", help="Replace the stored option; omission preserves it"
+    )
+    choice_operation.add_argument(
+        "--clear-choice", action="store_true", help="Explicitly remove the stored option"
+    )
     revise.add_argument("--actor", default="human")
     require_choice = decision_sub.add_parser("require-choice")
     require_choice.add_argument("decision_id")
     require_choice.add_argument("--choice", required=True)
-    link = decision_sub.add_parser("link")
+    reference = decision_sub.add_parser(
+        "reference", help="Add context without blocking or interrupting the task"
+    )
+    reference.add_argument("decision_id")
+    reference.add_argument("--task", required=True)
+    reference.add_argument("--actor", default="manager")
+    link = decision_sub.add_parser(
+        "link",
+        help="Add an authoritative gate; retires active attempts and requires acknowledgment",
+    )
     link.add_argument("decision_id")
     link.add_argument("--task", required=True)
     link.add_argument("--actor", default="manager")
@@ -1410,6 +1580,23 @@ def main(argv=None):
                         args.idempotency_key,
                     )
                     print_json({"task_id": task_id})
+                elif args.task_command == "amend":
+                    revision = amend_task_acceptance(
+                        conn,
+                        args.task_id,
+                        args.acceptance,
+                        args.expected_revision,
+                        args.reason,
+                        args.actor,
+                        args.idempotency_key,
+                    )
+                    print_json(
+                        {
+                            "task_id": args.task_id,
+                            "acceptance_revision": revision,
+                            "authorized": False,
+                        }
+                    )
                 elif args.task_command == "approve":
                     approve_task(conn, args.task_id, args.actor)
                     print_json({"task_id": args.task_id, "authorized": True})
@@ -1624,17 +1811,23 @@ def main(argv=None):
                         args.answer,
                         args.actor,
                         args.choice,
+                        args.clear_choice,
                     )
                     print_json(
                         {
                             "decision_id": args.decision_id,
                             "status": "RESOLVED",
-                            "selected_option": args.choice,
+                            "selected_option": decision_dict(
+                                conn, decision_row(conn, args.decision_id)
+                            )["selected_option"],
                             "version": version,
                         }
                     )
                 elif args.decision_command == "require-choice":
                     print_json(require_decision_choice(conn, args.decision_id, args.choice))
+                elif args.decision_command == "reference":
+                    created = reference_decision(conn, args.decision_id, args.task, args.actor)
+                    print_json({"created": created, "blocks": False})
                 elif args.decision_command == "link":
                     linked = link_decision(conn, args.decision_id, args.task, args.actor)
                     print_json(

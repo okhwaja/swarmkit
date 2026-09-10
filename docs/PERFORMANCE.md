@@ -101,3 +101,28 @@ use indexed existence checks. Full health checking still visits the mission's
 records and hashes referenced intake/delivery files. Payload hashing and policy
 validation can dominate workloads unlike this fixture. These measurements are
 local comparisons, not deployment latency guarantees.
+
+
+## Scheduling committed work during review
+
+`scripts/benchmark_scheduler.py` creates twelve committed tasks, simulates 40 ms
+workers and 60 ms manager reviews, and runs with three slots. It uses temporary
+state and simulated dispatch; it does not invoke a model or provider. Use the same
+script with `--source /path/to/checkout` to compare versions.
+
+Three-sample medians on the same local host on 2026-09-10:
+
+| Synthetic metric | 0.12.0 | 0.13.0 |
+|---|---:|---:|
+| Elapsed time until no work remains | 0.7157 s | 0.4553 s |
+| Mean READY-to-dispatch delay | 0.3081 s | 0.1484 s |
+| Worker use of total slot time | 29.45% | 44.48% |
+| Manager reviews | 6 | 6 |
+
+The improvement here comes from overlap, without suppressing review triggers.
+These short synthetic timings include local scheduling/database overhead and vary
+with the host. They do not predict mission completion speed, useful model output,
+or human wait time. The subprocess regression test separately proves that a
+manager can wait for an existing committed worker while its newly staged task
+remains unclaimed until publication. Acceptance tests assert that ordering, not
+a hardware-dependent speed threshold.

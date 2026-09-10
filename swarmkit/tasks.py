@@ -39,6 +39,8 @@ from .storage import (
     require_owner,
     runtime_state,
     task_row,
+    stage_task,
+    require_current_manager,
     uncertain_effects,
     unresolved_ack_count,
     workstream_row,
@@ -312,6 +314,7 @@ def add_task(
             now,
         ),
     )
+    stage_task(conn, task_id, actor)
     for dep in depends_on:
         conn.execute(
             "INSERT INTO task_dependencies(task_id, depends_on) VALUES(?,?)", (task_id, dep)
@@ -348,12 +351,16 @@ def add_task(
 
 @atomic_write
 def approve_task(conn, task_id, actor):
+    require_current_manager(conn, actor)
     row = task_row(conn, task_id)
     if row["status"] in TERMINAL_TASK_STATES:
         raise SwarmError("Cannot approve terminal task %s" % task_id)
+    if row["authorized"]:
+        return
     conn.execute(
         "UPDATE tasks SET authorized = 1, updated_at = ? WHERE id = ?", (utcnow(), task_id)
     )
+    stage_task(conn, task_id, actor)
     add_event(conn, row["mission_id"], "task", task_id, "TASK_AUTHORIZED", actor)
     reconcile_conn(conn, actor="system")
 
@@ -378,6 +385,8 @@ def claim_task(conn, task_id, agent, lease_seconds):
         "SELECT 1 FROM attempts WHERE task_id=? AND agent=?", (task_id, agent)
     ).fetchone():
         raise SwarmError("Use a fresh agent identity for each attempt")
+    if conn.execute("SELECT 1 FROM staged_tasks WHERE task_id=?", (task_id,)).fetchone():
+        raise SwarmError("Task authorization awaits plan publication")
     if row["status"] != "READY":
         raise SwarmError("Task %s is %s, not READY" % (task_id, row["status"]))
     unfinished_run = conn.execute(
@@ -436,8 +445,17 @@ def claim_task(conn, task_id, agent, lease_seconds):
         {"generation": generation, "lease_until": lease},
     )
     conn.execute(
-        "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,NULL,NULL)",
-        (make_id("ATT"), task_id, generation, agent, "RUNNING", state["revision"], utcnow()),
+        "INSERT INTO attempts(id,task_id,generation,agent,state,mission_revision,started_at,acceptance_revision) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            make_id("ATT"),
+            task_id,
+            generation,
+            agent,
+            "RUNNING",
+            state["revision"],
+            utcnow(),
+            row["acceptance_revision"],
+        ),
     )
     return generation
 
@@ -481,6 +499,8 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
     if uncertain_effects(conn, task_id):
         raise SwarmError("Cannot complete with uncertain external effects")
     attempt = attempt_for_task(conn, task_id)
+    if attempt and attempt["acceptance_revision"] != row["acceptance_revision"]:
+        raise SwarmError("Attempt belongs to an obsolete acceptance revision")
     if attempt and attempt["mission_revision"] != runtime_state(conn)["revision"]:
         raise SwarmError("Attempt belongs to an obsolete mission revision")
     if (
@@ -546,6 +566,7 @@ def complete_task(conn, task_id, agent, result, verification, artifacts):
 
 @atomic_write
 def cancel_task(conn, task_id, actor, reason):
+    require_current_manager(conn, actor)
     task = task_row(conn, task_id)
     if task["status"] in TERMINAL_TASK_STATES:
         raise SwarmError("Task is already terminal")
@@ -632,6 +653,7 @@ def block_task(conn, task_id, agent, kind, question, recommendation, options):
         },
     )
     end_attempt(conn, task_id, "WAITING_HUMAN", question)
+    reconcile_conn(conn)
     return decision_id
 
 
@@ -818,6 +840,10 @@ def control_mission(conn, action, actor, reason):
                 "UPDATE manager_reviews SET status=?,owner=NULL,lease_until=NULL,started_at=NULL,updated_at=? WHERE id=?",
                 (review_status, utcnow(), review["id"]),
             )
+            conn.execute(
+                "UPDATE review_attempts SET ended_at=?,disposition='INTERRUPTED',reason=? WHERE review_id=? AND ended_at IS NULL",
+                (utcnow(), reason, review["id"]),
+            )
             conn.execute("DELETE FROM review_commits WHERE review_id=?", (review["id"],))
             add_event(
                 conn,
@@ -884,7 +910,16 @@ def control_mission(conn, action, actor, reason):
 
 @atomic_write
 def configure_runtime(conn, limits, strict_evidence=None, actor="human"):
-    allowed = {"max_attempts_per_task", "max_tasks", "max_runs", "deadline"}
+    allowed = {
+        "max_attempts_per_task",
+        "max_tasks",
+        "max_runs",
+        "deadline",
+        "max_manager_failures",
+        "review_backoff_seconds",
+        "review_backoff_cap_seconds",
+        "decision_escalation_seconds",
+    }
     if set(limits) - allowed:
         raise SwarmError("Unknown limit; supported: %s" % ", ".join(sorted(allowed)))
     for key, value in limits.items():
@@ -956,3 +991,96 @@ def amend_mission(conn, objective, success, constraints, reason, actor):
         {"revision": revision, "reason": reason},
     )
     return {"revision": revision}
+
+
+@atomic_write
+def amend_task_acceptance(
+    conn, task_id, acceptance, expected_revision, reason, actor, idempotency_key
+):
+    """Version a quiescent task's contract without deleting its history or dependants."""
+    if not reason.strip() or not idempotency_key.strip():
+        raise SwarmError("Acceptance amendment requires a reason and idempotency key")
+    if (
+        not isinstance(acceptance, list)
+        or not acceptance
+        or not all(isinstance(x, str) and x.strip() for x in acceptance)
+    ):
+        raise SwarmError("Acceptance criteria must be a nonempty list of strings")
+    row = task_row(conn, task_id)
+    encoded = json_dump(acceptance)
+    previous = conn.execute(
+        "SELECT * FROM acceptance_revisions WHERE task_id=? AND idempotency_key=?",
+        (task_id, idempotency_key),
+    ).fetchone()
+    if previous:
+        if (
+            previous["current_json"],
+            previous["revision"],
+            previous["reason"],
+            previous["actor"],
+        ) != (encoded, expected_revision + 1, reason, actor):
+            raise SwarmError("Amendment key already belongs to a different change")
+        return previous["revision"]
+    if row["status"] in TERMINAL_TASK_STATES:
+        raise SwarmError("Terminal task acceptance is immutable; create explicit follow-up work")
+    if row["acceptance_revision"] != expected_revision:
+        raise SwarmError("Acceptance revision changed; inspect task show before amending")
+    if conn.execute(
+        "SELECT 1 FROM policy_application_tasks WHERE task_id=?", (task_id,)
+    ).fetchone():
+        raise SwarmError(
+            "Policy task acceptance belongs to its policy; replace the policy plan explicitly"
+        )
+    if (
+        row["status"] in ACTIVE_TASK_STATES
+        or row["owner"]
+        or conn.execute(
+            "SELECT 1 FROM agent_runs WHERE task_id=? AND ended_at IS NULL", (task_id,)
+        ).fetchone()
+    ):
+        raise SwarmError(
+            "Task must be quiescent; interrupt and recover its harness before amending"
+        )
+    if (
+        uncertain_effects(conn, task_id)
+        or conn.execute(
+            "SELECT 1 FROM workspace_creations WHERE task_id=? AND state IN ('UNKNOWN','CREATED')",
+            (task_id,),
+        ).fetchone()
+        or conn.execute("SELECT 1 FROM deliveries WHERE status IN ('CLAIMED','UNKNOWN')").fetchone()
+    ):
+        raise SwarmError("Reconcile pending external outcomes before amending acceptance")
+    if conn.execute(
+        "SELECT 1 FROM external_waits WHERE task_id=? AND status='WAITING'", (task_id,)
+    ).fetchone():
+        raise SwarmError("Wake and reconcile the external wait before amending acceptance")
+    require_current_manager(conn, actor)
+    if conn.execute("SELECT 1 FROM staged_tasks WHERE task_id=?", (task_id,)).fetchone():
+        stage_task(conn, task_id, actor)
+    version = expected_revision + 1
+    now = utcnow()
+    conn.execute(
+        "INSERT INTO acceptance_revisions VALUES(?,?,?,?,?,?,?,?)",
+        (task_id, version, row["acceptance_json"], encoded, actor, reason, idempotency_key, now),
+    )
+    conn.execute(
+        "UPDATE tasks SET acceptance_json=?,acceptance_revision=?,authorized=0,status='PROPOSED',updated_at=? WHERE id=?",
+        (encoded, version, now, task_id),
+    )
+    # Approval is a separate authorization; the next claim creates a fresh generation.
+    add_event(
+        conn,
+        row["mission_id"],
+        "task",
+        task_id,
+        "TASK_ACCEPTANCE_AMENDED",
+        actor,
+        {
+            "previous_revision": expected_revision,
+            "acceptance_revision": version,
+            "previous": json_load(row["acceptance_json"], []),
+            "acceptance": acceptance,
+            "reason": reason,
+        },
+    )
+    return version

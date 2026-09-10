@@ -1,7 +1,7 @@
 # Roadmap implementation status and backlog
 
-Reviewed against the approved P0/P1 roadmap, with the 0.11.2 local improvement pass
-on 2026-09-07 UTC. P2 remains deferred. Releases 0.7–0.11 add tested runtime
+Reviewed against the approved P0/P1 roadmap, with the 0.13.0 coordination update
+on 2026-09-10 UTC. P2 remains deferred. Releases 0.7–0.11 add tested runtime
 slices across most of the active roadmap; this
 is not a claim that every capability or persistent-coworker release gate is done.
 The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
@@ -9,7 +9,7 @@ The current behavior is documented in [RUNTIME_SAFETY.md](RUNTIME_SAFETY.md).
 ## Questions for the owner
 
 These questions block the follow-on integrations below, not the changes shipped
-through 0.11.2. No answer or permission is inferred while you are away.
+through 0.13.0. No answer or permission is inferred while you are away.
 
 | Decision | Needed before | Suggested starting point |
 |---|---|---|
@@ -75,3 +75,33 @@ The 0.11.0 continuation adds explicit workstream cancellation, shared runner/ada
 preflight validation, indexed evidence diagnostics/history, and stable evidence
 recording keys. Granular pause/resume scopes and trusted verification execution
 remain separate engineering work; recorded command results are still harness attestations.
+
+## Coordination follow-through (0.13.0)
+
+Shipped: preserved decision choices with explicit clearing; informational references;
+manager attempt identities, capped backoff and explicit retry reset; staged plan
+publication with continued committed work; configurable successful-review cooldown;
+shared attention and one-shot aging transitions; versioned event-to-outbox routes;
+quiescent task acceptance amendments; exact-scope conditional grants and explicit
+waivers checked again at effect start.
+
+The generic grant feature records trusted harness attestations. It does not supply
+provider authentication, general risk classification, receipt verification, arbitrary
+command execution, or production automatic-approval policy. The read-only observation
+checker is an integration example. Mid-flight acceptance interruption/adoption and
+policy-stage criterion overrides remain separate extensions; current amendments
+require quiescence and refuse policy-owned tasks.
+
+Owner configuration still needed before enabling production integrations:
+
+- Notification recipients, permitted event contents, and escalation thresholds.
+- Allowed grant providers/actions/resources, issuer/delegate identities, and
+  which named conditions may receive waivers. Start with exact revisions and
+  explicit resource lists; no wildcard class authorization is shipped.
+- Representative workload measurements before changing review cooldown defaults.
+- The host supervisor and restart/wakeup policy after service poll exhaustion.
+
+These choices do not block the shipped generic coordination mechanisms. Existing
+owner questions about broader automated approval, provider integration, metering,
+and OS autostart remain open. A full persistent-coworker release still requires
+provider-specific end-to-end fault-injection coverage.

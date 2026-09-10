@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.13.0
+
+- Decision revisions preserve the existing structured choice unless explicitly
+  replaced or cleared. Informational decision references no longer need to act
+  as authorization gates.
+- Manager reviews have fresh attempt identities, durable capped backoff, an
+  explicit retry limit/reset, and restart-safe escalation. New plan authorizations
+  publish together after a successful review while committed work keeps running.
+  Normal review cooldown is configurable and does not delay urgent reviews.
+- Open decisions appear in the shared attention view with ages and affected work.
+  Human-block and aging transitions can feed opt-in, versioned notification routes
+  through the existing immutable outbox, with durable cursors and replay protection.
+- Quiescent task acceptance can be amended without replacing task IDs or deleting
+  evidence. Amendments require reapproval and fresh attempt-bound verification.
+- Added exact-scope conditional grants, trusted check records, explicit waivers,
+  revocation, and grant-bound effect-start checks. Harnesses retain permission
+  enforcement and provider execution.
+- Service output explicitly identifies exhausted polling budgets. Agent and
+  delivery dispatch share the configured live-process capacity.
+- Sequential schema 13 migration retains historical decisions, task attempts,
+  evidence, and manager review leases. Back up state before upgrade; older binaries
+  cannot read the upgraded database.
+
 ## 0.12.0
 
 - Install the bundled `swarmctl` command with `./bin/swarmctl install`. The launcher

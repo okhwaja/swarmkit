@@ -6,6 +6,7 @@ from .core import PACKAGE_ROOT
 
 
 GUIDES = {
+    "grants": ("Use scoped conditional action authority", "docs/CONDITIONAL_GRANTS.md"),
     "agent": ("Operate Swarmkit on a user's behalf", "docs/AGENT_GUIDE.md"),
     "user": ("Direct a mission and review its results", "docs/USER_MANUAL.md"),
     "setup": ("Connect and verify an agent harness", "SETUP_AGENT.md"),
@@ -67,7 +68,7 @@ COMMAND_GUIDANCE = {
     ),
     "decision revise": (
         "Correct an existing answer while preserving its history and notifying affected work. "
-        "Supply --choice again when choosing an offered option.",
+        "Omitting --choice preserves the stored option. Use --choice to replace it or --clear-choice to remove it.",
         "Example: swarmctl decision revise DECISION_ID --answer 'Limit the repair window to ten minutes'",
     ),
     "pause": (

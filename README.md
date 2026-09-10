@@ -160,5 +160,5 @@ See [workspace configuration](docs/RUNTIME_SAFETY.md).
 - [Roadmap backlog](docs/ROADMAP_BACKLOG.md): remaining capabilities and integration decisions.
 
 To create a portable release, run `python3 scripts/package.py`. It writes
-`dist/swarmkit-0.12.0.zip`. Run `python3 -B scripts/release_check.py` to test both
+`dist/swarmkit-0.13.0.zip`. Run `python3 -B scripts/release_check.py` to test both
 the source tree and an extracted package. Local mission files are excluded.

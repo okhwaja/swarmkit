@@ -285,3 +285,22 @@ separate homes:
 - [Responsive orchestration](RESPONSIVE_ORCHESTRATION.md): agent findings and external waits.
 - [Policy packs](POLICY_PACKS.md), [persistent services](PERSISTENT_SERVICES.md), and [extensions](EXTENSIONS.md): workflows, incoming requests, and report delivery.
 - [CLI reference](CLI_REFERENCE.md): every command and its exact arguments.
+
+## Correct a decision or acceptance requirement
+
+Clarifying an answer preserves the option you already selected. Your agent can
+replace that option explicitly or clear it when you withdraw structured consent.
+Affected work still receives the new answer version before continuing.
+
+When a task needs an additional acceptance check, ask for an acceptance amendment.
+The agent first makes the task quiescent, records the complete revised criteria,
+and obtains approval for that revised work. Its task identity and history remain;
+evidence for the old contract does not prove the new one. Policy-owned work uses
+its explicit policy replacement workflow.
+
+The board and report place open decisions in “Needs attention,” with their ages
+and affected work. To receive messages when attention is needed, configure an
+explicit notification route with an installed delivery extension. No destination
+is selected automatically. If manager retries stop, inspect the recorded failure,
+repair it, and explicitly reset the review. A stopped service may need another
+scheduled wake; polling exhaustion is visible in its result.

@@ -142,3 +142,20 @@ claim. An implementation owner may bind an initially absent contract once its
 result revision is known; it cannot replace your pinned target during that attempt.
 Tasks need a concrete title, description, and at least one non-empty acceptance
 criterion. Empty criteria cannot serve as a verification shortcut.
+
+## Publication and revision boundaries
+
+Use `--actor <agent_id>` for mutations. Your identity belongs to this review
+attempt and must not be reused after it ends. New tasks and new approvals are
+staged until your review succeeds. Previously committed work may run while you
+plan. Never wait for a newly staged task to finish inside the creating review.
+Inspect `review show` and staged task context after a retry; adopt or cancel the
+remaining proposals explicitly. In strict mode, make `review-commit` your final
+planning operation: adding or authorizing more tasks invalidates that commit.
+
+Use `decision reference` for informational relevance, and `decision link` only
+when the decision must govern the task. Acceptance corrections use `task amend`
+after quiescence and then explicit approval; never delete history to evade an
+evidence requirement. Honor `ESCALATED` and ask the operator to repair/reset a
+failed review instead of privately retrying it. Named grant conditions and waivers
+must follow the trusted harness contract; they are not prose permission.

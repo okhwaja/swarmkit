@@ -13,7 +13,19 @@ from .storage import (
 
 
 @atomic_write
-def prepare_effect(conn, task_id, agent, key, target, revision, parameters):
+def prepare_effect(
+    conn,
+    task_id,
+    agent,
+    key,
+    target,
+    revision,
+    parameters,
+    grant_id=None,
+    provider=None,
+    action=None,
+    environment=None,
+):
     require_active_mission(conn)
     task = task_row(conn, task_id)
     require_owner(task, agent)
@@ -21,9 +33,24 @@ def prepare_effect(conn, task_id, agent, key, target, revision, parameters):
         raise SwarmError("Acknowledge current decisions before preparing effects")
     if not all(str(x).strip() for x in (key, target, revision)):
         raise SwarmError("Effects require an idempotency key, target, and exact revision")
+    grant_scope = (grant_id, provider, action, target, environment)
+    if any(value is not None for value in (grant_id, provider, action, environment)):
+        if not all((grant_id, provider, action, environment)):
+            raise SwarmError("Grant-backed effects require grant, provider, action and environment")
+        from .grants import require_grant
+
+        require_grant(
+            conn, grant_id, task_id, agent, provider, action, target, revision, environment
+        )
     encoded = json_dump(parameters)
     existing = conn.execute("SELECT * FROM effects WHERE idempotency_key=?", (key,)).fetchone()
     if existing:
+        binding = conn.execute(
+            "SELECT grant_id,provider,action,resource,environment FROM effect_grants WHERE effect_id=?",
+            (existing["id"],),
+        ).fetchone()
+        if (tuple(binding) if binding else None) != (grant_scope if grant_id else None):
+            raise SwarmError("Effect retry cannot change or remove its grant binding")
         if (
             existing["task_id"],
             existing["target"],
@@ -76,6 +103,8 @@ def prepare_effect(conn, task_id, agent, key, target, revision, parameters):
             utcnow(),
         ),
     )
+    if grant_id:
+        conn.execute("INSERT INTO effect_grants VALUES(?,?,?,?,?,?)", (effect_id,) + grant_scope)
     add_event(
         conn,
         task["mission_id"],
@@ -107,6 +136,32 @@ def transition_effect(conn, effect_id, action, actor, receipt=None):
             raise SwarmError("Acknowledge current decisions before starting an effect")
         if task["generation"] != row["generation"] or row["state"] != "PREPARED":
             raise SwarmError("Effect is stale or already started; reconcile rather than retry")
+        binding = conn.execute(
+            "SELECT * FROM effect_grants WHERE effect_id=?", (effect_id,)
+        ).fetchone()
+        if binding:
+            from .grants import require_grant
+
+            results = require_grant(
+                conn,
+                binding["grant_id"],
+                task["id"],
+                actor,
+                binding["provider"],
+                binding["action"],
+                binding["resource"],
+                row["revision"],
+                binding["environment"],
+            )
+            add_event(
+                conn,
+                task["mission_id"],
+                "effect",
+                effect_id,
+                "EFFECT_GRANT_CHECKED",
+                actor,
+                {"grant_id": binding["grant_id"], "conditions": results},
+            )
         state = "EXECUTING"
     else:
         if action not in {"succeeded", "failed", "unknown", "not-applied"}:

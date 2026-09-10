@@ -163,6 +163,18 @@ def review_details(conn, review_id):
     result = manager_review_dict(row)
     commit = conn.execute("SELECT * FROM review_commits WHERE review_id=?", (review_id,)).fetchone()
     result["commit"] = dict(commit) if commit else None
+    result["attempts"] = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM review_attempts WHERE review_id=? ORDER BY generation", (review_id,)
+        )
+    ]
+    result["staged_task_ids"] = [
+        r[0]
+        for r in conn.execute(
+            "SELECT task_id FROM staged_tasks WHERE review_id=? ORDER BY task_id", (review_id,)
+        )
+    ]
     if commit:
         result["commit"]["dispositions"] = json_load(result["commit"].pop("dispositions_json"), [])
     return result
@@ -311,6 +323,17 @@ def task_dict(conn, row, include_responsive_history=True):
             (row["id"],),
         )
     ]
+    data["decision_references"] = [
+        r[0]
+        for r in conn.execute(
+            "SELECT decision_id FROM decision_references WHERE task_id=? ORDER BY decision_id",
+            (row["id"],),
+        )
+    ]
+    staged = conn.execute(
+        "SELECT review_id FROM staged_tasks WHERE task_id=?", (row["id"],)
+    ).fetchone()
+    data["pending_plan_review"] = staged[0] if staged else None
     data["case_ids"] = [
         r["case_id"]
         for r in conn.execute(
@@ -339,13 +362,27 @@ def task_dict(conn, row, include_responsive_history=True):
             "SELECT * FROM artifacts WHERE task_id=? ORDER BY created_at", (row["id"],)
         )
     ]
+    data["acceptance_history"] = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM acceptance_revisions WHERE task_id=? ORDER BY revision", (row["id"],)
+        )
+    ]
     data["policy"] = policy_context_for_task(conn, row["id"])
     return data
 
 
-def decision_dict(conn, row):
+def decision_dict(conn, row, at=None):
     data = dict(row)
     data["options"] = json_load(data.pop("options_json"), [])
+    end = (
+        data["decided_at"]
+        if data["status"] == "RESOLVED"
+        else data["updated_at"] if data["status"] == "CANCELLED" else at or utcnow()
+    )
+    data["age_seconds"] = max(
+        0, int((parse_time(end) - parse_time(data["created_at"])).total_seconds())
+    )
     data["blocks"] = [
         r["task_id"]
         for r in conn.execute(
@@ -404,6 +441,7 @@ def workstream_dict(conn, row):
 
 @consistent_read
 def mission_snapshot(conn):
+    observed_at = utcnow()
     m = dict(mission(conn))
     m["mode"] = mission_mode(conn)
     m["success"] = json_load(m.pop("success_json"), [])
@@ -417,7 +455,8 @@ def mission_snapshot(conn):
         for r in conn.execute("SELECT * FROM workstreams ORDER BY created_at")
     ]
     decisions = [
-        decision_dict(conn, r) for r in conn.execute("SELECT * FROM decisions ORDER BY created_at")
+        decision_dict(conn, r, observed_at)
+        for r in conn.execute("SELECT * FROM decisions ORDER BY created_at")
     ]
     artifacts = [dict(r) for r in conn.execute("SELECT * FROM artifacts ORDER BY created_at")]
     facts = [
@@ -457,7 +496,11 @@ def mission_snapshot(conn):
     deliveries = [
         delivery_dict(conn, r) for r in conn.execute("SELECT * FROM deliveries ORDER BY created_at")
     ]
+    from .attention import decision_attention
+
     return {
+        "observed_at": observed_at,
+        "attention": decision_attention(conn, observed_at),
         "mission": m,
         "workstreams": workstreams,
         "tasks": tasks,
@@ -479,6 +522,13 @@ def mission_snapshot(conn):
 @consistent_read
 def explain_state(conn):
     state = runtime_state(conn)
+    reviews = [
+        manager_review_dict(r)
+        for r in conn.execute(
+            "SELECT * FROM manager_reviews WHERE status IN ('PENDING','RUNNING','ESCALATED') ORDER BY requested_at"
+        )
+    ]
+    staged = {r[0]: r[1] for r in conn.execute("SELECT task_id,review_id FROM staged_tasks")}
     tasks = []
     for row in conn.execute(
         "SELECT * FROM tasks WHERE status NOT IN ('DONE','CANCELLED') ORDER BY priority DESC, id"
@@ -486,6 +536,10 @@ def explain_state(conn):
         reasons = []
         if state["desired_state"] != "ACTIVE":
             reasons.append("Mission " + state["desired_state"])
+        if any(review["status"] == "ESCALATED" for review in reviews):
+            reasons.append("Manager review escalated; inspect review show and explicitly retry")
+        if row["id"] in staged:
+            reasons.append("Plan publication pending: " + staged[row["id"]])
         if not row["authorized"]:
             reasons.append("Manager authorization required")
         if not all_dependencies_done(conn, row["id"]):
@@ -517,6 +571,7 @@ def explain_state(conn):
         )
     return {
         "runtime": state,
+        "manager_reviews": reviews,
         "tasks": tasks,
         "uncertain_effects": [dict(r) for r in uncertain_effects(conn)],
         "unfinished_runs": [

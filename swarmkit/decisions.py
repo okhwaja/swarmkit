@@ -95,7 +95,9 @@ def resolve_decision(conn, decision_id, answer, actor, choice=None):
 
 
 @atomic_write
-def revise_decision(conn, decision_id, answer, actor, choice=None):
+def revise_decision(conn, decision_id, answer, actor, choice=None, clear_choice=False):
+    if choice is not None and clear_choice:
+        raise SwarmError("Choose either --choice or --clear-choice")
     if not answer.strip():
         raise SwarmError("Decision answer must not be empty")
     row = decision_row(conn, decision_id)
@@ -108,6 +110,13 @@ def revise_decision(conn, decision_id, answer, actor, choice=None):
         "UPDATE decisions SET answer=?, decided_by=?, decided_at=?, version=?, updated_at=? WHERE id=?",
         (answer, actor, now, version, now, decision_id),
     )
+    previous = conn.execute(
+        "SELECT selected_option FROM decision_outcomes WHERE decision_id=?", (decision_id,)
+    ).fetchone()
+    previous_choice = previous[0] if previous else None
+    operation = "clear" if clear_choice else "set" if choice is not None else "preserve"
+    if operation == "preserve":
+        selected_option = previous_choice
     conn.execute("DELETE FROM decision_outcomes WHERE decision_id=?", (decision_id,))
     if selected_option:
         conn.execute(
@@ -144,6 +153,8 @@ def revise_decision(conn, decision_id, answer, actor, choice=None):
         {
             "answer": answer,
             "selected_option": selected_option,
+            "previous_selected_option": previous_choice,
+            "choice_operation": operation,
             "version": version,
             "affected_tasks": affected,
         },
@@ -218,3 +229,27 @@ def acknowledge_decision(conn, decision_id, task_id, agent):
         agent,
         {"task_id": task_id, "version": drow["version"]},
     )
+
+
+@atomic_write
+def reference_decision(conn, decision_id, task_id, actor):
+    """Include a decision in context without granting it authority over the task."""
+    decision = decision_row(conn, decision_id)
+    task = task_row(conn, task_id)
+    if decision["mission_id"] != task["mission_id"]:
+        raise SwarmError("Decision and task belong to different missions")
+    changed = conn.execute(
+        "INSERT OR IGNORE INTO decision_references VALUES(?,?,?,?)",
+        (decision_id, task_id, actor, utcnow()),
+    )
+    if changed.rowcount:
+        add_event(
+            conn,
+            task["mission_id"],
+            "task",
+            task_id,
+            "DECISION_REFERENCED",
+            actor,
+            {"decision_id": decision_id},
+        )
+    return bool(changed.rowcount)

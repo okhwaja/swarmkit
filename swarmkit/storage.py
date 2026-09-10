@@ -238,6 +238,10 @@ def require_active_mission(conn):
     state = runtime_state(conn)
     if state["desired_state"] != "ACTIVE" or mission(conn)["status"] != "ACTIVE":
         raise SwarmError("Mission is not accepting new work: %s" % state["desired_state"])
+    if conn.execute("SELECT 1 FROM manager_reviews WHERE status='ESCALATED'").fetchone():
+        raise SwarmError(
+            "Manager review retry limit reached; inspect review show and explicitly retry"
+        )
     return state
 
 
@@ -318,3 +322,54 @@ def budget_reason(conn, task_id=None):
         if count >= maximum:
             return "Task attempt budget exhausted (%d)" % maximum
     return None
+
+
+def stage_task(conn, task_id, actor):
+    """New authorizations become visible together when the current review succeeds."""
+    require_current_manager(conn, actor)
+    review = conn.execute("SELECT id FROM manager_reviews WHERE status='RUNNING'").fetchone()
+    if review:
+        conn.execute("INSERT OR REPLACE INTO staged_tasks VALUES(?,?)", (task_id, review[0]))
+        conn.execute("DELETE FROM review_commits WHERE review_id=?", (review[0],))
+
+
+def publish_review_tasks(conn, review_id, actor):
+    tasks = [
+        row[0]
+        for row in conn.execute(
+            "SELECT task_id FROM staged_tasks WHERE review_id=? ORDER BY task_id", (review_id,)
+        )
+    ]
+    conn.execute("DELETE FROM staged_tasks WHERE review_id=?", (review_id,))
+    add_event(
+        conn,
+        mission(conn)["id"],
+        "manager_review",
+        review_id,
+        "PLAN_PUBLISHED",
+        actor,
+        {"task_ids": tasks},
+    )
+
+
+def require_current_manager(conn, actor):
+    """Known manager identities cannot mutate a plan after losing their attempt."""
+    attempt = conn.execute(
+        "SELECT review_id FROM review_attempts WHERE agent=?", (actor,)
+    ).fetchone()
+    if (
+        attempt
+        and not conn.execute(
+            "SELECT 1 FROM manager_reviews WHERE id=? AND owner=? AND status='RUNNING' AND lease_until>?",
+            (attempt[0], actor, utcnow()),
+        ).fetchone()
+    ):
+        raise SwarmError("Manager attempt is no longer current")
+
+
+def live_process_count(conn):
+    """Count durable live or unverified agent and delivery runs under the caller's lock."""
+    return conn.execute(
+        "SELECT (SELECT COUNT(*) FROM agent_runs WHERE ended_at IS NULL) + "
+        "(SELECT COUNT(*) FROM delivery_runs WHERE ended_at IS NULL)"
+    ).fetchone()[0]

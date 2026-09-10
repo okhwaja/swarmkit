@@ -107,6 +107,10 @@ def manager_context(conn):
             "WHERE status NOT IN ('DONE','CANCELLED') ORDER BY priority DESC,rowid",
             "task list",
         ),
+        "staged_tasks": (
+            "SELECT t.id,t.title,t.acceptance_revision,s.review_id FROM tasks t JOIN staged_tasks s ON s.task_id=t.id ORDER BY t.rowid",
+            "task list",
+        ),
         "workstreams": (
             "SELECT * FROM workstreams WHERE status NOT IN ('DONE','CANCELLED') ORDER BY rowid",
             "workstream list",
@@ -257,6 +261,12 @@ def build_prompt(root, role, agent, task_id=None):
             "unseen_events": inbox(conn, agent, task_id=task_id, limit=PAGE_SIZE),
         }
         if task_id:
+            context["decision_references"] = context_page(
+                conn,
+                "SELECT d.* FROM decisions d JOIN decision_references r ON r.decision_id=d.id WHERE r.task_id=? ORDER BY d.rowid",
+                (task_id,),
+                "task show " + task_id,
+            )
             context["linked_decisions"] = context_page(
                 conn,
                 """SELECT d.*, o.selected_option FROM decisions d
@@ -265,6 +275,12 @@ def build_prompt(root, role, agent, task_id=None):
                     WHERE dt.task_id=? ORDER BY d.rowid DESC""",
                 (task_id,),
                 "task show " + task_id,
+            )
+            context["conditional_grants"] = context_page(
+                conn,
+                "SELECT g.* FROM grants g JOIN decision_tasks d ON d.decision_id=g.decision_id WHERE d.task_id=? ORDER BY g.rowid DESC",
+                (task_id,),
+                "grant list",
             )
             context["linked_cases"] = [
                 case_context(conn, row)

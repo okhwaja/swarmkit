@@ -27,6 +27,7 @@ from .policies import read_policy_source
 from .runtime import dispatch
 from .schema import (
     EVIDENCE_SCHEMA,
+    migrate_coordination,
     migrate_reliability_schema,
     migrate_review_batches,
     RUNTIME_SCHEMA,
@@ -66,6 +67,7 @@ def initialize(root, objective, success, constraints, mode="FINITE"):
                     execute_schema(conn, WORKSPACE_CREATION_SCHEMA)
                     migrate_review_batches(conn)
                     execute_schema(conn, EVIDENCE_SCHEMA)
+                    migrate_coordination(conn)
                     now = utcnow()
                     mission_id = make_id("M")
                     conn.execute(

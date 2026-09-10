@@ -376,3 +376,20 @@ mechanism that best fit the existing code. The release must include automated
 coverage of the acceptance scenarios, migration of existing workspaces,
 updated role guidance, updated operator and harness documentation, regenerated
 CLI documentation, and a passing full release check.
+
+
+## Committed work and operator attention
+
+A manager review must not withhold unrelated committed work merely because the
+model is still reasoning. New authorizations must stay unavailable until their
+review publishes a complete plan. Failed reviews must back off and eventually
+require explicit intervention, including after restart. Normal batching/cooldown
+must not block workers or override urgent response.
+
+Open decisions should surface with age and affected work, and optional event
+notifications must survive crashes without duplicating uncertain deliveries.
+Acceptance amendments must retain task identity and old evidence while requiring
+fresh approval and verification. Conditional authority requires explicit scope,
+current checks, and authorized waivers. The operational contracts, including
+legacy-mode boundaries, are in [responsive orchestration](RESPONSIVE_ORCHESTRATION.md)
+and [conditional grants](CONDITIONAL_GRANTS.md).

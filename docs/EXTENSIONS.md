@@ -183,3 +183,48 @@ Cancellation applies to pending or definitively failed jobs. An in-flight claim 
 `UNKNOWN` job must first receive a provider outcome; cancellation cannot prove that
 an external send stopped. Mission drain includes claimed deliveries and unclosed
 sender processes, even after the provider receipt has been recorded.
+
+## Event notifications
+
+Notifications are opt-in routes in `runner.json`. Install a reviewed delivery
+extension and explicitly select recipients and event types before enabling one:
+
+```json
+{
+  "notifications": [{
+    "id": "operator",
+    "version": 1,
+    "extension": "your-installed-extension",
+    "channel": "email",
+    "recipients": ["operator@example.com"],
+    "events": ["DECISION_NEEDS_ATTENTION", "DECISION_AGING", "SUPERVISOR_ESCALATED"],
+    "after_seq": 0
+  }]
+}
+```
+
+Extension/channel/recipient rules still apply. `after_seq` is an explicit event
+history cutoff; zero replays all matching retained events, including historical
+ones. Choose a current sequence to restrict a new route to future events. A
+changed specification requires a new version. Removing a route disables automatic
+dispatch of its queued jobs; it does not recall a delivery already in flight.
+Re-enabling the same version resumes its durable cursor. Routes are recorded and
+audited when `run` or `serve` reads the runner configuration.
+
+The event consumer reads bounded pages, creates immutable JSON event payloads,
+and commits outbox entries and its cursor in one transaction. Its idempotency key
+includes mission, event sequence, route ID, and route version. Different routes
+may receive the same event once each. Replays reuse event-time bytes, not a freshly
+rendered board with changing ages. Delivery/notification lifecycle events cannot
+subscribe to themselves and create notification loops.
+
+Dispatch occurs after commit through the existing extension interface. It shares
+`max_parallel` with managers and workers and consumes bounded scheduling cycles.
+Startup resumes event consumption and pending sends; polling exhaustion requires
+another external wake. Failed or UNKNOWN deliveries are never silently replayed:
+inspect and reconcile provider status using the normal delivery commands. A
+process exit without a provider acknowledgment remains uncertainty.
+
+Notification payloads contain the selected event's recorded content. Choose
+routes whose recipients may see that content. No route, recipient, automatic
+approval policy, or OS background service is installed by default.

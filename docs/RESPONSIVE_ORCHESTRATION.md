@@ -33,12 +33,14 @@ oversized batches retain their complete order after upgrade; they receive no
 additional triggers.
 Only one manager review can be `RUNNING` at a time.
 
-Manager reviews take scheduling priority over new workers. Existing workers
-continue under their original ownership and lease. After the manager returns,
-the next scheduling turn immediately fills free capacity with current `READY`
-work. Ordinary worker checkpoints do not request manager review.
+Manager reviews take scheduling priority when eligible capacity becomes available.
+Existing workers continue under their original ownership and lease, and free slots
+can dispatch work from the committed plan while a review is running. Newly created
+or newly approved tasks are staged until that review succeeds. Ordinary worker
+checkpoints do not request manager review.
 
-`max_parallel` counts live manager and worker harness processes in this run.
+`max_parallel` counts live manager, worker, and delivery processes. Claims for
+agent and delivery dispatch enforce the shared limit in a write transaction.
 Long-lived active processes therefore continue to consume capacity. Swarmkit
 does not claim that a database transition stops a harness process or external
 side effect.
@@ -218,3 +220,98 @@ commit. A manager prompt includes its current leased review ID even when other
 context overflows; retrieve that review before committing if the prompt omitted
 triggers. Running reviews take precedence over pending reviews in the prompt.
 The old `review-commit` command remains the mutation interface.
+
+## Plan publication
+
+New tasks and approvals made while a manager review is running are recorded in
+`staged_tasks`. Their task IDs, criteria, dependencies, and requested authorization
+are durable, but they cannot become eligible or be claimed until publication.
+This applies to ordinary tasks, policy stages, and case-signal follow-ups. Tasks
+from the last committed plan continue to use the normal transactional claim
+checks: current authorization, decisions, dependencies, budgets, attempt identity,
+unfinished harnesses, effects, and workspace creation.
+
+A successful review publishes its staged task authorizations and its completion
+event in one transaction. Strict mode requires `review-commit` first. Creating or
+newly authorizing another task after that commit invalidates it, so the manager
+must commit again. The commit event records the staged task IDs. In legacy mode,
+a successful manager exit is the publication boundary, consistent with its
+existing non-strict review-completion contract. Prefer strict mode for unattended
+work that needs semantic review receipts.
+
+A failed or interrupted review leaves its tasks staged. Its next successful
+attempt must inspect, adopt, or cancel that work before committing. `review show`
+includes attempt history and staged task IDs; task context includes acceptance
+revision and pending publication. Cancellation and decision invalidations take
+effect immediately. No long-running SQLite transaction is held while a model
+reasons, and task timestamps are not an authorization boundary.
+
+Managers use a fresh identity for each attempt and must pass that identity in
+`--actor` arguments. A known obsolete manager identity cannot create or approve
+new plan authorizations. `review-commit` and completion are fenced to the current
+lease owner. Permission to invoke commands remains a harness responsibility.
+
+## Review retries and scheduling delays
+
+Failure accounting is durable and independent of normal event batching. Configure
+mission limits with `configure --limits`:
+
+```json
+{
+  "max_manager_failures": 3,
+  "review_backoff_seconds": 2,
+  "review_backoff_cap_seconds": 300
+}
+```
+
+These are the defaults. A failed exit, missing strict commit, expired review
+lease, or proven abandoned manager closes one attempt and schedules a capped
+exponential retry (2, 4, 8, ... seconds, capped at 300). The counter increments
+once per failed attempt. A late process exit cannot close a newer attempt. A
+pause records an interruption without consuming a failure. A lease expiry does
+not prove process exit; unfinished runs still prevent another manager claim.
+
+At the failure limit, the review enters `ESCALATED`, new work claims stop, and
+both `run` and `serve` return that state. New triggers and urgency do not reset
+failures. Inspect `review show ID` and `recover`, repair the cause, then explicitly
+reset with `review retry ID --reason '...'`. Reset retains attempt history and
+cannot proceed while a manager process is unverified. A fresh `run` respects the
+same gate. When only a future retry remains, `run` returns `WAITING_FOR_REVIEW`
+and `next_check_at` for an external supervisor instead of spinning.
+
+Two additional runner controls govern successful normal reviews:
+
+```json
+{
+  "manager_review_min_interval_seconds": 0,
+  "manager_review_max_delay_seconds": 60
+}
+```
+
+The default cooldown is zero. With a positive cooldown, normal reviews may wait
+until the last successful review is old enough, while committed work continues.
+The oldest pending normal request becomes eligible at the maximum delay. Urgent
+reviews and planning when no committed READY task remains bypass this cooldown;
+they do not bypass failure backoff. The existing first-trigger debounce remains
+separate. Measure representative workloads before increasing these settings.
+
+## Durable human attention
+
+The same decision-attention projection feeds status JSON, the board, and the
+operator report. It includes age, kind, affected nonterminal tasks/cases, and the
+next retrieval command. `age_seconds` is elapsed time since the decision was
+requested, computed against one observation time for a snapshot.
+
+Reconciliation records `DECISION_NEEDS_ATTENTION`, `CASE_BLOCKED_ON_HUMAN`, and
+`MISSION_BLOCKED_ON_HUMAN` when each scope enters a human wait, and
+`HUMAN_BLOCK_CLEARED` when it leaves. Human kinds are `human_decision`,
+`missing_access`, and `safety_stop`. A case transition means that case has human
+blocked work; the mission transition additionally requires no committed READY or
+active task. Other work may continue while a case needs attention. Paused missions
+are not classified as globally blocked by a human.
+
+A transition has a durable version and blocked-since timestamp. Repeated polls do
+not repeat it; leaving and reentering creates another version. Optional positive
+`decision_escalation_seconds` in runtime limits emits `DECISION_AGING` once per
+decision and threshold. No elapsed-time rule answers a decision or grants consent.
+Notification routing is described in [delivery extensions](EXTENSIONS.md#event-notifications).

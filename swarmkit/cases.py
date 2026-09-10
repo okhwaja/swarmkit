@@ -29,6 +29,7 @@ from .storage import (
     require_task_capacity,
     runtime_state,
     task_row,
+    stage_task,
 )
 from .tasks import add_task, cancel_task
 
@@ -523,6 +524,7 @@ def wake_case_from_signal(conn, case_id, signal_id, actor, ready=True):
             case["workstream_id"],
         ),
     )
+    stage_task(conn, task_id, actor)
     conn.execute("INSERT INTO case_tasks(case_id, task_id) VALUES(?,?)", (case_id, task_id))
     conn.execute(
         "INSERT INTO case_signal_tasks(signal_id,task_id) VALUES(?,?)", (signal_id, task_id)

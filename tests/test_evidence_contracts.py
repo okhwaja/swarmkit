@@ -231,7 +231,7 @@ class EvidenceContractTest(unittest.TestCase):
         self.record(path)
         row = tuple(self.conn.execute("SELECT * FROM evidence").fetchone())
         self.conn.executemany(
-            "INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO evidence(id,task_id,generation,mission_revision,criterion,revision,environment,command,exit_code,path,sha256,created_at,acceptance_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (("old-%s" % i,) + row[1:] for i in range(10000)),
         )
         self.conn.commit()
